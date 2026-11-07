@@ -24,6 +24,12 @@ DEFAULT_HEADER = (
     "aggregation,stbc,fec_coding,sgi,noise_floor,ampdu_cnt,channel,"
     "secondary_channel,local_timestamp,ant,sig_len,rx_state,len,first_word,data"
 )
+# Header printed by esp-csi csi_recv on ESP32-C5 (verified on hardware, IDF v5.5.6).
+C5_HEADER = (
+    "type,seq,mac,rssi,rate,noise_floor,fft_gain,agc_gain,channel,"
+    "local_timestamp,sig_len,rx_format,len,first_word,data"
+)
+KNOWN_HEADERS = (DEFAULT_HEADER, C5_HEADER)
 _ALIASES = {"primary_channel": "channel", "timestamp": "local_timestamp"}
 _REQUIRED = ("rssi", "channel", "local_timestamp", "data")
 
@@ -66,6 +72,7 @@ class CSIParser:
         default_factory=lambda: parse_header(DEFAULT_HEADER) or {}
     )
     stats: ParserStats = field(default_factory=ParserStats)
+    _layout_known: bool = False             # True once a header line was seen or inferred
     _raw_len: Optional[int] = None          # raw int count locked from first packet
     _keep: Optional[np.ndarray] = None      # bool mask over subcarriers
 
@@ -81,7 +88,7 @@ class CSIParser:
         if not line.startswith("CSI_DATA"):
             header = parse_header(line)
             if header is not None:
-                self.columns = header
+                self.columns, self._layout_known = header, True
             self.stats.ignored += 1
             return None
         try:
@@ -101,6 +108,8 @@ class CSIParser:
             raise ValueError("missing or partial data list")
         prefix = line[:lb].rstrip('", ')
         fields = [f.strip() for f in prefix.split(",")]
+        if not self._layout_known:
+            self._infer_layout(len(fields))
         if len(fields) != self.columns["data"]:
             raise ValueError("column count does not match header")
         raw = np.array(line[lb + 1:rb].replace(",", " ").split(), dtype=np.int64)
@@ -122,6 +131,15 @@ class CSIParser:
             channel=int(fields[c["channel"]]),
             amplitude=amp,
         )
+
+    def _infer_layout(self, n_fields: int) -> None:
+        """No header seen (port opened after boot): match a known layout by column count."""
+        for text in KNOWN_HEADERS:
+            cols = parse_header(text) or {}
+            if cols.get("data") == n_fields:
+                self.columns = cols
+                break
+        self._layout_known = True
 
     def _amplitude(self, raw: np.ndarray) -> Optional[np.ndarray]:
         """Amplitude per subcarrier with null (all-zero) subcarriers dropped.

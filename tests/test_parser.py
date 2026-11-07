@@ -87,3 +87,15 @@ def test_simulator_drops_visible_in_device_ts():
     pk = [p for p, _ in simulate_packets([Segment("empty", 5)], drop_prob=0.2, seed=4)]
     assert 350 < len(pk) < 450
     assert np.diff([p.device_ts for p in pk]).max() > 15_000  # >1 interval gap
+
+
+C5_LINE = ('CSI_DATA,3320,1a:00:00:00:00:00,-5,11,-97,-10,0,6,33253679,47,2,8,0,'
+           '"[18,6,18,8,17,13,0,0]"')
+
+
+def test_headerless_c5_layout_is_inferred_from_column_count():
+    # Real esp32-c5 csi_recv line shape (15 columns); header was missed at boot.
+    ps = CSIParser()
+    pkt = ps.parse_line(C5_LINE, host_ts=1.0)
+    assert (pkt.rssi, pkt.channel, pkt.device_ts) == (-5, 6, 33253679)
+    assert len(pkt.amplitude) == 3 and ps.stats.malformed == 0
