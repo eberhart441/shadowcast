@@ -178,3 +178,11 @@ def _wait_for_hot_room(port: int, timeout: float) -> dict:
             last_error = e
         time.sleep(0.2)
     raise AssertionError(f"no hot room on port {port}: {last_error}")
+
+
+def test_allow_control_and_save_thresholds_options_parse():
+    args = parse("--simulate-room")
+    assert args.allow_control is False and args.save_thresholds is None
+    args = parse("--simulate-room", "--host", "0.0.0.0", "--allow-control", "--save-thresholds", "out/links.json")
+    assert args.allow_control is True
+    assert args.save_thresholds == Path("out/links.json")

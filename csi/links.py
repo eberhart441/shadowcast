@@ -60,6 +60,14 @@ class _Link:
         self.last_host: Optional[float] = None
         self.state = UNCALIBRATED if threshold is None else WARMUP
 
+    def set_threshold(self, threshold: Optional[float]) -> None:
+        """Change the threshold at runtime; the state follows at once, from the last score."""
+        self.threshold = threshold
+        if threshold is None:
+            self.state = UNCALIBRATED
+        elif self.state == UNCALIBRATED:
+            self.state = WARMUP if self.score is None else classify(self.score, None, threshold)
+
     def push(self, pkt: CSIPacket) -> str:
         self.health.observe(pkt)
         self.rssi, self.last_host = pkt.rssi, pkt.host_ts
@@ -94,6 +102,18 @@ class LinkMonitor:
             self._links[link_id] = _Link(link_id, self._thresholds.get(link_id.label),
                                          self._debounce_s, self._send_rate_hz)
         return self._links[link_id]
+
+    @property
+    def thresholds(self) -> dict[str, float]:
+        """Current threshold of every calibrated link, by label."""
+        return {lid.label: link.threshold for lid, link in self._links.items() if link.threshold is not None}
+
+    def set_threshold(self, label: str, threshold: float) -> None:
+        """Set one link's threshold (by label) on the live monitor, for every link with that label."""
+        self._thresholds[label] = threshold
+        for link_id, link in self._links.items():
+            if link_id.label == label:
+                link.set_threshold(threshold)
 
     def push(self, receiver: str, pkt: CSIPacket) -> str:
         """Feed one packet from ``receiver``. Returns that link's state after the packet."""

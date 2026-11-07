@@ -44,6 +44,29 @@ class DashboardState:
         if self._heat.due(pkt.host_ts):
             self._heat.advance(pkt.host_ts, self._monitor.snapshot(pkt.host_ts))
 
+    @property
+    def thresholds(self) -> dict[str, float]:
+        return self._monitor.thresholds
+
+    def set_threshold(self, label: str, threshold: float) -> None:
+        self._monitor.set_threshold(label, threshold)
+
+    def set_params(self, **kwargs) -> None:
+        """Live heatmap tunables (see Heatmap.set_params); the next payload reports them."""
+        self._heat.set_params(**kwargs)
+
+    def parameters(self) -> dict:
+        return {
+            "cols": self._heat.cols,
+            "rows": self._heat.rows,
+            "falloff_m": self._heat.falloff_m,
+            "sensitivity": self._heat.sensitivity,
+            "reference_ratio": self._heat.reference_ratio,
+            "rise_tau_s": self._heat.rise_tau,
+            "decay_tau_s": self._heat.decay_tau,
+            "step_s": self._heat.step,
+        }
+
     def snapshot(self, now: Optional[float] = None) -> dict:
         if now is None:
             now = self._last_host if self._last_host is not None else time.time()
@@ -101,16 +124,7 @@ class DashboardState:
         return {
             "time_s": now,
             "links_by_state": by_state,
-            "parameters": {
-                "cols": self._heat.cols,
-                "rows": self._heat.rows,
-                "falloff_m": self._heat.falloff_m,
-                "sensitivity": self._heat.sensitivity,
-                "reference_ratio": self._heat.reference_ratio,
-                "rise_tau_s": self._heat.rise_tau,
-                "decay_tau_s": self._heat.decay_tau,
-                "step_s": self._heat.step,
-            },
+            "parameters": self.parameters(),
         }
 
 

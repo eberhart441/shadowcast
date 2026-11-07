@@ -40,6 +40,7 @@ RISE_TAU_S = 0.3          # time constant of a cell heating up
 DECAY_TAU_S = 1.5         # time constant of a cell cooling down
 STEP_S = 0.1              # host-time step between smoothing updates while packets arrive
 CONTRIBUTING_STATES = frozenset({"EMPTY", "MOTION"})
+LIVE_PARAMS = frozenset({"sensitivity", "rise_tau", "decay_tau", "falloff_m"})  # changeable while running
 
 
 def link_contrast(score: Optional[float], threshold: Optional[float], reference_ratio: float = REFERENCE_RATIO) -> float:
@@ -74,14 +75,38 @@ class Heatmap:
         self.falloff_m, self.sensitivity, self.reference_ratio = falloff_m, sensitivity, reference_ratio
         self.rise_tau, self.decay_tau, self.step = rise_tau_s, decay_tau_s, step_s
         self._weights: Mapping[str, float] = dict(room.link_weights)
-        centres = cell_centres(cols, rows, room.width_m, room.depth_m)
+        self._room = room
+        self._centres = cell_centres(cols, rows, room.width_m, room.depth_m)
         self._falloff: dict[str, np.ndarray] = {}
-        for rx, tx in room.links():
-            label = LinkId(rx.name, tx.mac).label
-            self._falloff[label] = segment_falloff(centres, (rx.x, rx.y), (tx.x, tx.y), falloff_m)
+        self._build_falloff(falloff_m)
         self.values = np.zeros(cols * rows)
         self._last_t: Optional[float] = None
         self.contributing: list[str] = []
+
+    def _build_falloff(self, falloff_m: float) -> None:
+        for rx, tx in self._room.links():
+            label = LinkId(rx.name, tx.mac).label
+            self._falloff[label] = segment_falloff(self._centres, (rx.x, rx.y), (tx.x, tx.y), falloff_m)
+
+    def set_params(self, **kwargs) -> None:
+        """Change live tunables: sensitivity, rise_tau, decay_tau, falloff_m (attribute names).
+
+        Only these names are accepted; anything else raises ValueError and nothing is changed. All values
+        must be positive finite numbers. A new falloff_m rebuilds the per-link footprints.
+        """
+        unknown = sorted(set(kwargs) - LIVE_PARAMS)
+        if unknown:
+            raise ValueError(f"not a live heatmap parameter: {', '.join(unknown)}; "
+                             f"allowed: {', '.join(sorted(LIVE_PARAMS))}")
+        for name, value in kwargs.items():
+            if not (isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+                    and value > 0):
+                raise ValueError(f"{name} must be a positive number, got {value!r}")
+        for name, value in kwargs.items():
+            setattr(self, name, float(value))
+        if "falloff_m" in kwargs:
+            self.falloff_m = float(kwargs["falloff_m"])
+            self._build_falloff(self.falloff_m)
 
     @property
     def known_labels(self) -> set[str]:

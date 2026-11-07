@@ -31,8 +31,10 @@ finished replays the retained run from its oldest frame, one whose live counterp
 from __future__ import annotations
 
 import heapq
+import ipaddress
 import itertools
 import json
+import math
 import threading
 import time
 from collections import deque
@@ -43,7 +45,8 @@ from typing import BinaryIO, Iterator, Mapping, Optional, Sequence, TextIO, Unio
 from urllib.parse import urlsplit
 
 from .dashboard import DashboardState
-from .links import LinkId, calibrate_links
+from .live_calibration import CalibrationJob, RequestError, parse_request
+from .links import LinkId, calibrate_links, save_thresholds
 from .multisource import MultiSource
 from .parser import CSIPacket, Stream
 from .room import Room, Walk
@@ -66,6 +69,43 @@ SIM_CALIBRATION_S = 25.0
 SIM_CALIBRATION_SEED = 10
 LOG_FORMAT = "csi-dashboard-log"  # first line of a --log file; replay.py refuses other files
 LOG_VERSION = 1
+COMMAND_PATHS = frozenset({"/api/calibrate", "/api/calibrate/cancel", "/api/threshold",
+                           "/api/thresholds/save", "/api/params"})
+MAX_BODY_BYTES = 64 * 1024
+DEFAULT_THRESHOLDS_FILE = "links_thresholds.json"   # working directory, unless --save-thresholds says otherwise
+COMMAND_LOG_MAX = 20
+# live heatmap parameters: request key -> (heatmap attribute, allowed range)
+PARAM_RANGES = {
+    "sensitivity": ("sensitivity", (0.01, 10.0)),
+    "decay": ("decay_tau", (0.05, 60.0)),
+    "rise": ("rise_tau", (0.01, 10.0)),
+    "falloff": ("falloff_m", (0.05, 2.0)),
+}
+LOOPBACK_NAMES = frozenset({"localhost", "ip6-localhost"})
+CONTROL_OFF = ("control is disabled: the server is not bound to localhost; restart with --allow-control "
+               "to enable calibration and tuning commands (no authentication)")
+REPLAY_OFF = "not available in replay: this run replays a recording"
+IDLE_CALIBRATION = {"state": "idle", "message": "", "clip": None, "clips": None, "seconds_left": 0,
+                    "result": {}, "skipped": {}}
+
+
+def is_loopback(host: str) -> bool:
+    """True for a loopback bind address (127.0.0.0/8, ::1, localhost)."""
+    if host in LOOPBACK_NAMES:
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def controls_allowed(host: str, allow_control: bool = False) -> bool:
+    """Commands (calibrate, thresholds, parameters) run only on a loopback bind, unless explicitly allowed."""
+    return allow_control or is_loopback(host)
+
+
+def _finite_positive(value) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and value > 0
 
 
 class FrameLog:
@@ -166,7 +206,42 @@ class _Handler(BaseHTTPRequestHandler):
         elif path in ("/", "/index.html"):
             self._send(200, "text/html; charset=utf-8", dash.index_bytes())
         else:
+            view = dash.view(path)
+            if view is None:
+                self._send(404, "text/plain; charset=utf-8", b"not found\n")
+            else:
+                self._json(200, view)
+
+    def do_POST(self) -> None:
+        path = urlsplit(self.path).path
+        dash = self.server.dashboard
+        if path not in COMMAND_PATHS:
             self._send(404, "text/plain; charset=utf-8", b"not found\n")
+            return
+        if "application/json" not in (self.headers.get("Content-Type") or ""):
+            # a cross-site page cannot send this without a CORS preflight, which this server never grants
+            self._json(415, {"error": "commands take a JSON body: send Content-Type: application/json"})
+            return
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = -1
+        if length < 0 or length > MAX_BODY_BYTES:
+            self._json(413, {"error": f"request body must be 0 to {MAX_BODY_BYTES} bytes"})
+            return
+        try:
+            body = json.loads(self.rfile.read(length) or b"{}")
+        except ValueError:
+            self._json(400, {"error": "request body is not valid JSON"})
+            return
+        if not isinstance(body, dict):
+            self._json(400, {"error": "request body must be a JSON object"})
+            return
+        status, obj = dash.command(path, body)
+        self._json(status, obj)
+
+    def _json(self, status: int, obj: dict) -> None:
+        self._send(status, "application/json; charset=utf-8", json.dumps(obj).encode())
 
     def _send(self, status: int, ctype: str, body: bytes) -> None:
         self.send_response(status)
@@ -247,6 +322,14 @@ class FrameServer:
     def state_json(self) -> str:
         raise NotImplementedError
 
+    def command(self, path: str, body: Mapping) -> tuple[int, dict]:
+        """POST command (see COMMAND_PATHS). The base server, a replay, takes none."""
+        return 409, {"error": REPLAY_OFF}
+
+    def view(self, path: str) -> Optional[dict]:
+        """GET of a server-specific resource (none in the base server): None means not found."""
+        return None
+
     def __enter__(self) -> "FrameServer":
         return self
 
@@ -302,12 +385,19 @@ class DashboardServer(FrameServer):
                  *, host: str = DEFAULT_HOST, port: int = DEFAULT_PORT,
                  frame_interval_s: float = FRAME_INTERVAL_S, web_index: Optional[Path] = None,
                  log: Optional[Union[str, Path]] = None, log_meta: Optional[Mapping] = None,
-                 notes: Sequence[str] = (), **heatmap_params) -> None:
+                 notes: Sequence[str] = (), allow_control: bool = False,
+                 thresholds_path: Optional[Union[str, Path]] = None, replay: bool = False,
+                 **heatmap_params) -> None:
         super().__init__(host, port, web_index)
         self._room = room
         self._state = DashboardState(room, dict(thresholds or {}), **heatmap_params)
-        self._labels = {LinkId(rx.name, tx.mac).label for rx, tx in room.links()}
-        self._calibrated = {label for label in self._labels if thresholds and label in thresholds}
+        self._expected = [LinkId(rx.name, tx.mac) for rx, tx in room.links()]
+        self._labels = {link.label for link in self._expected}
+        self._controls_on = controls_allowed(host, allow_control)
+        self._replay = replay
+        self._thresholds_path = Path(thresholds_path) if thresholds_path else Path(DEFAULT_THRESHOLDS_FILE)
+        self._calib: Optional[CalibrationJob] = None
+        self._commands: deque[str] = deque(maxlen=COMMAND_LOG_MAX)
         self._ms = MultiSource(sources)
         self._notes = list(notes)
         self._log_path = None if log is None else Path(log)
@@ -364,6 +454,8 @@ class DashboardServer(FrameServer):
             if not self._stop.is_set():
                 self._feed(reorder.pop_ready(self._connected_receivers(), flush=True))
                 with self._lock:
+                    if self._calib is not None and self._calib.active:
+                        self._calib.abort("the sources ended before the calibration recording finished")
                     self._run_done = True
                     self._emit(self._last_host or 0.0, final=True)
         finally:
@@ -378,6 +470,8 @@ class DashboardServer(FrameServer):
         with self._lock:
             for receiver, pkt in batch:
                 self._state.push(receiver, pkt)
+                if self._calib is not None and self._calib.active:
+                    self._calib.observe(receiver, pkt, time.monotonic())
                 if self._last_host is None or pkt.host_ts > self._last_host:
                     self._last_host = pkt.host_ts
                 if self._next_frame_at is None:
@@ -391,6 +485,8 @@ class DashboardServer(FrameServer):
         """With no packets arriving, keep frames coming on the clock so silent links turn NO_SIGNAL."""
         with self._lock:
             now = self._clock()
+            if self._calib is not None and self._calib.active:
+                self._calib.tick(now, time.monotonic())
             if now is not None and self._next_frame_at is not None and now >= self._next_frame_at:
                 self._emit(now)
                 self._next_frame_at = now + self._frame_s
@@ -419,31 +515,144 @@ class DashboardServer(FrameServer):
     def _payload(self, now: float) -> dict:
         """Caller holds the lock: DashboardState advances its smoothing to ``now``."""
         payload = self._state.snapshot(now)
-        payload["status"].update(self._status_extension())
+        payload["status"].update(self._status_extension(now))
         return payload
 
-    def _status_extension(self) -> dict:
+    def _status_extension(self, now: float) -> dict:
         receivers = {name: _receiver_state(s) for name, s in self._ms.status().items()}
         errors = self._ms.errors()
-        uncalibrated = sorted(self._labels - self._calibrated)
+        calibrated = sorted(self._state.thresholds)
+        uncalibrated = sorted(self._labels - set(calibrated))
         messages = list(self._notes)
         if uncalibrated:
             messages.append(f"{len(uncalibrated)} link(s) UNCALIBRATED ({', '.join(uncalibrated)}): no threshold. "
                             "Pass --thresholds links.json, or calibrate on an empty room first.")
         messages.extend(f"receiver {name} failed: {msg}" for name, msg in sorted(errors.items()))
+        calibration = self._calib_status(now)
+        if self._calib is not None:
+            messages.extend(f"calibration warning: {w}" for w in self._calib.warnings_kept)
+            messages.extend(f"calibration skipped {label}: {why}" for label, why in self._calib.skipped.items())
+        messages.extend(f"command: {line}" for line in self._commands)
         return {
             "receivers": receivers,
             "errors": errors,
             "finished": self._run_done,
-            "calibrated_links": sorted(self._calibrated),
+            "calibrated_links": calibrated,
             "uncalibrated_links": uncalibrated,
             "messages": messages,
+            "calibration": calibration,
+            "commands": self._commands_status(),
         }
+
+    def _commands_status(self) -> dict:
+        if not self._controls_on:
+            return {"available": False, "reason": CONTROL_OFF}
+        if self._replay:
+            return {"available": False, "reason": REPLAY_OFF}
+        return {"available": True, "reason": None}
+
+    def _calib_status(self, now: Optional[float]) -> dict:
+        if self._calib is None:
+            return dict(IDLE_CALIBRATION)
+        return self._calib.status(now, time.monotonic())
 
     def state_json(self) -> str:
         with self._lock:
             now = self._clock()
             return json.dumps(self._payload(0.0 if now is None else now))
+
+    # ------------------------------------------------------------------ commands
+
+    def view(self, path: str) -> Optional[dict]:
+        if path != "/api/thresholds" or self._replay:
+            return None
+        with self._lock:
+            return {"thresholds": self._state.thresholds, "path": str(self._thresholds_path.resolve())}
+
+    def command(self, path: str, body: Mapping) -> tuple[int, dict]:
+        """Run one POST command under the lock. Returns (HTTP status, JSON object)."""
+        with self._lock:
+            if not self._controls_on:
+                return 403, {"error": CONTROL_OFF}
+            if self._replay:
+                return 409, {"error": REPLAY_OFF}
+            handlers = {
+                "/api/calibrate": self._cmd_calibrate,
+                "/api/calibrate/cancel": self._cmd_cancel,
+                "/api/threshold": self._cmd_threshold,
+                "/api/thresholds/save": self._cmd_save,
+                "/api/params": self._cmd_params,
+            }
+            try:
+                return handlers[path](body)
+            except RequestError as e:
+                return 400, {"error": str(e)}
+
+    def _cmd_calibrate(self, body: Mapping) -> tuple[int, dict]:
+        if self._calib is not None and self._calib.active:
+            return 409, {"error": "a calibration is already running", "calibration": self._calib_status(self._clock())}
+        request = parse_request(body)
+        self._calib = CalibrationJob(request, self._expected, now_mono=time.monotonic(),
+                                     current=lambda: self._state.thresholds, apply=self._apply_threshold)
+        self._commands.append(f"calibrate: {request['clips']} clip(s) of {request['seconds']:g} s, margin "
+                              f"{request['margin']:g}, lead-in {request['lead_s']:g} s")
+        return 202, {"calibration": self._calib_status(self._clock())}
+
+    def _cmd_cancel(self, body: Mapping) -> tuple[int, dict]:
+        if self._calib is None or not self._calib.cancel():
+            return 409, {"error": "no calibration is running"}
+        self._commands.append("calibrate cancelled")
+        return 200, {"calibration": self._calib_status(self._clock())}
+
+    def _cmd_threshold(self, body: Mapping) -> tuple[int, dict]:
+        unknown = sorted(set(body) - {"link", "value"})
+        if unknown:
+            raise RequestError(f"unknown field(s): {', '.join(unknown)}; expected link and value")
+        link = body.get("link")
+        if link not in self._labels:
+            raise RequestError(f"unknown link {link!r}; links are {', '.join(sorted(self._labels))}")
+        value = body.get("value")
+        if not _finite_positive(value):
+            raise RequestError(f"value must be a positive number, got {value!r}")
+        self._state.set_threshold(link, float(value))
+        self._commands.append(f"threshold {link} = {float(value):.4g}")
+        return 200, {"link": link, "threshold": float(value)}
+
+    def _cmd_save(self, body: Mapping) -> tuple[int, dict]:
+        thresholds = self._state.thresholds
+        if not thresholds:
+            return 409, {"error": "no thresholds to save: calibrate or set a link threshold first"}
+        path = self._thresholds_path.resolve()
+        try:
+            save_thresholds(path, thresholds)
+        except OSError as e:
+            return 500, {"error": f"cannot write {path}: {e.strerror or e}"}
+        self._commands.append(f"saved {len(thresholds)} threshold(s) to {path}")
+        return 200, {"path": str(path), "thresholds": thresholds}
+
+    def _cmd_params(self, body: Mapping) -> tuple[int, dict]:
+        unknown = sorted(set(body) - set(PARAM_RANGES))
+        if unknown:
+            raise RequestError(f"unknown parameter(s): {', '.join(unknown)}; allowed: {', '.join(PARAM_RANGES)}")
+        if not body:
+            raise RequestError(f"no parameters given; allowed: {', '.join(PARAM_RANGES)}")
+        changes: dict[str, float] = {}
+        for key, value in body.items():
+            attr, (lo, hi) = PARAM_RANGES[key]
+            if not _finite_positive(value):
+                raise RequestError(f"{key} must be a positive number, got {value!r}")
+            if not lo <= value <= hi:
+                raise RequestError(f"{key} must be between {lo:g} and {hi:g}, got {value:g}")
+            changes[attr] = float(value)
+        self._state.set_params(**changes)
+        self._commands.append("parameters: " + ", ".join(f"{k}={float(v):g}" for k, v in body.items()))
+        return 200, {"parameters": self._state.parameters()}
+
+    def _apply_threshold(self, label: str, value: float) -> None:
+        """Calibration's apply hook; the caller holds the lock."""
+        self._state.set_threshold(label, value)
+        self._commands.append(f"threshold {label} = {value:.4g} (calibration)")
+
 
 
 def _receiver_state(status: str) -> str:
