@@ -1,9 +1,12 @@
 #!/usr/bin/env python
-"""Live room state: EMPTY or MOTION, debounced. Calibrate with --calibrate.
+"""Live room state: EMPTY, MOTION or STILL_PRESENT (breathing), debounced.
 
-    detect_live.py --simulate                         # demo, no hardware
+    detect_live.py --simulate --duration 65           # demo cycle, no hardware
     detect_live.py --port /dev/ttyUSB0 --threshold-file calib.json
     detect_live.py --port /dev/ttyUSB0 --calibrate 20 --out calib.json   # room empty!
+
+MOTION overrides breathing. Breathing needs a full 15 s window; until then the
+output says "not enough data".
 """
 from __future__ import annotations
 
@@ -15,12 +18,13 @@ from typing import Iterator
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from csi.detect import CalibrationError, calibrate, detect, load_threshold  # noqa: E402
+from csi.detect import MOTION, STILL_PRESENT, CalibrationError, Reading, calibrate, detect, load_threshold  # noqa: E402
 from csi.parser import CSIParser, Stream, serial_stream  # noqa: E402
 from csi.simulate import Segment, simulate_stream  # noqa: E402
 
 SIM_DEMO_THRESHOLD = 2.0
-SIM_DEMO_SCENARIO = (Segment("empty", 5), Segment("motion", 5))
+SIM_DEMO_SCENARIO = (Segment("empty", 20), Segment("motion", 10), Segment("still", 30))  # 60 s cycle
+STILL_REPRINT_S = 5.0  # while STILL_PRESENT, refresh the bpm line this often (host time)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -91,16 +95,30 @@ def resolve_threshold(args: argparse.Namespace) -> float:
     raise SystemExit("error: pass --threshold-file or --threshold (or run --calibrate first)")
 
 
+def describe(r: Reading) -> str:
+    """Human-readable detail for the state line."""
+    if r.state == MOTION:
+        return f"score {r.score:.2f}"
+    if r.state == STILL_PRESENT and r.bpm is not None:
+        return f"{r.bpm:.1f} breaths/min, confidence {r.confidence:.2f}"
+    if r.state == STILL_PRESENT:
+        return "breathing held, re-checking"  # debounce hold while breathing drops out
+    if not r.enough_data:
+        return f"score {r.score:.2f}, breathing: not enough data"
+    return f"score {r.score:.2f}, no breathing (confidence {r.confidence:.2f})"
+
+
 def run_live(args: argparse.Namespace) -> int:
     threshold = resolve_threshold(args)
     parser = CSIParser()
     print(f"threshold {threshold:.3f}; Ctrl+C to stop", flush=True)
-    state = None
+    state, printed_at = None, 0.0
     try:
         for r in detect(until(open_stream(args), args.duration), threshold, parser, args.debounce):
-            if r.state != state:
-                state = r.state
-                print(f"{time.strftime('%H:%M:%S', time.localtime(r.host_ts))}  {state:<7} (score {r.score:.2f})",
+            due = r.state == STILL_PRESENT and r.host_ts - printed_at >= STILL_REPRINT_S
+            if r.state != state or due:
+                state, printed_at = r.state, r.host_ts
+                print(f"{time.strftime('%H:%M:%S', time.localtime(r.host_ts))}  {state:<13} {describe(r)}",
                       flush=True)
     except KeyboardInterrupt:
         pass
