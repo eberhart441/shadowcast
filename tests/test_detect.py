@@ -1,10 +1,11 @@
+import numpy as np
 import pytest
 
-from csi.detect import EMPTY, MOTION, CalibrationError, calibrate, detect, load_threshold
-from csi.parser import CSIParser
+from csi.detect import EMPTY, MOTION, STILL_PRESENT, CalibrationError, MotionScorer, calibrate, detect, load_threshold
+from csi.parser import CSIParser, parse_stream
 from csi.simulate import Segment, simulate_stream
 
-THRESHOLD = 2.0  # manual threshold: between simulated empty (~0.2) and motion (~9)
+THRESHOLD = 2.0  # manual threshold: between simulated empty/still (~0.2) and motion (~7+)
 
 
 def final_state(state: str, seconds: float = 10, threshold: float = THRESHOLD, seed: int = 1) -> str:
@@ -62,3 +63,41 @@ def test_malformed_lines_counted_and_do_not_stop_detection():
     parser = CSIParser()
     assert list(detect(stream, THRESHOLD, parser))
     assert parser.stats.malformed == 3
+
+
+# --- calibrated threshold on the stream seam: breathing must not read as motion ---
+
+def calibrated_threshold() -> float:
+    return calibrate(empty_stream()).threshold
+
+
+def still_stream(seconds: float = 30, seed: int = 6):
+    return simulate_stream(scenario=[Segment("still", seconds)], seed=seed)
+
+
+def test_calibrated_empty_is_empty_throughout():
+    stream = simulate_stream(scenario=[Segment("empty", 30)], seed=8)
+    states = {r.state for r in detect(stream, calibrated_threshold())}
+    assert states == {EMPTY}
+
+
+def test_still_person_is_not_motion_after_calibrating_on_empty():
+    states = [r.state for r in detect(still_stream(), calibrated_threshold())]
+    assert MOTION not in states
+    assert states[-1] == STILL_PRESENT
+
+
+def test_motion_after_calibrating_on_empty_is_motion():
+    stream = simulate_stream(scenario=[Segment("motion", 10)], seed=6)
+    assert list(detect(stream, calibrated_threshold()))[-1].state == MOTION
+
+
+def test_breathing_does_not_raise_motion_score_above_empty_level():
+    def p99_scores(stream):
+        scorer = MotionScorer()
+        scores = [s for s in (scorer.push(p) for p in parse_stream(stream)) if s is not None]
+        return np.percentile(scores, 99)
+
+    empty = p99_scores(simulate_stream(scenario=[Segment("empty", 30)], seed=8))
+    still = p99_scores(still_stream())
+    assert still < 1.5 * empty
