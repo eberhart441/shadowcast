@@ -178,7 +178,7 @@ def test_after_the_person_leaves_the_heatmap_decays_back_to_cold_within_seconds(
     feed(state, lead + standing)
     assert state.snapshot(now=left_at)["heatmap"]["max"] > 0.3
     maxima = []
-    for seconds_after in range(1, 6):
+    for seconds_after in (0.2, 0.5, 1.0, 2.0, 5.0):   # default decay time constant is 0.3 s
         feed(state, empty, until=left_at + seconds_after)
         maxima.append(state.snapshot(now=left_at + seconds_after)["heatmap"]["max"])
     assert maxima[0] > 0.1                      # fades over time, it does not switch off
