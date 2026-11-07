@@ -1,0 +1,118 @@
+#!/usr/bin/env python
+"""Live room state: EMPTY or MOTION, debounced. Calibrate with --calibrate.
+
+    detect_live.py --simulate                         # demo, no hardware
+    detect_live.py --port /dev/ttyUSB0 --threshold-file calib.json
+    detect_live.py --port /dev/ttyUSB0 --calibrate 20 --out calib.json   # room empty!
+"""
+from __future__ import annotations
+
+import argparse
+import sys
+import time
+from pathlib import Path
+from typing import Iterator
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from csi.detect import CalibrationError, calibrate, detect, load_threshold  # noqa: E402
+from csi.parser import CSIParser, Stream, serial_stream  # noqa: E402
+from csi.simulate import Segment, simulate_stream  # noqa: E402
+
+SIM_DEMO_THRESHOLD = 2.0
+SIM_DEMO_SCENARIO = (Segment("empty", 5), Segment("motion", 5))
+
+
+def build_parser() -> argparse.ArgumentParser:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
+    g = ap.add_argument_group("packet source")
+    g.add_argument("--simulate", action="store_true", help="use fake CSI, no hardware")
+    g.add_argument("--port", help="serial port of the csi_recv node")
+    g.add_argument("--baud", type=int, default=921600)
+    g.add_argument("--rate", type=float, default=100.0, help="send rate in Hz (simulator)")
+    g.add_argument("--seed", type=int, default=0, help="simulator seed")
+    t = ap.add_argument_group("threshold")
+    t.add_argument("--threshold-file", type=Path, help="calibration JSON from --calibrate")
+    t.add_argument("--threshold", type=float, help="manual motion threshold")
+    c = ap.add_argument_group("calibration")
+    c.add_argument("--calibrate", type=float, metavar="SECONDS", help="learn threshold from an empty room")
+    c.add_argument("--out", type=Path, default=Path("calibration.json"), help="where to save it")
+    ap.add_argument("--debounce", type=float, default=0.5, help="seconds a state must persist")
+    ap.add_argument("--duration", type=float, help="stop after this many seconds (default: run until Ctrl+C)")
+    return ap
+
+
+def open_stream(args: argparse.Namespace, calibrating: bool = False) -> Stream:
+    if args.simulate:
+        scenario = (Segment("empty", args.calibrate),) if calibrating else SIM_DEMO_SCENARIO
+        return simulate_stream(scenario=scenario, rate_hz=args.rate, seed=args.seed,
+                               realtime=not calibrating, loop=not calibrating)
+    if args.port:
+        return serial_stream(args.port, args.baud)
+    raise SystemExit("error: pass --port <serial port> or --simulate")
+
+
+def until(stream: Stream, seconds: float | None) -> Iterator[tuple[float, str]]:
+    """Cut a stream after ``seconds`` of host time; closes the source on exit."""
+    start = None
+    try:
+        for host_ts, line in stream:
+            if start is None and line.startswith("CSI_DATA"):
+                start = host_ts
+            if seconds is not None and start is not None and host_ts - start > seconds:
+                return
+            yield host_ts, line
+    finally:
+        close = getattr(stream, "close", None)
+        if close:
+            close()
+
+
+def run_calibration(args: argparse.Namespace) -> int:
+    parser = CSIParser()
+    print(f"calibrating for {args.calibrate:.0f}s: keep the room empty...", flush=True)
+    try:
+        cal = calibrate(until(open_stream(args, calibrating=True), args.calibrate), parser)
+    except CalibrationError as e:
+        print(f"calibration failed: {e}", file=sys.stderr)
+        return 1
+    cal.save(args.out)
+    print(f"threshold {cal.threshold:.3f} (rate {cal.rate_hz:.0f} Hz, loss {cal.loss:.1%}) -> {args.out}")
+    return 0
+
+
+def resolve_threshold(args: argparse.Namespace) -> float:
+    if args.threshold is not None:
+        return args.threshold
+    if args.threshold_file:
+        return load_threshold(args.threshold_file)
+    if args.simulate:
+        return SIM_DEMO_THRESHOLD
+    raise SystemExit("error: pass --threshold-file or --threshold (or run --calibrate first)")
+
+
+def run_live(args: argparse.Namespace) -> int:
+    threshold = resolve_threshold(args)
+    parser = CSIParser()
+    print(f"threshold {threshold:.3f}; Ctrl+C to stop", flush=True)
+    state = None
+    try:
+        for r in detect(until(open_stream(args), args.duration), threshold, parser, args.debounce):
+            if r.state != state:
+                state = r.state
+                print(f"{time.strftime('%H:%M:%S', time.localtime(r.host_ts))}  {state:<7} (score {r.score:.2f})",
+                      flush=True)
+    except KeyboardInterrupt:
+        pass
+    s = parser.stats
+    print(f"packets {s.parsed}, malformed {s.malformed}, layout-skipped {s.layout_skipped}")
+    return 0
+
+
+def main() -> int:
+    args = build_parser().parse_args()
+    return run_calibration(args) if args.calibrate else run_live(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
