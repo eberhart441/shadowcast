@@ -101,12 +101,41 @@ guessing.
 scripts/detect_live.py --port <PORT> --calibrate 60 --out calibration.json
 ```
 
-It writes `calibration.json` with the threshold (a high percentile of the
-empty-room motion score, plus a margin). Calibration splits the recording into
+It writes `calibration.json` with the threshold: `margin x p99`, the 99th percentile
+of the empty-room motion score times the margin (`--margin`, default 1.0, see
+[Calibration margin](#calibration-margin)). Calibration splits the recording into
 1 s chunks and drops any chunk where someone was moving (its median is well above
 the quiet baseline, or its scores are bursty), so a passer-by during the clip
 does not inflate the threshold. It needs at least 8 s of clean data and reports
 how many seconds were rejected; if it refuses, record the empty room again.
+
+### Calibration margin
+
+The threshold is `margin x p99`, where p99 is the 99th percentile of the motion
+scores of the kept (non-moving) empty-room windows. `--margin` sets the factor on
+`detect_live.py --calibrate`, `links_live.py --calibrate` and `evaluate.py`; the default
+is `1.0` (`csi.detect.DEFAULT_MARGIN`), and the margin used is printed and recorded in
+the calibration.
+
+- `1.0` means the threshold is the 99th percentile of empty windows, so about 1% of
+  empty windows can exceed it.
+- A **lower** margin catches more brief or weak motion, but raises false alarms: an
+  empty room can read MOTION when its scores drift above the calibration clip.
+- A **higher** margin (for example `1.5`) is more conservative: fewer false alarms in
+  a noisy room, but brief or weak motion may stay EMPTY.
+
+Raise the margin for a noisy room. Compare margins on your own recordings before
+choosing one:
+
+```bash
+scripts/evaluate.py --margin 1.0 data/<session>
+scripts/evaluate.py --margin 1.5 data/<session>
+```
+
+Simulator caveat: on simulated data, margin 1.0 is too low. A single-clip p99 is
+crossed by held-out empty clips and by a still person (breathing), while 1.25 and 1.5
+are not (see `tests/test_calibration_margin.py`). Real-room results at 1.0 are what
+set the default; check them with `evaluate.py`.
 
 **Reset the receiver in place after placing the boards, before calibrating.**
 The firmware computes a gain baseline from the first 100 packets after boot, so

@@ -4,11 +4,27 @@ from __future__ import annotations
 import argparse
 from typing import Iterator, Optional
 
-from .detect import SIM_THRESHOLD, load_threshold
+from .detect import DEFAULT_MARGIN, SIM_THRESHOLD, load_threshold, validate_margin
 from .parser import CSIPacket, CSIParser, parse_stream, serial_stream
 from .simulate import simulate_stream
 
 SIM_RATE_HZ = 100.0  # the simulator's send rate, and the sender rate it implies under --simulate
+
+
+def margin_arg(text: str) -> float:
+    """argparse type for --margin: a positive number (the threshold is margin x the 99th percentile)."""
+    try:
+        return validate_margin(float(text))
+    except ValueError as e:
+        raise argparse.ArgumentTypeError(str(e)) from e
+
+
+def add_margin_arg(group: argparse._ArgumentGroup, what: str) -> None:
+    group.add_argument(
+        "--margin", type=margin_arg, default=DEFAULT_MARGIN, metavar="X",
+        help=f"{what}: threshold = X x the 99th percentile of the empty-room windows (default {DEFAULT_MARGIN:g}, "
+             "which is the 99th percentile itself). Lower catches more brief or weak motion but raises false "
+             "alarms; raise it for a noisy room.")
 
 
 def add_source_args(ap: argparse.ArgumentParser) -> None:

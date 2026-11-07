@@ -22,7 +22,7 @@ from typing import Iterator
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from csi.common import add_threshold_args, resolve_threshold, simulated_rate_hz  # noqa: E402
+from csi.common import add_margin_arg, add_threshold_args, resolve_threshold, simulated_rate_hz  # noqa: E402
 from csi.detect import MOTION, SIM_THRESHOLD, STILL_PRESENT, CalibrationError, Reading, calibrate, detect  # noqa: E402
 from csi.parser import CSIParser, Stream, serial_stream  # noqa: E402
 from csi.simulate import Segment, simulate_stream  # noqa: E402
@@ -43,6 +43,7 @@ def build_parser() -> argparse.ArgumentParser:
     add_threshold_args(ap)
     c = ap.add_argument_group("calibration")
     c.add_argument("--calibrate", type=float, metavar="SECONDS", help="learn threshold from an empty room")
+    add_margin_arg(c, "with --calibrate, the threshold")
     c.add_argument("--out", type=Path, default=Path("calibration.json"), help="where to save it")
     ap.add_argument("--breathing", action="store_true",
                     help="opt in to breathing detection (STILL_PRESENT); off by default")
@@ -81,14 +82,15 @@ def run_calibration(args: argparse.Namespace) -> int:
     parser = CSIParser()
     print(f"calibrating for {args.calibrate:.0f}s: keep the room empty...", flush=True)
     try:
-        cal = calibrate(until(open_stream(args, calibrating=True), args.calibrate), parser)
+        cal = calibrate(until(open_stream(args, calibrating=True), args.calibrate), parser, margin=args.margin)
     except CalibrationError as e:
         print(f"calibration failed: {e}", file=sys.stderr)
         return 1
     cal.save(args.out)
     print(f"clean {cal.clean_s:.1f} s, rejected {cal.rejected_s:.1f} s as movement "
           f"({cal.pkt_rate_hz:.1f} pkt/s, loss {cal.loss:.1%})")
-    print(f"threshold {cal.threshold:.3f} (rate {cal.rate_hz:.0f} Hz, loss {cal.loss:.1%}) -> {args.out}")
+    print(f"threshold {cal.threshold:.3f} (margin {cal.margin:.2f} x p99; rate {cal.rate_hz:.0f} Hz, "
+          f"loss {cal.loss:.1%}) -> {args.out}")
     return 0
 
 

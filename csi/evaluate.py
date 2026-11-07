@@ -26,7 +26,8 @@ from typing import Sequence
 import pandas as pd
 
 from .breathing import WINDOW_S as BREATH_WINDOW_S
-from .detect import EMPTY, MOTION, STILL_PRESENT, Calibration, CalibrationError, calibrate_packets, detect_packets
+from .detect import (DEFAULT_MARGIN, EMPTY, MOTION, STILL_PRESENT, Calibration, CalibrationError, calibrate_packets,
+                     detect_packets, validate_margin)
 from .recording import LABELS, META_NAME, Recording, Session, load_session
 
 LABEL_STATE: dict[str, str] = {
@@ -83,14 +84,14 @@ def _missing_empty_message(name: str) -> str:
             f"first with: scripts/record.py --session {name} --label empty")
 
 
-def _evaluate_session(session: Session, breathing: bool) -> SessionResult:
+def _evaluate_session(session: Session, breathing: bool, margin: float) -> SessionResult:
     name = session.path.name
     empties = [r for r in session.recordings if r.label == "empty"]
     if not empties:
         raise EvaluationError(_missing_empty_message(name))
     calib_rec = empties[0]
     try:
-        calibration = calibrate_packets(calib_rec.packets())
+        calibration = calibrate_packets(calib_rec.packets(), margin=margin)
     except CalibrationError as e:
         raise EvaluationError(f"session {name!r}: cannot calibrate on {calib_rec.path.name}: {e}") from e
 
@@ -117,11 +118,15 @@ def _evaluate_session(session: Session, breathing: bool) -> SessionResult:
     )
 
 
-def evaluate_sessions(folders: Sequence[Path | str], breathing: bool = False) -> EvaluationReport:
+def evaluate_sessions(folders: Sequence[Path | str], breathing: bool = False,
+                      margin: float = DEFAULT_MARGIN) -> EvaluationReport:
     """Evaluate each session folder. Raises EvaluationError listing every unusable session.
 
     ``breathing=False`` (default) scores motion-only; ``True`` also makes STILL_PRESENT predictions.
+    ``margin`` is the calibration margin for each session's threshold (threshold = margin x p99 of the
+    empty recording); a non-positive margin raises ValueError.
     """
+    margin = validate_margin(margin)
     problems: list[str] = []
     sessions: list[Session] = []
     for folder in map(Path, folders):
@@ -134,7 +139,7 @@ def evaluate_sessions(folders: Sequence[Path | str], breathing: bool = False) ->
         sessions.append(session)
     if problems:
         raise EvaluationError("\n".join(problems))
-    return EvaluationReport([_evaluate_session(s, breathing) for s in sessions], breathing)
+    return EvaluationReport([_evaluate_session(s, breathing, margin) for s in sessions], breathing)
 
 
 STILL_LABELS = tuple(label for label, state in LABEL_STATE.items() if state == STILL_PRESENT)
@@ -166,8 +171,8 @@ def format_report(report: EvaluationReport) -> str:
         out.append("")
     for s in report.sessions:
         c = s.calibration
-        out.append(f"session {s.name}: threshold {c.threshold:.3f} "
-                   f"(calibrated on {s.calibration_file}, {c.duration_s:.0f}s, loss {c.loss:.1%})")
+        out.append(f"session {s.name}: threshold {c.threshold:.3f} (margin {c.margin:.2f} x p99; "
+                   f"calibrated on {s.calibration_file}, {c.duration_s:.0f}s, loss {c.loss:.1%})")
         out.append(f"scored: {', '.join(s.scored_files) or 'nothing'}")
         out.append(_format_matrix(s.confusion, report.breathing))
         if report.breathing:
