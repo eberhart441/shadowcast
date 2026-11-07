@@ -480,6 +480,7 @@ class DashboardServer(FrameServer):
         self._last_host: Optional[float] = None
         self._last_mono: Optional[float] = None
         self._pump_thread: Optional[threading.Thread] = None
+        self._pipeline_errors: dict[str, str] = {}
 
     # ------------------------------------------------------------------ lifecycle
 
@@ -523,13 +524,44 @@ class DashboardServer(FrameServer):
                     break
             if not self._stop.is_set():
                 self._feed(reorder.pop_ready(self._connected_receivers(), flush=True))
-                with self._lock:
-                    if self._calib is not None and self._calib.active:
-                        self._calib.abort("the sources ended before the calibration recording finished")
-                    self._run_done = True
-                    self._emit(self._last_host or 0.0, final=True)
+                self._finish_run()
+        except _PipelineError as e:
+            self._fail_run(e.receiver, e.__cause__ or e)
+        except Exception as e:  # not from one packet: the pump itself failed
+            self._fail_run(None, e)
         finally:
             self._sources_done.set()
+
+    def _finish_run(self) -> None:
+        with self._lock:
+            if self._calib is not None and self._calib.active:
+                self._calib.abort("the sources ended before the calibration recording finished")
+            self._run_done = True
+            self._emit(self._last_host or 0.0, final=True)
+
+    def _fail_run(self, receiver: Optional[str], error: BaseException) -> None:
+        """The pipeline raised: name the receiver (or 'pipeline'), stop the readers, and end the run with a final frame.
+
+        Nothing drains the sources after this, so they are closed; a client sees the error and the end of the run
+        instead of a stale picture that looks live.
+        """
+        message = str(error) or type(error).__name__
+        if receiver is not None:
+            self._ms.mark_failed(receiver, message)
+        else:
+            self._pipeline_errors["pipeline"] = message
+        self._ms.close()
+        with self._lock:
+            if self._calib is not None and self._calib.active:
+                self._calib.abort(f"the pipeline failed: {message}")
+            self._run_done = True
+            try:
+                self._emit(self._last_host or 0.0, final=True)
+            except Exception:  # the state itself is broken: a minimal final frame still ends the run
+                fallback = {"links": [], "heatmap": {}, "status": {
+                    "time_s": self._last_host or 0.0, "finished": True, "errors": self._errors(),
+                    "messages": [f"run ended: the pipeline failed: {message}"]}}
+                self._frames.append(json.dumps(fallback), final=True)
 
     def _connected_receivers(self) -> set[str]:
         return {name for name, s in self._ms.status().items() if _receiver_state(s) == "connected"}
@@ -539,17 +571,27 @@ class DashboardServer(FrameServer):
             return
         with self._lock:
             for receiver, pkt in batch:
-                self._state.push(receiver, pkt)
-                if self._calib is not None and self._calib.active:
-                    self._calib.observe(receiver, pkt, time.monotonic())
-                if self._last_host is None or pkt.host_ts > self._last_host:
-                    self._last_host = pkt.host_ts
-                if self._next_frame_at is None:
-                    self._next_frame_at = pkt.host_ts + self._frame_s
-                elif pkt.host_ts >= self._next_frame_at:
-                    self._emit(pkt.host_ts)
-                    self._next_frame_at = pkt.host_ts + self._frame_s
+                try:
+                    self._push_packet(receiver, pkt)
+                except Exception as e:
+                    raise _PipelineError(receiver) from e
             self._last_mono = time.monotonic()
+
+    def _push_packet(self, receiver: str, pkt: CSIPacket) -> None:
+        """Caller holds the lock."""
+        self._state.push(receiver, pkt)
+        if self._calib is not None and self._calib.active:
+            self._calib.observe(receiver, pkt, time.monotonic())
+        if self._last_host is None or pkt.host_ts > self._last_host:
+            self._last_host = pkt.host_ts
+        if self._next_frame_at is None:
+            self._next_frame_at = pkt.host_ts + self._frame_s
+        elif pkt.host_ts >= self._next_frame_at:
+            self._emit(pkt.host_ts)
+            self._next_frame_at = pkt.host_ts + self._frame_s
+
+    def _errors(self) -> dict[str, str]:
+        return {**self._ms.errors(), **self._pipeline_errors}
 
     def _idle_frame(self) -> None:
         """With no packets arriving, keep frames coming on the clock so silent links turn NO_SIGNAL."""
@@ -590,14 +632,15 @@ class DashboardServer(FrameServer):
 
     def _status_extension(self, now: float) -> dict:
         receivers = {name: _receiver_state(s) for name, s in self._ms.status().items()}
-        errors = self._ms.errors()
+        errors = self._errors()
         calibrated = sorted(self._state.thresholds)
         uncalibrated = sorted(self._labels - set(calibrated))
         messages = list(self._notes)
         if uncalibrated:
             messages.append(f"{len(uncalibrated)} link(s) UNCALIBRATED ({', '.join(uncalibrated)}): no threshold. "
                             "Pass --thresholds links.json, or calibrate on an empty room first.")
-        messages.extend(f"receiver {name} failed: {msg}" for name, msg in sorted(errors.items()))
+        messages.extend(f"{'pipeline' if name == 'pipeline' else f'receiver {name}'} failed: {msg}"
+                        for name, msg in sorted(errors.items()))
         calibration = self._calib_status(now)
         if self._calib is not None:
             messages.extend(f"calibration warning: {w}" for w in self._calib.warnings_kept)
@@ -725,6 +768,14 @@ class DashboardServer(FrameServer):
         self._state.set_threshold(label, value)
         self._commands.append(f"threshold {label} = {value:.4g} (calibration)")
 
+
+
+class _PipelineError(Exception):
+    """A packet from ``receiver`` made the pipeline raise; the cause is chained."""
+
+    def __init__(self, receiver: str) -> None:
+        super().__init__(receiver)
+        self.receiver = receiver
 
 
 def _receiver_state(status: str) -> str:

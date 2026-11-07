@@ -125,6 +125,12 @@ class MultiSource:
         with self._lock:
             return dict(self._errors)
 
+    def mark_failed(self, name: str, message: str) -> None:
+        """Record a receiver as failed from outside its reader (its packets were rejected downstream)."""
+        with self._lock:
+            self._errors[name] = message
+            self._status[name] = f"error: {message}"
+
     def parser_stats(self, name: str) -> ParserStats:
         return self._parsers[name].stats
 
