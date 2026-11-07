@@ -16,13 +16,9 @@ Resets come from: any `esptool` command (including `chip-id`), flashing, replugg
 
 Use ESP32-C5 receivers. ESP32-S3 receivers were much noisier (35-65% false MOTION in a quiet room against 4-16% for a C5 receiver), and an S3 third receiver cut the other receivers' packet rate. The original ESP32 was noisy as receiver and as sender. ESP32-S3 and ESP32-C5 senders both work.
 
-## Flashing esp-csi
+## Firmware
 
-ESP-IDF 5.5.6 at `~/esp/esp-idf` (`. ~/esp/esp-idf/export.sh`), esp-csi at `~/esp/esp-csi/examples/get-started/`. Our edits to the stock examples live there, not in this repo: channel 6, `SENDER_ID` byte per sender (address `1a:00:00:00:00:<id>`), receiver filter on the 5-byte address prefix, `CONFIG_FORCE_GAIN` 1, send frequency 40 Hz.
-
-- Use one build directory per chip: `idf.py -B build_<name> set-target <chip>`, build, then `idf.py -B build_<name> -p <port> flash`. The example's `sdkconfig` is shared and carries the last target, so an image built in a directory configured for another chip refuses to flash or boot-loops.
-- Re-list ports after flashing; the board re-enumerates.
-- macOS: use `/dev/cu.*` ports. `timeout` is not installed.
+The firmware lives in `firmware/` (stock `esp-csi` examples plus our edits). Build and flash commands, the `SENDER_ID` build flag and the pre-flash cautions are in `firmware/README.md`; read it before touching a board. ESP-IDF 5.5.6 stays outside the repo, at `~/esp/esp-idf`.
 
 ## Thresholds in a noisy room
 
