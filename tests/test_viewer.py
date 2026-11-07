@@ -3,8 +3,9 @@ import re
 import numpy as np
 import pytest
 
+from csi.detect import SIM_THRESHOLD
 from csi.simulate import Segment, simulate_stream
-from csi.viewer import DEFAULT_THRESHOLD, LiveView
+from csi.viewer import LiveView
 
 N_KEPT = 52  # 64 subcarriers minus 12 nulls
 
@@ -56,8 +57,8 @@ def test_threshold_starts_at_the_value_given():
     assert LiveView(threshold=3.5).threshold == 3.5
 
 
-def test_default_threshold_used_when_none_given():
-    assert LiveView().threshold == DEFAULT_THRESHOLD
+def test_simulator_threshold_used_when_none_given():
+    assert LiveView().threshold == SIM_THRESHOLD
 
 
 def test_adjust_threshold_raises_and_lowers_and_is_reflected_in_title():

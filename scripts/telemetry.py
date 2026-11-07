@@ -1,8 +1,13 @@
 #!/usr/bin/env python
 """One-line live telemetry: link health, motion score vs threshold, state, breathing.
 
-    telemetry.py --port /dev/cu.usbmodem1101 --threshold-file data/hw3/calib.json
-    telemetry.py --simulate --threshold 2.0
+    telemetry.py --port /dev/cu.usbmodem1101 --threshold-file calibration.json
+    telemetry.py --port /dev/cu.usbmodem1101 --threshold 12
+    telemetry.py --simulate                           # simulator default threshold
+    telemetry.py --port ... --threshold-file calibration.json --breathing   # opt-in breathing
+
+A real port needs --threshold-file or --threshold (calibrate with detect_live.py --calibrate first).
+Motion-only by default; --breathing also shows bpm (experimental).
 
 Needs the serial port to itself: don't run it while record.py or another reader
 is using the same port. For recordings in progress, tail the recorder log instead.
@@ -17,8 +22,8 @@ from typing import Iterator
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from csi.common import add_source_args, open_source  # noqa: E402
-from csi.detect import detect_packets, load_threshold  # noqa: E402
+from csi.common import add_source_args, add_threshold_args, open_source, resolve_threshold  # noqa: E402
+from csi.detect import SIM_THRESHOLD, detect_packets  # noqa: E402
 from csi.health import LinkHealth  # noqa: E402
 from csi.parser import CSIPacket, CSIParser  # noqa: E402
 
@@ -47,22 +52,18 @@ def observed(packets: Iterator[CSIPacket], health: LinkHealth, last: dict) -> It
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     add_source_args(ap)
-    ap.add_argument("--threshold-file")
-    ap.add_argument("--threshold", type=float)
+    add_threshold_args(ap)
+    ap.add_argument("--breathing", action="store_true",
+                    help="opt in to breathing detection (STILL_PRESENT, bpm); off by default")
     ap.add_argument("--every", type=float, default=0.5, help="seconds between screen updates")
     args = ap.parse_args()
-    if args.threshold_file:
-        threshold = load_threshold(args.threshold_file)
-    elif args.threshold is not None:
-        threshold = args.threshold
-    else:
-        raise SystemExit("error: pass --threshold-file or --threshold")
+    threshold = resolve_threshold(args, SIM_THRESHOLD)
 
     parser, health, last = CSIParser(), LinkHealth(send_rate_hz=args.rate), {"rssi": 0}
     packets = observed(open_source(args, parser), health, last)
     next_print = 0.0
     try:
-        for r in detect_packets(packets, threshold):
+        for r in detect_packets(packets, threshold, breathing=args.breathing):
             if time.time() < next_print:
                 continue
             next_print = time.time() + args.every

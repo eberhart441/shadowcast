@@ -2,7 +2,7 @@
 """Live CSI viewer: amplitude heatmap, motion-variance trace and threshold line.
 
     live.py --simulate                                  # demo, no hardware
-    live.py --port /dev/ttyUSB0 --threshold 2.5
+    live.py --port /dev/ttyUSB0 --threshold-file calibration.json   # real port: threshold required
     live.py --simulate --save-frame frame.png --duration 6   # headless snapshot
 
 Keys: up / + raise the threshold, down / - lower it.
@@ -22,11 +22,11 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from csi.common import add_source_args  # noqa: E402
-from csi.detect import load_threshold  # noqa: E402
+from csi.common import add_source_args, add_threshold_args, resolve_threshold  # noqa: E402
+from csi.detect import SIM_THRESHOLD  # noqa: E402
 from csi.parser import Stream, serial_stream  # noqa: E402
 from csi.simulate import simulate_stream  # noqa: E402
-from csi.viewer import DEFAULT_THRESHOLD, HISTORY_S, LiveView  # noqa: E402
+from csi.viewer import HISTORY_S, LiveView  # noqa: E402
 
 REDRAW_MS = 100
 SAVE_DEFAULT_DURATION_S = 6.0
@@ -36,9 +36,7 @@ KEY_STEPS = {"up": 1, "+": 1, "=": 1, "down": -1, "-": -1, "_": -1}
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
     add_source_args(ap)
-    t = ap.add_argument_group("threshold")
-    t.add_argument("--threshold", type=float, help="initial motion threshold")
-    t.add_argument("--threshold-file", type=Path, help="calibration JSON from detect_live --calibrate")
+    add_threshold_args(ap)
     o = ap.add_argument_group("output")
     o.add_argument("--duration", type=float, help="stop after this many seconds")
     o.add_argument("--save-frame", type=Path, metavar="PNG",
@@ -52,14 +50,6 @@ def open_lines(args: argparse.Namespace) -> Stream:
     if args.port:
         return serial_stream(args.port, args.baud)
     raise SystemExit("error: pass --port <serial port> or --simulate")
-
-
-def resolve_threshold(args: argparse.Namespace) -> float:
-    if args.threshold is not None:
-        return args.threshold
-    if args.threshold_file:
-        return load_threshold(args.threshold_file)
-    return DEFAULT_THRESHOLD
 
 
 class StreamReader(threading.Thread):
@@ -141,7 +131,7 @@ def on_key(event: Any, view: LiveView, lock: threading.Lock) -> None:
             view.adjust_threshold(steps)
 
 
-def run(args: argparse.Namespace) -> int:
+def run(args: argparse.Namespace, threshold: float) -> int:
     import matplotlib
 
     if args.save_frame:
@@ -149,7 +139,6 @@ def run(args: argparse.Namespace) -> int:
     import matplotlib.pyplot as plt
     from matplotlib.animation import FuncAnimation
 
-    threshold = resolve_threshold(args)
     view = LiveView(threshold=threshold, send_rate_hz=args.rate)
     lock = threading.Lock()
     reader = StreamReader(open_lines(args), view, lock)
@@ -194,7 +183,8 @@ def main() -> int:
     args = build_parser().parse_args()
     if not (args.simulate or args.port):
         raise SystemExit("error: pass --port <serial port> or --simulate")
-    return run(args)
+    threshold = resolve_threshold(args, SIM_THRESHOLD)  # raises before any port is opened
+    return run(args, threshold)
 
 
 if __name__ == "__main__":

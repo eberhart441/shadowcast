@@ -20,7 +20,8 @@ Every script accepts `--simulate` to run with fake data and no hardware.
 ## Flashing the esp-csi examples (by hand)
 
 Prereq: [ESP-IDF](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/get-started/)
-installed and exported (`. $IDF_PATH/export.sh`).
+installed and exported (`. $IDF_PATH/export.sh`). The receiver was verified
+with **ESP-IDF v5.5.6** (ESP32-C5 needs v5.5 or newer).
 
 ```bash
 git clone https://github.com/espressif/esp-csi.git
@@ -31,32 +32,42 @@ Both nodes must use the **same WiFi channel**. Pick one (e.g. 6) and keep it
 fixed. Use the router channel only if you are connecting through a router;
 the simplest setup is ESP-NOW with no router.
 
-### Sender node (`csi_send`)
+**Channel is hard-coded in the examples.** The get-started examples fix the
+channel in `app_main.c` via `CONFIG_LESS_INTERFERENCE_CHANNEL`, so do not rely
+on the menuconfig channel alone. Set the same channel in `app_main.c` on both
+boards, then check that the `CSI_DATA` lines report that channel.
+
+### Sender node (`csi_send`, ESP32-S3)
 
 ```bash
 cd csi_send
-idf.py set-target esp32          # or esp32s3 / esp32c3 / esp32c6
-idf.py menuconfig                # Example Configuration -> set channel (e.g. 6)
+idf.py set-target esp32s3
+idf.py menuconfig                # Example Configuration -> channel, send frequency
 idf.py -p <PORT> flash
 ```
 
 The sender transmits at 100 Hz by default (`CONFIG_SEND_FREQUENCY`; confirm in
 menuconfig, and in `app_main.c` if your esp-csi version hardcodes it).
 
-### Receiver node (`csi_recv`)
+### Receiver node (`csi_recv`, ESP32-C5)
 
 ```bash
 cd ../csi_recv
-idf.py set-target esp32
-idf.py menuconfig                # same channel as the sender
+idf.py set-target esp32c5
+idf.py menuconfig                # same channel as the sender; CONFIG_FORCE_GAIN=1
 idf.py -p <PORT> flash
 idf.py -p <PORT> monitor         # confirm lines starting with CSI_DATA
 ```
+
+`CONFIG_FORCE_GAIN=1` is enabled in `csi_recv` to lock the gain.
 
 (Close the monitor before running the Python scripts; only one program can
 hold the port. Exit monitor with `Ctrl+]`.)
 
 Notes:
+- The CSI header columns differ per chip (ESP32-C5 vs ESP32-S3 vs ESP32). The
+  parser reads the header line and infers the column layout, so no per-chip
+  setting is needed. If a line fails to parse, check the header first.
 - Some `csi_recv` versions use ESP-NOW; the receiver then filters by the
   sender's MAC (see `app_main.c`). Check the MAC matches your sender.
 - The receiver's baud rate is usually 921600 (check `CONFIG_ESP_CONSOLE_UART_BAUDRATE`);
@@ -75,9 +86,75 @@ Notes:
 Or: `python -m serial.tools.list_ports`. Unplug/replug the receiver to see
 which entry appears. Use the receiver's port, not the sender's.
 
+## Calibrate, then run
+
+Detection is motion-only by default: the states are `EMPTY` and `MOTION`.
+Motion scores on real hardware are on a different scale from the simulator:
+an empty room scores about 3-9 and walking about 25-70. So a real port always
+needs an explicit threshold, either `--threshold-file` (from calibration) or
+`--threshold <score>`. Without one the scripts exit with an error instead of
+guessing.
+
+**Calibrate in one command** (empty room, keep people out for the duration):
+
+```bash
+scripts/detect_live.py --port <PORT> --calibrate 60 --out calibration.json
+```
+
+It writes `calibration.json` with the threshold (a high percentile of the
+empty-room motion score, plus a margin), and rejects recordings that are too
+short or lossy.
+
+**Reset the receiver in place after placing the boards, before calibrating.**
+The firmware computes a gain baseline from the first 100 packets after boot, so
+a receiver that booted before the boards were placed keeps a baseline from the
+old set-up. Place both boards, reset the receiver (its reset button, or unplug
+and replug it) without moving anything, then calibrate with the room empty.
+
+**Live state, one line per change:**
+
+```bash
+scripts/detect_live.py --port <PORT> --threshold-file calibration.json
+```
+
+**One-line live telemetry** (link health, motion score against the threshold,
+state, rssi). Use it when you want a compact view of the same stream:
+
+```bash
+scripts/telemetry.py --port <PORT> --threshold-file calibration.json
+```
+
+Close `detect_live.py`, `telemetry.py` and the recorder before running another,
+since only one reader can hold the port.
+
+### Breathing (experimental, opt-in)
+
+The breathing detector is off by default. On real hardware it false-fired on
+empty rooms (about 44% of empty windows read `STILL_PRESENT`), so it is not
+trusted yet. To turn it on explicitly:
+
+```bash
+scripts/detect_live.py --port <PORT> --threshold-file calibration.json --breathing
+scripts/evaluate.py --breathing data/<session>      # score the still_* labels too
+```
+
+Without `--breathing` the still labels are not scored, and the evaluator
+marks them "breathing disabled" instead of reporting a misleading 0%.
+
+## Simulator
+
+`--simulate` needs no threshold. It uses a simulator default (1.0) that sits
+between simulated empty (about 0.2) and simulated motion (typically 2 or more):
+
+```bash
+scripts/detect_live.py --simulate --duration 65
+scripts/telemetry.py --simulate
+scripts/live.py --simulate
+```
+
 ## Layout
 
 - `csi/` library: parser, simulator, detectors
-- `scripts/` CLIs: live viewer, recorder, live detection, offline eval
+- `scripts/` CLIs: live viewer, recorder, live detection, telemetry, offline eval
 - `data/` recordings (gitignored)
 - `tests/` pytest suite
