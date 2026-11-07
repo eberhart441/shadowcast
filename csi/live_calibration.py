@@ -51,6 +51,8 @@ def parse_request(body: Mapping) -> dict:
     clips = _number(body, "clips", 3, 1, MAX_CLIPS)
     if clips != int(clips):
         raise RequestError(f"clips must be a whole number, got {clips:g}")
+    if isinstance(body.get("margin"), bool):
+        raise RequestError("margin must be a positive number, got True")
     try:
         margin = validate_margin(body.get("margin", DEFAULT_MARGIN))
     except (TypeError, ValueError) as e:

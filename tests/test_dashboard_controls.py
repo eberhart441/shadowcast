@@ -275,6 +275,21 @@ def test_threshold_command_rejects_bad_input_with_400(serve):
     assert get_json(server)["status"]["calibrated_links"] == []
 
 
+def test_commands_reject_non_string_and_non_number_json_values_with_400_not_a_crash(serve):
+    server = serve(empty_room(duration_s=5), thresholds=None)
+    odd = [None, True, 1.5, [1], {"a": 1}, ["rx2<-00"]]
+    for value in odd:
+        assert post(server.url, "/api/threshold", {"link": value, "value": 1.0})[0] == 400, value
+    for value in [None, [0.5], {"v": 1}, "1", True]:
+        assert post(server.url, "/api/threshold", {"link": "rx2<-00", "value": value})[0] == 400, value
+    for body in [{"seconds": [1]}, {"clips": {"n": 1}}, {"margin": [1.0]}, {"margin": True},
+                 {"lead_s": None}, {"seconds": "10"}]:
+        assert post(server.url, "/api/calibrate", body)[0] == 400, body
+    for body in [{"sensitivity": [1]}, {"decay": {"x": 1}}, {"rise": None}, {"falloff": True}]:
+        assert post(server.url, "/api/params", body)[0] == 400, body
+    assert get_json(server)["status"]["calibrated_links"] == []
+
+
 def test_commands_need_a_json_body_and_a_json_object(serve):
     server = serve(empty_room(duration_s=5), thresholds=None)
     assert post(server.url, "/api/threshold", content_type="text/plain",

@@ -82,6 +82,9 @@ PARAM_RANGES = {
     "falloff": ("falloff_m", (0.05, 2.0)),
 }
 LOOPBACK_NAMES = frozenset({"localhost", "ip6-localhost"})
+LOOPBACK_HOST_NAMES = frozenset({"localhost", "127.0.0.1", "::1"})  # Host/Origin names always trusted
+WILDCARD_HOSTS = frozenset({"", "0.0.0.0", "::"})
+JSON_MEDIA_TYPE = "application/json"
 CONTROL_OFF = ("control is disabled: the server is not bound to localhost; restart with --allow-control "
                "to enable calibration and tuning commands (no authentication)")
 REPLAY_OFF = "not available in replay: this run replays a recording"
@@ -102,6 +105,33 @@ def is_loopback(host: str) -> bool:
 def controls_allowed(host: str, allow_control: bool = False) -> bool:
     """Commands (calibrate, thresholds, parameters) run only on a loopback bind, unless explicitly allowed."""
     return allow_control or is_loopback(host)
+
+
+def _split_host_port(value: str) -> tuple[str, Optional[int]]:
+    """``host:port``, ``[v6]:port`` or a bare host, as a Host or Origin authority; port None when absent."""
+    value = value.strip()
+    if value.startswith("["):
+        end = value.find("]")
+        if end < 0:
+            return value, None
+        host, rest = value[1:end], value[end + 1:]
+        port_text = rest[1:] if rest.startswith(":") else ""
+    elif value.count(":") == 1:
+        host, port_text = value.split(":")
+    else:
+        return value, None  # no port, or an unbracketed IPv6 literal
+    try:
+        return host, int(port_text)
+    except ValueError:
+        return host, None
+
+
+def _is_ip_literal(name: str) -> bool:
+    try:
+        ipaddress.ip_address(name)
+    except ValueError:
+        return False
+    return True
 
 
 def _finite_positive(value) -> bool:
@@ -218,9 +248,9 @@ class _Handler(BaseHTTPRequestHandler):
         if path not in COMMAND_PATHS:
             self._send(404, "text/plain; charset=utf-8", b"not found\n")
             return
-        if "application/json" not in (self.headers.get("Content-Type") or ""):
-            # a cross-site page cannot send this without a CORS preflight, which this server never grants
-            self._json(415, {"error": "commands take a JSON body: send Content-Type: application/json"})
+        refusal = dash.refusal(self.headers)
+        if refusal is not None:
+            self._json(*refusal)
             return
         try:
             length = int(self.headers.get("Content-Length") or 0)
@@ -267,8 +297,11 @@ class FrameServer:
     """The HTTP side shared by the live server and replay: rendered JSON payloads in a FrameLog, served
     over /api/state (``state_json``), /api/events (``stream_events``) and /. Subclasses produce the frames."""
 
-    def __init__(self, host: str, port: int, web_index: Optional[Path] = None) -> None:
+    def __init__(self, host: str, port: int, web_index: Optional[Path] = None,
+                 trusted_host: Optional[str] = None) -> None:
+        """``trusted_host``: the --host value when network control was allowed; its name is accepted in Host."""
         self._lock = threading.Lock()
+        self._trusted_host = trusted_host
         self._frames = FrameLog()
         self._run_done = False       # set under the lock, just before the final frame
         self._sources_done = threading.Event()
@@ -291,6 +324,42 @@ class FrameServer:
     def url(self) -> str:
         host, port = self.address
         return f"http://{'127.0.0.1' if host in ('', '0.0.0.0') else host}:{port}"
+
+    def refusal(self, headers) -> Optional[tuple[int, dict]]:
+        """Why a POST command must not run, as (HTTP status, body), or None when it may.
+
+        A cross-site page can only send a simple request (no preflight, which this server never grants), so the
+        media type must equal application/json (parameters after ';' ignored). The Host must name this server
+        (loopback names, or the --host value with network control), so DNS rebinding is refused; an Origin, when
+        sent, must be an http origin of this server.
+        """
+        ctype = (headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+        if ctype != JSON_MEDIA_TYPE:
+            return 415, {"error": "commands take a JSON body: send Content-Type: application/json"}
+        host = headers.get("Host") or ""
+        if not self._authority_allowed(host):
+            return 403, {"error": f"command refused: Host {host!r} is not this dashboard; use localhost, "
+                                  f"127.0.0.1 or [::1] with port {self.address[1]}"}
+        origin = headers.get("Origin")
+        if origin is not None:
+            parts = urlsplit(origin)
+            if parts.scheme != "http" or not self._authority_allowed(parts.netloc):
+                return 403, {"error": f"command refused: Origin {origin!r} is not allowed for this dashboard"}
+        return None
+
+    def _authority_allowed(self, authority: str) -> bool:
+        """True for ``host:port`` naming this server's bound port on a trusted host name."""
+        host, port = _split_host_port(authority)
+        if port is None or port != self._httpd.server_address[1]:
+            return False
+        name = host.lower()
+        if name in LOOPBACK_HOST_NAMES:
+            return True
+        if self._trusted_host is None:
+            return False
+        if self._trusted_host in WILDCARD_HOSTS:
+            return _is_ip_literal(name)  # a DNS name cannot be rebound onto an address, so IP literals are the trusted network form
+        return name == self._trusted_host.lower()
 
     def _start_http(self) -> None:
         thread = threading.Thread(target=self._httpd.serve_forever, kwargs={"poll_interval": 0.1},
@@ -388,7 +457,8 @@ class DashboardServer(FrameServer):
                  notes: Sequence[str] = (), allow_control: bool = False,
                  thresholds_path: Optional[Union[str, Path]] = None, replay: bool = False,
                  **heatmap_params) -> None:
-        super().__init__(host, port, web_index)
+        network_control = allow_control and not is_loopback(host)
+        super().__init__(host, port, web_index, trusted_host=host if network_control else None)
         self._room = room
         self._state = DashboardState(room, dict(thresholds or {}), **heatmap_params)
         self._expected = [LinkId(rx.name, tx.mac) for rx, tx in room.links()]
@@ -587,6 +657,8 @@ class DashboardServer(FrameServer):
                 return handlers[path](body)
             except RequestError as e:
                 return 400, {"error": str(e)}
+            except Exception as e:  # a bad request must never kill the handler thread
+                return 500, {"error": f"internal error: {type(e).__name__}: {e}"}
 
     def _cmd_calibrate(self, body: Mapping) -> tuple[int, dict]:
         if self._calib is not None and self._calib.active:
@@ -609,7 +681,7 @@ class DashboardServer(FrameServer):
         if unknown:
             raise RequestError(f"unknown field(s): {', '.join(unknown)}; expected link and value")
         link = body.get("link")
-        if link not in self._labels:
+        if not isinstance(link, str) or link not in self._labels:
             raise RequestError(f"unknown link {link!r}; links are {', '.join(sorted(self._labels))}")
         value = body.get("value")
         if not _finite_positive(value):
