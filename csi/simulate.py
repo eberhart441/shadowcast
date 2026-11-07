@@ -11,11 +11,13 @@ import heapq
 import time
 from dataclasses import dataclass
 from operator import itemgetter
-from typing import Callable, Iterator, Optional, Sequence
+from typing import Callable, Iterator, Mapping, Optional, Sequence
 
 import numpy as np
 
+from .links import LinkId
 from .parser import DEFAULT_HEADER, CSIPacket, CSIParser, parse_stream
+from .room import Person, Room, link_responses, load_room
 
 N_SUBCARRIERS = 64
 NULL_SUBCARRIERS = tuple(range(0, 6)) + (32,) + tuple(range(59, 64))  # 12 nulls (LLTF-like)
@@ -42,10 +44,15 @@ def _amplitudes(t: np.ndarray, state: str, base: np.ndarray, gain: np.ndarray,
     if state == "still":
         amp += 1.5 * gain * np.sin(2 * np.pi * BREATH_HZ * t[:, None] + phase)
     elif state == "motion":
-        amp += rng.normal(0, 3.0, (n, k)) + 4.0 * np.cumsum(rng.normal(0, 0.15, (n, 1)), axis=0)
+        amp += _motion_term(n, k, rng)
     elif state != "empty":
         raise ValueError(f"unknown state {state!r}")
     return np.clip(amp, 0.0, None)
+
+
+def _motion_term(n: int, k: int, rng: np.random.Generator) -> np.ndarray:
+    """Gross-movement variation (n, k): high-variance noise plus slow drift. Scaled per link by a person."""
+    return rng.normal(0, 3.0, (n, k)) + 4.0 * np.cumsum(rng.normal(0, 0.15, (n, 1)), axis=0)
 
 
 def simulate_packets(
@@ -167,27 +174,102 @@ def simulate_link_streams(
     The scenario applies to all links at once. ``realtime`` paces each stream to the wall clock
     and stamps lines with ``time.time()``; otherwise host_ts is synthetic (t0 + index / rate).
     """
-    start = time.time()
-
-    def paced(lines: Iterator[tuple[float, str]]) -> Iterator[tuple[float, str]]:
-        for host_ts, line in lines:
-            if realtime:
-                time.sleep(max(0.0, start + (host_ts - t0) - time.time()))
-                host_ts = time.time()
-            yield host_ts, line
-
     streams: dict[str, Iterator[tuple[float, str]]] = {}
     for r_idx, name in enumerate(receivers):
         gens = [_sender_lines(mac, int(np.random.SeedSequence([seed, r_idx, s_idx]).generate_state(1)[0]),
                               scenario, rate_hz, loop, t0)
                 for s_idx, mac in enumerate(senders)]
-
-        def receiver_stream(gens=gens) -> Iterator[tuple[float, str]]:
-            yield (time.time() if realtime else t0), DEFAULT_HEADER
-            yield from paced(heapq.merge(*gens, key=itemgetter(0)))
-
-        streams[name] = receiver_stream()
+        streams[name] = _receiver_stream(gens, t0, realtime)
     return streams
+
+
+def _receiver_stream(gens: Sequence[Iterator[tuple[float, str]]], t0: float,
+                     realtime: bool) -> Iterator[tuple[float, str]]:
+    """Header, then the senders' lines merged in host order, paced to the wall clock if ``realtime``."""
+    yield (time.time() if realtime else t0), DEFAULT_HEADER
+    yield from _paced(heapq.merge(*gens, key=itemgetter(0)), t0, realtime)
+
+
+def _paced(lines: Iterator[tuple[float, str]], t0: float, realtime: bool) -> Iterator[tuple[float, str]]:
+    start = time.time()
+    for host_ts, line in lines:
+        if realtime:
+            time.sleep(max(0.0, start + (host_ts - t0) - time.time()))
+            host_ts = time.time()
+        yield host_ts, line
+
+
+def _room_link_lines(receiver: str, mac: str, seed: int, response: np.ndarray, rate_hz: float,
+                     t0: float, stop_idx: Optional[int]) -> Iterator[tuple[float, str]]:
+    """(host_ts, line) for one link. Its motion term is scaled by the person's response at each sample.
+
+    The per-link baseline and noise come from ``seed``, so links are independent. ``stop_idx`` ends the
+    link's transmissions (a dropped link stops sending from that sample on).
+    """
+    rng = np.random.default_rng(seed)
+    base = rng.uniform(15, 40, N_SUBCARRIERS)
+    n = len(response)
+    amp = base + rng.normal(0, 0.4, (n, N_SUBCARRIERS)) + response[:, None] * _motion_term(n, N_SUBCARRIERS, rng)
+    amp = np.clip(amp, 0.0, None)[:, _keep_mask()].astype(np.float32)
+    dt = 1.0 / rate_hz
+    last = n if stop_idx is None else min(n, stop_idx)
+    for idx in range(last):
+        pkt = CSIPacket(
+            host_ts=t0 + idx * dt,
+            device_ts=int(idx * dt * 1e6 + rng.integers(0, 500)),
+            rssi=int(-45 - 3 * response[idx] + rng.integers(-1, 2)),
+            channel=6,
+            amplitude=amp[idx],
+            mac=mac,
+        )
+        yield pkt.host_ts, packet_to_line(pkt, idx=idx, mac=mac)
+
+
+def simulate_room(
+    person: Optional[Person] = None,
+    *,
+    duration_s: float = 20.0,
+    drop_after: Optional[Mapping[str, float]] = None,
+    room: Optional[Room] = None,
+    gain: float = 1.0,
+    rate_hz: float = 100.0,
+    seed: int = 0,
+    realtime: bool = False,
+    t0: float = 1_700_000_000.0,
+) -> dict[str, Iterator[tuple[float, str]]]:
+    """One (host_ts, line) stream per receiver, like ``simulate_link_streams``, with a person in the room.
+
+    Positions and nodes come from ``room`` (default: config/room.json). ``person=None`` is an empty room.
+    ``drop_after`` maps a link label such as ``"rx1<-01"`` to the seconds after t0 when that link stops
+    transmitting. ``realtime`` paces lines to the wall clock as in ``simulate_link_streams``.
+    """
+    room = load_room() if room is None else room
+    drop_after = drop_after or {}
+    n = int(round(duration_s * rate_hz))
+    t = np.arange(n) / rate_hz
+    responses = link_responses(room, person, t, gain)
+    streams: dict[str, Iterator[tuple[float, str]]] = {}
+    for r_idx, rx in enumerate(room.receivers):
+        gens = []
+        for s_idx, tx in enumerate(room.senders):
+            link_seed = int(np.random.SeedSequence([seed, r_idx, s_idx]).generate_state(1)[0])
+            stop = drop_after.get(LinkId(rx.name, tx.mac).label)
+            stop_idx = None if stop is None else int(round(stop * rate_hz))
+            gens.append(_room_link_lines(rx.name, tx.mac, link_seed, responses[(rx.name, tx.mac)],
+                                         rate_hz, t0, stop_idx))
+        streams[rx.name] = _receiver_stream(gens, t0, realtime)
+    return streams
+
+
+def simulate_room_links(**kwargs) -> Iterator[tuple[str, CSIPacket]]:
+    """(receiver, packet) for every link with a person in the room, merged in host-time order.
+
+    Goes through the same text seam as ``simulate_links``: each receiver's lines are parsed by its own
+    CSIParser.
+    """
+    streams = simulate_room(**kwargs)
+    per_receiver = [_tagged(name, lines) for name, lines in streams.items()]
+    yield from heapq.merge(*per_receiver, key=lambda item: item[1].host_ts)
 
 
 def simulate_links(
