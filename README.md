@@ -8,7 +8,7 @@ EMPTY / MOTION state per link and a rough room heatmap on a live web dashboard.
 It also runs with no hardware, on a built-in simulator.
 
 Contents: [What this is](#what-this-is) · [Quick start without hardware](#quick-start-without-hardware) ·
-[The hardware rig](#the-hardware-rig) · [Flashing the firmware](#flashing-the-firmware) ·
+[The hardware rig](#the-hardware-rig) · [Scaling up](#scaling-up) · [Flashing the firmware](#flashing-the-firmware) ·
 [Calibrating](#calibrating) · [Running live](#running-live) ·
 [Recording and evaluating](#recording-and-evaluating) · [How it works](#how-it-works) ·
 [Results and known limits](#results-and-known-limits) · [Troubleshooting](#troubleshooting) ·
@@ -25,10 +25,17 @@ motion, and the dashboard draws a rough map of where the change is.
 |---|---|
 | Motion detection (EMPTY / MOTION) per link | **Works on real hardware.** Single-link recording hw5: walking 100% MOTION, empty room 94% EMPTY. |
 | Calibration from an empty room | **Works**, from the terminal or the dashboard. |
-| Live dashboard (room map, link cards, heatmap) | **Works** on the four-node rig and on the simulator. |
+| Live dashboard (room map, link cards, heatmap) | **Works** on the current four-link rig (two receivers, two senders) and on the simulator. |
 | Recording and offline evaluation | **Works.** |
 | Breathing (STILL_PRESENT) | **Experimental, opt-in.** It false-fires on empty rooms (43% of empty windows on hw5), so it is off by default. |
-| Heatmap | **Rough.** A motion-likelihood estimate from four links. It shows where change is, not where a person is, and cannot count or separate people. It is only meaningful for one moving person, at zone-level accuracy. A person who stands still for about 30 s fades into the baseline. |
+| Heatmap | **Rough.** A motion-likelihood estimate from the links. It shows where change is, not where a person is, and cannot count or separate people. It is only meaningful for one moving person, at zone-level accuracy. A person who stands still for about 30 s fades into the baseline. |
+
+### Intended use and limits
+
+This senses movement in a room, and from that it can suggest that someone is likely present. It is not a
+life-detection device. It does not reliably detect people who are completely still. A missed detection is the
+costly failure in search-and-rescue style use, so treat its output as decision support, never as the only
+check that a room is empty.
 
 ## Quick start without hardware
 
@@ -39,7 +46,7 @@ python3 -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 pip install -e .                   # so `import csi` works from scripts/ and tests/
-python -m pytest                   # 282 tests, a few minutes, no hardware needed
+python -m pytest                   # 374 tests, about 4 minutes, no hardware needed
 ```
 
 Start the dashboard with a simulated person walking a loop through the room:
@@ -50,6 +57,12 @@ python scripts/dashboard.py --simulate-room
 
 Open <http://127.0.0.1:8000/>. If port 8000 is taken, add `--http-port 8001` and
 open that port. Ctrl+C stops the server.
+
+To try the Calibrate button on the simulator, keep the simulated room empty for the first 60 s:
+
+```bash
+python scripts/dashboard.py --simulate-room --sim-quiet-first 60
+```
 
 The same simulated room as a terminal table, one row per link:
 
@@ -69,15 +82,15 @@ python scripts/live.py --simulate --save-frame frame.png --duration 6   # one fr
 
 ## The hardware rig
 
-Four boards at the corners of a 2.77 m x 1.84 m room, positions from
-[`config/room.json`](config/room.json). The receivers are on USB to the laptop;
-the senders run from battery or USB.
+Two receivers and two senders at the corners of a 2.77 m x 1.84 m room, positions from
+[`config/room.json`](config/room.json). Both receivers are ESP32-C5 boards on USB to the laptop;
+the senders run from battery or USB. The rig runs on channel 6 and each sender transmits at 40 Hz.
 
 ```
    x = 0 m                                         x = 2.77 m
   +--------------------------------------------------------+  y = 0
   |                                                        |
-  | rx2  ESP32-C5 receiver          rx1  ESP32-S3 receiver |
+  | rx2  ESP32-C5 receiver          rx1  ESP32-C5 receiver |
   |                                                        |
   |                                                        |
   |            2.77 m x 1.84 m room                        |
@@ -90,25 +103,106 @@ the senders run from battery or USB.
 | Node | Role | Chip | Position (x, y), m | Notes |
 |---|---|---|---|---|
 | `rx2` | receiver | ESP32-C5 | (0, 0), top-left | USB to laptop |
-| `rx1` | receiver | ESP32-S3 | (2.77, 0), top-right | USB to laptop |
+| `rx1` | receiver | ESP32-C5 | (2.77, 0), top-right | USB to laptop |
 | `tx0` | sender | ESP32-S3 | (2.77, 1.84), bottom-right | MAC `1a:00:00:00:00:00`, battery or USB |
 | `tx1` | sender | ESP32-C5 | (0, 1.84), bottom-left | MAC `1a:00:00:00:00:01`, battery or USB |
 
+A third receiver, `rx3` (ESP32-C5, top-middle at (1.385, 0)), is defined in `config/room.json`
+with `"enabled": false`. It is not part of the rig: it is ignored everywhere until you set it
+to `true` (see [Scaling up](#scaling-up)). `config/room_c5_only.json` is an earlier variant
+(`rx1` disabled, `rx3` 1.5 m beyond the top wall) and does not describe the current rig.
+
 Every receiver hears every sender, so there are four links, named
-`receiver<-last octet of sender MAC`: `rx1<-00` (right wall), `rx2<-01` (left wall),
-and the diagonals `rx2<-00` and `rx1<-01`. The diagonal `rx1<-01` has weight 0.3 in
-`link_weights` because it false-alarms on this rig.
+`receiver<-last octet of sender MAC`: `rx1<-00` (right wall), `rx1<-01` (long diagonal),
+`rx2<-00` (C5 diagonal) and `rx2<-01` (left wall). Each runs at 36 to 38 packets/s with about 5% loss.
+
+`link_weights` in `config/room.json` currently holds one entry, `"rx1<-01": 0.3`, which
+multiplies that link's heatmap evidence by 0.3. It was set when `rx1` was an ESP32-S3
+receiver and its long-diagonal link false-alarmed. It has not been re-measured with `rx1`
+as a C5, so it may now be stronger than it needs to be.
 
 Placement tips:
 
 - Mount each board fixed, at roughly chest height, with its antenna facing into the room.
 - Keep metal out of the line between boards.
-- The original ESP32 board was noisy and is retired. The S3 receiver is noisier than
-  the C5, so prefer the C5 as a receiver where you have a choice.
+- Use ESP32-C5 receivers. In quiet-room captures, links on an S3 receiver read MOTION 35 to 65% of the
+  time, against 4 to 16% for the C5 receiver. The original ESP32 was noisy both as receiver and as
+  sender, and is retired.
 - Reset the receivers after placing the boards, before calibrating (see [Calibrating](#calibrating)).
 
 The first single-link recordings used one C5 receiver and one S3 sender about 2 m
 apart. That setup is retired; the layout above is the current rig.
+
+## Scaling up
+
+The rig is defined in data. Nodes live in `config/room.json` under `"nodes"`, and the links are
+every enabled receiver paired with every enabled sender. Adding a board means a config entry, a
+flash and a recalibration; no code changes.
+
+How the code treats the layout:
+
+- **Links.** One per (receiver, sender) pair: 3 receivers and 2 senders give 6 links, and 3 and 3
+  give 9. Check the list before any hardware is plugged in:
+
+  ```bash
+  python scripts/links_live.py --simulate-links --room tests/fixtures/room_5node.json --duration 2
+  ```
+
+- **Disabled nodes.** `"enabled": false` removes a node completely: no links, nothing in the
+  dashboard payload, and its serial port is never opened. Its port can even be missing, so a node
+  can be defined before its board is plugged in.
+- **Positions.** A node may sit outside the room rectangle. The map frames the room and every node,
+  and a node outside the room gets a dashed leader and an "outside room" label. The heatmap covers
+  the room only.
+- **Link weights** are keyed by link label, for example `"rx1<-01": 0.3`.
+
+### Adding a sender
+
+1. In `csi_send`, set SENDER_ID to the next unused value (`02` for a third sender) and flash the
+   board with the same channel and send rate. Its MAC becomes `1a:00:00:00:00:02`, which the
+   receivers' filter already accepts.
+2. Power it from battery or USB.
+3. Add a sender node to `config/room.json` with its `mac`, `chip`, `x` and `y`.
+4. Calibrate again (see [Calibrating](#calibrating)).
+
+### Adding a receiver
+
+1. Flash `csi_recv` for an ESP32-C5 (see [Flashing the firmware](#flashing-the-firmware)).
+2. Add a receiver node to `config/room.json`, or set `"enabled": true` on one that is already there
+   (as with `rx3`).
+3. Plug it into its own USB port, which is required for each receiver.
+4. Name its port on every command with `--port rxN=<PORT>`, for example:
+
+   ```bash
+   python scripts/dashboard.py --port rx1=<PORT_RX1> --port rx2=<PORT_RX2> --port rx3=<PORT_RX3> --thresholds links.json
+   python scripts/links_live.py --port rx1=<PORT_RX1> --port rx2=<PORT_RX2> --port rx3=<PORT_RX3> --calibrate 10 --clips 3 --out links.json
+   ```
+
+5. Reset the receivers in place and calibrate with the room empty. Only then are thresholds for the
+   new links meaningful.
+
+### Limits
+
+- **One channel, shared by all senders.** Collisions grow with the number of senders. Two senders at
+  100 Hz lost about 65% of packets; two at 40 Hz lose about 5 to 10%. With three senders, use about
+  30 Hz or lower: change `CONFIG_SEND_FREQUENCY` in `csi_send` and reflash the senders.
+- **One USB port per receiver.** Each receiver needs its own serial port.
+- **Receivers must be ESP32-C5.** On this rig, a third S3 receiver cut the other receiver's packet
+  rate from about 35 to 22 to 26 packets/s. A third C5 receiver did not: all links stayed at 34 to 38
+  packets/s.
+- **Wireless receivers are not built.** See the [Roadmap](#roadmap).
+
+### Placement hints
+
+From one walk test on this rig: a C5 receiver on the top wall between the two top corners was the
+strongest sensor, with walking scoring 25 to 31 against a quiet maximum of about 11. The right-side
+links from a corner receiver can respond weakly, so check each link's score during a walk before
+trusting its threshold.
+
+Two layout examples for tests and the simulator live in `tests/fixtures/`: `room_5node.json` (three
+receivers, two senders, `rx3` on the top wall at (1.385, 0)) and `room_star.json` (`rx3` 1.5 m beyond
+the top wall). Both still list `rx3` as an ESP32-S3, which predates the receiver-chip finding above,
+so treat them as layouts, not as a parts list.
 
 ## Flashing the firmware
 
@@ -148,16 +242,16 @@ idf.py -B build-c5 set-target esp32c5
 idf.py -B build-c5 -p <PORT> flash          # tx1
 ```
 
-Receivers (`rx1` is an ESP32-S3, `rx2` an ESP32-C5):
+Receivers (`rx1` and `rx2` are both ESP32-C5; use the C5 build for any new receiver):
 
 ```bash
 cd ../csi_recv
-idf.py -B build-s3 set-target esp32s3
-idf.py -B build-s3 -p <PORT> flash          # rx1
 idf.py -B build-c5 set-target esp32c5
-idf.py -B build-c5 -p <PORT> flash          # rx2
+idf.py -B build-c5 -p <PORT> flash          # rx1 or rx2
 idf.py -B build-c5 -p <PORT> monitor        # confirm CSI_DATA lines; exit with Ctrl+]
 ```
+
+No S3 receiver is in use, so the `build-s3` receiver build is only needed if you bring one back, which is not recommended.
 
 Notes:
 
@@ -217,21 +311,36 @@ The defaults are 3 clips of 10 s, margin 1.25, a 5 s "Clear the room" countdown,
 all windows, and the result carries a warning with how much looked like movement. Untick it for the
 quiet-room rules (a busy clip is refused). The result becomes fixed thresholds for those links.
 
-What calibration does:
+Both modes below apply to every link. The terminal tools always use the quiet-room rules;
+the dashboard uses the noisy-room rules when **noisy room** is ticked (the default).
+
+Quiet-room rules (the terminal tools, or the dashboard with **noisy room** unticked):
 
 - Splits each clip into 1 s chunks and drops chunks with movement in them (a median
   well above the quiet baseline, or bursty scores), so a passer-by does not raise the threshold.
-- Needs at least 8 s of clean data per link. Otherwise that link gets no threshold, and the reason is printed.
+- Needs at least 8 s of clean data per link, and at least half of the clip time must be clean.
+  Otherwise that link gets no threshold, and the reason is printed.
 - Sets the threshold to `margin x p99`, the 99th percentile of the kept empty-room
   motion scores times the margin (default 1.25).
-- Refuses a link that delivers under 15 packets/s or loses more than 60% of its
-  packets. `links_live.py` measures loss against the rig's 40 Hz rate unless `--rate` says otherwise.
 - In the dashboard, if more than half of a link's clip was rejected, the link keeps
   its previous threshold and shows a warning.
 
+Noisy-room rules (dashboard default):
+
+- Movement is never a refusal. Every window counts, and the threshold is `margin x p97`
+  over all windows (default margin 1.25).
+- The result carries a warning with how many seconds looked like movement.
+
+Both modes:
+
+- Refuse a link that delivers under 15 packets/s or loses more than 60% of its packets.
+  Loss is measured against the sender's rate: `links_live.py --rate` sets it. Left out,
+  the rate is estimated from device timestamps, as the dashboard does.
+
 ### Calibration margin
 
-The margin sets the factor in `threshold = margin x p99` (`--margin` on
+The margin sets the factor in `threshold = margin x p99` under the quiet-room rules, or `margin x p97`
+in noisy-room mode (`--margin` on
 `links_live.py`, `detect_live.py` and `evaluate.py`, and the Margin field in the
 dashboard). Lower margins catch brief or weak motion but raise false alarms; higher
 margins are quieter but may miss weak motion. Measured on the single-link hw5 session:
@@ -259,6 +368,44 @@ python scripts/evaluate.py --margin 1.5 data/hw5
 - After calibrating, compare each threshold with that link's EMPTY score. A threshold
   far above the empty score will miss motion; one far below it will false-alarm.
 
+### Setting thresholds from live data
+
+When a calibration refuses a link, or a clip looks wrong, you can set a threshold from live scores
+instead. This is the method that worked on this rig; the code does not do it for you.
+
+1. With the room empty, sample about 40 s of each link's score. The `links` array of `/api/state` (or
+   one `/api/events` event) carries each link's `id` and `score`.
+2. For each link, let `m` be the median of its samples. Let `s` be the median of `(m - x)` over the
+   samples `x` at or below `m`. Then:
+
+   ```
+   threshold = max(m + 6 x 1.4826 x s, 3 x m)
+   ```
+
+   The lower half of the scores gives the noise spread, and it ignores movement because movement
+   only adds to the upper tail.
+3. Apply each value with the dashboard's **Set** control on that link, or by POST:
+
+   ```bash
+   curl -X POST http://127.0.0.1:8000/api/threshold -H "Content-Type: application/json" \
+     -d '{"link": "rx1<-00", "value": 12.3}'
+   ```
+
+4. Click **Save thresholds**, or POST `/api/thresholds/save`. The file is written to the
+   `--save-thresholds` path: by default the `--thresholds` file, else `links_thresholds.json` in the
+   working directory.
+
+A Set makes that link's threshold fixed. Saving writes every current threshold to one file, which
+`--thresholds` reloads on the next start.
+
+Thresholds do not survive restarts of the receivers. A receiver re-records its gain baseline whenever it
+resets, and that shifts its scores, so a threshold tuned before a reset is stale. Opening a port when the
+dashboard restarts appears to reset the receiver as well, so:
+
+- Set thresholds **after** the last restart of the dashboard and of every receiver, and do not restart
+  the dashboard once you have tuned it.
+- Never run `esptool` against a port that a dashboard is using.
+
 ## Running live
 
 ### Dashboard on hardware
@@ -273,16 +420,17 @@ A real port started without `--thresholds` still runs, but its links show
 
 What the page shows (`web/index.html`, one static file with no network assets):
 
-- **Room.** The four nodes at their configured positions (receivers and senders drawn
-  differently), the links coloured by state, and the heatmap. A caption says it is a
-  rough motion-likelihood estimate, not a position track.
+- **Room.** The nodes at their configured positions (receivers and senders drawn
+  differently; a node outside the room is drawn with a dashed leader), the links coloured by state, and
+  the heatmap. A caption says it is a rough motion-likelihood estimate, not a position track.
 - **Links.** One card per link: state, score against threshold, packet rate, drops,
   RSSI, whether it contributes heat, and a 30 s score sparkline.
 - **Status bar.** Receivers (connected, finished or failed), link counts by state,
   calibration state, packet time, and messages.
-- **Controls.** The calibration panel (clips, seconds per clip, margin, start, cancel),
-  a threshold field and **Set** per link with **Save thresholds**, and heatmap sliders
-  for sensitivity, decay, rise and falloff.
+- **Controls.** The calibration panel (clips, seconds per clip, margin, **noisy room**, start,
+  cancel; see [Calibrating](#calibrating)), a threshold field and **Set** per link with **Save
+  thresholds**, and heatmap sliders for sensitivity, decay, rise and falloff. The controls send
+  commands, so they work only when the server is allowed to take them (see [Security](#security)).
 - **Pause** freezes the display while the server keeps running. The page reconnects by
   itself after a server restart.
 
@@ -317,6 +465,8 @@ What the page shows (`web/index.html`, one static file with no network assets):
   link is well above its enter level for 0.6 s. A Set on a link makes it fixed (`value: null` returns it to auto).
   The payload carries `mode`, `elevated`, `level` per link and `status.room`.
 - `--simulate-room`: a simulated person walks a loop through the room in real time.
+- `--sim-quiet-first SECONDS`: with `--simulate-room`, the simulated room stays empty for that
+  long before the walk starts, so Calibrate can be tried (60 is a good value).
 - `--http-port` (default 8000), `--host` (default `127.0.0.1`), `--room` (default
   `config/room.json`), `--baud`, `--seed`.
 - `--save-thresholds PATH`: where **Save thresholds** writes. Defaults to `--thresholds`,
@@ -333,21 +483,37 @@ Ctrl+C stops the server and closes every port.
 | `GET /` | The room page. |
 | `GET /api/state` | One JSON payload: room, nodes, links, heatmap and status. |
 | `GET /api/events` | The same payload as Server-Sent Events, at most about 5 per second. The last event has `status.finished` true when the sources end, and the stream closes. |
-| `POST /api/calibrate` | Body `{clips, seconds, margin, lead_s}`; defaults 3, 10, 1.25, 5. Runs the countdown and clips above. 409 while one is running. |
+| `POST /api/calibrate` | Body `{clips, seconds, margin, lead_s, noisy}`; defaults 3, 10, 1.25, 5 and `noisy` true (noisy-room rules). Runs the countdown and clips above. 409 while one is running. |
 | `POST /api/calibrate/cancel` | Stops a running calibration. |
 | `POST /api/threshold` | Body `{link, value}` sets one link's threshold. `GET /api/thresholds` lists them. |
 | `POST /api/thresholds/save` | Writes all thresholds as `{label: number}` to the save path and returns it. |
 | `POST /api/params` | Body `{sensitivity, decay, rise, falloff}` changes the heatmap live (`decay` and `rise` in seconds, `falloff` in metres). Unknown keys or out-of-range values give 400. |
 
-Commands take a JSON body. In replay modes they return 409.
+Commands take a JSON body and must send `Content-Type: application/json` (see [Security](#security)).
+In replay modes they return 409. A command returns 400 for a bad value, 409 when a calibration is
+already running (or there is nothing to save), and 403 when controls are off.
 
 ### Security
 
 The server binds to `127.0.0.1` by default, so only this machine can reach it.
 
-- `--host 0.0.0.0` listens on the network with **no authentication**. Use it only on a network you trust.
-- Commands (calibrate, threshold, save, params) work only when `--host` is a loopback
-  address. Any other `--host` returns 403 for them unless you also pass `--allow-control`.
+- `--host 0.0.0.0` listens on the network with **no authentication**. Anyone who can reach the port can
+  read the state, and the commands are refused unless you also pass `--allow-control`. Use it only on a
+  network you trust.
+- The five command endpoints (`/api/calibrate`, `/api/calibrate/cancel`, `/api/threshold`,
+  `/api/thresholds/save`, `/api/params`) are enabled only when `--host` is a loopback address
+  (`localhost`, `127.0.0.0/8` or `::1`), or when you pass `--allow-control`. Otherwise they return 403.
+  The page's controls use the same endpoints.
+- Every command must also pass these checks, which the server makes before it runs anything:
+  1. `Content-Type` must be `application/json`, with optional parameters such as `charset=utf-8`.
+     Anything else gets 415. This blocks a cross-site form, which cannot send that media type without a
+     preflight, and the server never grants one.
+  2. `Host` must name this server: `localhost`, `127.0.0.1` or `[::1]`, with the bound port. With
+     `--allow-control` and a `--host` other than loopback, that `--host` value is accepted too (as an IP
+     address only, when `--host` is `0.0.0.0` or `::`). Anything else gets 403, which blocks DNS rebinding.
+  3. `Origin`, when the browser sends one, must be an `http://` origin of this server. Anything else gets 403.
+- Bodies are limited to 64 KiB, and a body that is not a JSON object gets 400. Unknown fields are refused.
+- GET requests are never refused by these checks, and replays are read-only.
 
 The library entry point is `csi.server.DashboardServer(room, sources, thresholds)`,
 where `sources` maps receiver names to `(host_ts, line)` streams.
@@ -453,7 +619,7 @@ git archive data/two-board-sessions data/hw5 | tar -x
 python scripts/evaluate.py data/hw5
 ```
 
-No four-link recording is in the repository yet.
+No recording of the four-link rig is in the repository yet.
 
 ## How it works
 
@@ -495,11 +661,12 @@ status     {time_s, links_by_state, parameters, receivers, errors, finished,
 | `csi/common.py` | Shared CLI options (`--simulate`, `--port`, `--baud`, `--rate`, `--margin`) and source setup. |
 | `csi/clock.py` | Unwraps the device counter; detects wraps and reboots. |
 | `csi/health.py` | Packet rate and drop estimates per link. |
-| `csi/detect.py` | Motion score, debounced detector, calibration (robust chunks, margin, p99), threshold files. |
+| `csi/detect.py` | Motion score, debounced detector, calibration (robust chunks, margin, p99 or noisy-room p97), threshold files. |
+| `csi/adaptive.py` | Experimental `--auto-threshold` detector: per-link adaptive baseline and a room decision from link agreement. |
 | `csi/breathing.py` | Experimental breathing rate from 15 s windows (0.1 to 0.5 Hz, PCA, FFT peak). |
 | `csi/links.py` | Per-link monitoring and multi-link calibration; `links.json`. |
 | `csi/multisource.py` | Reads several receivers concurrently into one stream. |
-| `csi/room.py` | Room and node geometry, link footprints, simulated person positions. |
+| `csi/room.py` | Room and node geometry, links (every enabled receiver with every enabled sender), disabled nodes, simulated person positions. |
 | `csi/heatmap.py` | The motion-likelihood heatmap. |
 | `csi/dashboard.py` | `DashboardState`: receiver packets in, the JSON payload out. |
 | `csi/server.py` | HTTP server: page, `/api/state`, `/api/events`, commands. |
@@ -520,14 +687,17 @@ status     {time_s, links_by_state, parameters, receivers, errors, finished,
 
 ## Results and known limits
 
-Measured with the current code on the recordings in `data/two-board-sessions`:
+Measured with the current code on the recordings in `data/two-board-sessions`, and on the live rig where noted:
 
 | Session | Setup | Result |
 |---|---|---|
 | hw5 (single link) | C5 receiver, S3 sender, about 2 m, channel 6, gain locked | Walking: 100% MOTION (2621 windows). Empty validation recording: 94% EMPTY at margin 1.25, 95% at 1.5. |
 | hw3 (single link) | Same boards, gain not yet locked | Walking: 80% MOTION. Only one empty recording, which calibrated the threshold, so no empty windows were scored. |
 | Breathing on hw5 | `--breathing` | 43% of empty windows read STILL_PRESENT. Not usable. |
-| Four links | The rig above | No recording in the repository. Issue #9 records earlier numbers from the older rig: S3-sender links at about 38 packets/s each, and two links from the original ESP32 sender at 6 to 17 packets/s. Results were mixed. |
+| Final four-link rig (rx1, rx2 C5; tx0 S3, tx1 C5), channel 6, 40 Hz | Measured on the rig | All four links at 36 to 38 packets/s, about 5% loss. Quiet-room median scores about 2 to 7, thresholds about 8 to 20. A continuous walk through the room reliably lights the left-wall and C5-diagonal links and the heatmap; the two rx1 links respond more weakly to walking in the tests. No labelled recording of this rig is committed, so there are no accuracy figures for it. |
+
+Before the final rig, issue #9 recorded numbers from an older layout: S3-sender links at about 38 packets/s
+each, and two links from the original ESP32 sender at 6 to 17 packets/s. Results were mixed.
 
 The data branch's README reports 95% EMPTY for hw5. Re-running `evaluate.py` on the
 current code gives 94% at the default margin and 95% at 1.5.
@@ -538,13 +708,15 @@ Known limits:
 - **Stillness fades.** A person who stays still for about 30 s is absorbed into the
   baseline, so the heatmap is not a presence sensor.
 - **Breathing is unreliable.** It is off by default.
-- **Weak links are noisy.** Low packet rates make scores noisy. Issue #9 flags the
+- **Weak links are noisy.** Low packet rates make scores noisy. On the older layout, issue #9 flagged the
   left-wall and long-diagonal links as the weakest.
 - **Thresholds go stale.** A receiver reset shifts its baseline, so recalibrate after resets.
-- **Calibration needs a quiet room.** Movement during a clip is rejected, and too
-  little clean data means no threshold for that link.
-- **Little data.** The repository has two single-link recordings and no four-link or
-  labelled still-state recordings yet.
+- **Calibration needs a quiet room.** Movement during a clip is rejected by the quiet-room rules, and too
+  little clean data means no threshold for that link. The noisy-room rules accept the clip and report how
+  much of it looked like movement.
+- **Shared channel.** More senders mean more collisions. See [Scaling up](#scaling-up).
+- **Little data.** The repository has two single-link recordings and no labelled recording of the
+  four-link rig, or of still states on it.
 - **No authentication.** The dashboard is for a local demo.
 
 ## Troubleshooting
@@ -556,10 +728,12 @@ Known limits:
 | Thresholds are wrong after a reset | A reset re-records the gain baseline. | Reset in place, then recalibrate. |
 | A link fires MOTION with nobody there | Noisy or bursty link. | Check packet rate and drops on its card. Raise the margin, or set a manual threshold with **Set**. Re-aim the antenna. |
 | A link shows UNCALIBRATED | No threshold: no `--thresholds` file, or calibration skipped it. | Read `status.messages` for the reason, then calibrate again. |
-| Calibration says "input too short" | Under 8 s of clean data after movement was rejected. | Record the empty room again, with nobody walking through. |
+| Calibration says "input too short" | Under 8 s of clean data after movement was rejected (quiet-room rules). | Record the empty room again, with nobody walking through. |
 | A link shows NO_SIGNAL | No packet for 2 s. | Check the sender's power and channel, and the receiver's cable. |
 | A link shows WARMUP | Its motion window is not full yet. | Wait a few seconds. |
-| Commands return 403 | `--host` is not a loopback address. | Use localhost, or `--allow-control` on a network you trust. |
+| Commands return 403 | `--host` is not a loopback address, or the request's `Host` or `Origin` is not this server. | Use `http://127.0.0.1:<port>` or `localhost` with the bound port, or `--allow-control` on a network you trust. |
+| Commands return 415 | `Content-Type` is not exactly `application/json`. | Send `Content-Type: application/json`. |
+| Packet rate drops after adding a sender or receiver | Collisions on the shared channel, or an S3 receiver. | Lower the senders' rate to about 30 Hz with three senders, and use C5 receivers. See [Scaling up](#scaling-up). |
 | Commands return 409 | Replay mode, or a calibration is already running. | Use live mode, or wait for the calibration to finish. |
 | Breathing says "not enough data" | Less than 15 s of data. | Wait, or leave breathing off. |
 
@@ -571,9 +745,17 @@ Nothing below is started.
   router channel. The dashboard's source interface already takes named line streams,
   so a UDP receiver can plug in without changing the dashboard.
 - **Floor-plan support.** Rooms defined by a floor plan, not a rectangle.
-- **More nodes.** More senders and receivers; the link list grows with each pair.
+- **More nodes.** The config already takes more senders and receivers (see [Scaling up](#scaling-up)).
+  In practice the shared channel is the limit.
 - **Position tracking.** A tracker that follows the heatmap over time. An idea, not yet specified.
 - **Fingerprinting.** Learned signatures for room states, in place of thresholds.
+- **Speed up the test suite.** Marker tiers and parallel runs; the full suite takes about 4 minutes.
+- **Noise-robust adaptive detection as the default.** `--auto-threshold` becomes the default once its
+  walking sensitivity improves.
+- **Accuracy work.** A labelled dataset with all links, filtering, and a small classifier compared with
+  the threshold detector on held-out sessions.
+- **Detecting still people.** Breathing is unreliable today, so a person who is completely still is not
+  reliably detected.
 
 ## Contributing
 
@@ -586,10 +768,20 @@ Nothing below is started.
   git worktree add ../Team-12-my-fix -b fix/my-fix csi-sensing
   ```
 
-- **Tests: `python -m pytest`.** The suite (282 tests, a few minutes) runs entirely on
+- **Tests: `python -m pytest`.** The suite (374 tests, about 4 minutes) runs entirely on
   the simulator. It lives in `tests/`, one file per area: parser, detectors, calibration,
   links, dashboard server and page, recording, evaluation, breathing, and the simulator.
+  `tests/conftest.py` points the room at `tests/fixtures/room_rig4.json` through `CSI_ROOM`, so
+  reconfiguring the real rig in `config/room.json` does not change test outcomes. Many tests simulate
+  long runs or start subprocesses, and two subprocess tests in `tests/test_dashboard_cli.py` can time
+  out on a busy machine. Run one file with `python -m pytest -q tests/<file>`.
 - **Issues and specs** are on GitHub: `gh issue view <number>`. See
   [`docs/agents/issue-tracker.md`](docs/agents/issue-tracker.md) for the conventions and
   [`CLAUDE.md`](CLAUDE.md) for the repository's agent notes.
+- **Hardware and live-rig notes** (resets, ports, flashing, thresholds) are in
+  [`docs/agents/hardware.md`](docs/agents/hardware.md). Read it before touching a board.
+- **Never switch branches in the main checkout.** Work in a worktree instead. `data/` is gitignored on
+  the integration branch but tracked on the data branch `data/two-board-sessions`, which holds
+  `data/hw3`, `data/hw5` and `data/README.md`. Switching branches in the main checkout has deleted `data/`
+  once.
 - **Keep data out of git.** `data/` is gitignored. Share recordings through the data branch or another channel.
