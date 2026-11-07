@@ -214,16 +214,21 @@ a guessed one. The single-port scripts above are unchanged.
 (`snapshot(now)`): `room`, `nodes`, `links` (state, score, threshold, `normalised` =
 score / threshold, pkt rate, drops, rssi, age, `weight`, `contributes`), `heatmap`
 (`cols`, `rows`, `extents`, row-major `cells` in 0..1, `max`, `contributing` link ids)
-and `status` (links by state, parameters in use). Each link's evidence is
-`log(score / threshold)` clipped at 0, so only links above their own threshold add
-heat, and quiet links (ratio about 0.65 in the simulator) add none. It is spread along
-the sender-receiver segment with a Gaussian falloff (`falloff_m`, default 0.35 m), summed,
-soft-saturated (`sensitivity`, default 0.2), smoothed with a 0.3 s rise and a 1.5 s decay
-(`rise_tau_s`, `decay_tau_s`) on packet time, and sampled on a 28 x 18 grid (`cols`,
-`rows`). Only EMPTY and MOTION links with a threshold contribute. Per-link weights come
+and `status` (links by state, parameters in use). Each link's `baseline` is the median
+of its own score over the last 60 s of packet time (needs 10 s of history; `null` before
+that), and its `evidence` is `log(score / baseline)` mapped to 0..1: ratios up to 1.2
+give 0 and 3x gives 1 (`r_floor`, `r_full`). The threshold is shown but no longer decides
+heat, so a walker who lifts a link to 0.7 of its threshold still shows. Evidence times
+the link's weight is spread along the sender-receiver segment with a Gaussian falloff
+(`falloff_m`, default 0.35 m). Per cell, links combine as `(1 - agreement) * sum +
+agreement * sqrt(top1 * top2)` (`agreement`, default 0.5), so two agreeing links are hotter
+than one alone. The result is soft-saturated (`sensitivity`, default 0.8), smoothed with a
+0.3 s rise and a 1.5 s decay (`rise_tau_s`, `decay_tau_s`) on packet time, and sampled on a
+28 x 18 grid (`cols`, `rows`). Only EMPTY and MOTION links contribute. Per-link weights come
 from `link_weights` in `config/room.json` (default 1.0; `rx1<-01` is 0.3 because that
-diagonal false-alarms on the real rig). This is a rough motion-likelihood estimate, not
-a position track.
+diagonal false-alarms on the real rig). A person who stands still for more than about 30 s
+is absorbed into the baseline and fades, so the map shows change, not presence. This is a
+rough motion-likelihood estimate, not a position track.
 
 ## Dashboard
 

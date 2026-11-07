@@ -33,6 +33,15 @@ def calibrated_thresholds():
     return calibrate_links_report(tagged(person=None, duration_s=25, seed=10), margin=1.5).thresholds
 
 
+LEAD_S = 12.0  # empty room before a person arrives, so every link learns its quiet baseline first
+
+
+def quiet_then(person, duration_s, seed=12, drop_after=None):
+    """An empty room for LEAD_S seconds, then ``person`` for ``duration_s`` (both on the same clock)."""
+    return tagged(person=None, duration_s=LEAD_S, seed=seed) + tagged(
+        person=person, duration_s=duration_s, seed=seed, t0=T0 + LEAD_S, drop_after=drop_after)
+
+
 def feed(state, packets, until=None):
     """Push packets (optionally only those before host time ``until``) into the dashboard state."""
     for receiver, pkt in packets:
@@ -97,7 +106,7 @@ def test_each_link_reports_its_sender_node_weight_and_normalised_score():
 
 
 def test_person_near_right_wall_puts_the_hottest_cells_on_the_right_half():
-    payload = run(tagged(person=stand_near_wall(ROOM, "right"), duration_s=10, seed=12)).snapshot()
+    payload = run(quiet_then(stand_near_wall(ROOM, "right"), 10)).snapshot()
     g = grid(payload)
     half = g.shape[1] // 2
     left_max, right_max = g[:, :half].max(), g[:, half:].max()
@@ -110,7 +119,7 @@ def test_person_near_right_wall_puts_the_hottest_cells_on_the_right_half():
 
 
 def test_person_near_left_wall_puts_the_hottest_cells_on_the_left_half():
-    payload = run(tagged(person=stand_near_wall(ROOM, "left"), duration_s=10, seed=12)).snapshot()
+    payload = run(quiet_then(stand_near_wall(ROOM, "left"), 10)).snapshot()
     g = grid(payload)
     half = g.shape[1] // 2
     left_max, right_max = g[:, :half].max(), g[:, half:].max()
@@ -121,7 +130,7 @@ def test_person_near_left_wall_puts_the_hottest_cells_on_the_left_half():
 
 
 def test_person_at_centre_is_hot_driven_by_both_diagonals_and_hotter_than_corners():
-    payload = run(tagged(person=stand_at_centre(ROOM), duration_s=10, seed=13)).snapshot()
+    payload = run(quiet_then(stand_at_centre(ROOM), 10, seed=13)).snapshot()
     assert set(payload["heatmap"]["contributing"]) == {DIAG_A, DIAG_B}
     g = grid(payload)
     rows, cols = g.shape
@@ -132,16 +141,15 @@ def test_person_at_centre_is_hot_driven_by_both_diagonals_and_hotter_than_corner
 
 
 def test_link_that_drops_out_stops_contributing_and_its_heat_vanishes():
-    packets = tagged(person=stand_near_wall(ROOM, "left"), duration_s=10, seed=16,
-                     drop_after={LEFT: 3.0})
+    packets = quiet_then(stand_near_wall(ROOM, "left"), 10, seed=16, drop_after={LEFT: 3.0})  # drops at T0+15
     state = new_state()
-    feed(state, packets, until=T0 + 2.5)
-    before = state.snapshot(now=T0 + 2.5)
+    feed(state, packets, until=T0 + LEAD_S + 2.5)
+    before = state.snapshot(now=T0 + LEAD_S + 2.5)
     assert LEFT in before["heatmap"]["contributing"]
     assert before["heatmap"]["max"] > 0.3
 
     feed(state, packets)
-    after = state.snapshot(now=T0 + 10.0)
+    after = state.snapshot(now=T0 + LEAD_S + 10.0)
     row = links_by_id(after)[LEFT]
     assert row["state"] == "NO_SIGNAL"
     assert row["contributes"] is False
@@ -163,14 +171,16 @@ def test_uncalibrated_link_is_reported_as_such_and_contributes_no_heat():
 
 def test_after_the_person_leaves_the_heatmap_decays_back_to_cold_within_seconds():
     state = new_state()
-    standing = tagged(person=stand_near_wall(ROOM, "right"), duration_s=6, seed=12)
-    empty = tagged(person=None, duration_s=10, seed=12, t0=T0 + 6.0)
-    feed(state, standing)
-    assert state.snapshot(now=T0 + 6.0)["heatmap"]["max"] > 0.3
+    lead = tagged(person=None, duration_s=LEAD_S, seed=12)
+    standing = tagged(person=stand_near_wall(ROOM, "right"), duration_s=6, seed=12, t0=T0 + LEAD_S)
+    left_at = T0 + LEAD_S + 6.0
+    empty = tagged(person=None, duration_s=10, seed=12, t0=left_at)
+    feed(state, lead + standing)
+    assert state.snapshot(now=left_at)["heatmap"]["max"] > 0.3
     maxima = []
     for seconds_after in range(1, 6):
-        feed(state, empty, until=T0 + 6.0 + seconds_after)
-        maxima.append(state.snapshot(now=T0 + 6.0 + seconds_after)["heatmap"]["max"])
+        feed(state, empty, until=left_at + seconds_after)
+        maxima.append(state.snapshot(now=left_at + seconds_after)["heatmap"]["max"])
     assert maxima[0] > 0.1                      # fades over time, it does not switch off
     assert all(a > b for a, b in zip(maxima, maxima[1:]))
     assert maxima[-1] < 0.05                    # cold five seconds after the person left
@@ -186,3 +196,27 @@ def test_packets_from_an_unknown_mac_are_reported_but_never_drawn():
     assert unknown and unknown[0]["sender"] is None
     assert unknown[0]["contributes"] is False
     assert "rx1<-07" not in payload["heatmap"]["contributing"]
+
+
+def test_each_link_exposes_its_evidence_and_quiet_baseline_and_the_model_parameters():
+    payload = run(quiet_then(stand_near_wall(ROOM, "right"), 10)).snapshot()
+    rows = links_by_id(payload)
+    for label in LABELS:
+        assert 0.0 <= rows[label]["evidence"] <= 1.0
+        assert rows[label]["baseline"] is not None and rows[label]["baseline"] > 0
+    assert rows[RIGHT]["evidence"] > 0.3
+    assert rows[RIGHT]["evidence"] >= rows[LEFT]["evidence"]
+    params = payload["status"]["parameters"]
+    for key in ("r_floor", "r_full", "baseline_window_s", "baseline_percentile", "baseline_warmup_s",
+                "sensitivity", "agreement"):
+        assert key in params
+    assert "reference_ratio" not in params
+    json.dumps(payload)
+
+
+def test_baseline_is_none_during_warm_up_and_evidence_zero_until_ten_seconds_of_history():
+    early = run(tagged(person=stand_near_wall(ROOM, "right"), duration_s=6, seed=12)).snapshot()
+    rows = links_by_id(early)
+    assert all(rows[label]["baseline"] is None for label in LABELS)
+    assert all(rows[label]["evidence"] == 0.0 for label in LABELS)
+    assert early["heatmap"]["max"] == 0.0

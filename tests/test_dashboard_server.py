@@ -3,6 +3,7 @@
 The only seam is the HTTP interface: every assertion is on a response (or on the bound address the
 server reports). Thresholds come from a simulated empty room, as in tests/test_dashboard_state.py.
 """
+import itertools
 import json
 import threading
 import time
@@ -24,6 +25,7 @@ LEFT = "rx2<-01"
 RIGHT = "rx1<-00"
 LABELS = {"rx1<-00", "rx1<-01", "rx2<-00", "rx2<-01"}
 FRAME_S = 0.25
+T0 = 1_700_000_000.0
 
 
 @lru_cache(maxsize=None)
@@ -34,6 +36,16 @@ def calibrated_thresholds():
 
 def room_streams(person=None, duration_s=10.0, seed=12, **kwargs):
     return simulate_room(person, room=ROOM, duration_s=duration_s, seed=seed, **kwargs)
+
+
+LEAD_S = 12.0  # an empty room first, so each link learns its quiet baseline before the person arrives
+
+
+def quiet_then_streams(person, duration_s=10.0, seed=12):
+    """Per receiver: an empty room for LEAD_S seconds, then ``person`` on the same host clock."""
+    lead = simulate_room(None, room=ROOM, duration_s=LEAD_S, seed=seed)
+    stay = simulate_room(person, room=ROOM, duration_s=duration_s, seed=seed, t0=T0 + LEAD_S)
+    return {rx: itertools.chain(lead[rx], stay[rx]) for rx in lead}
 
 
 def get(url: str, timeout: float = 5.0):
@@ -97,7 +109,7 @@ def serve():
 
 
 def test_api_state_returns_per_link_states_and_a_hot_heatmap_for_a_person_near_the_right_wall(serve):
-    server = serve(room_streams(stand_near_wall(ROOM, "right")), calibrated_thresholds())
+    server = serve(quiet_then_streams(stand_near_wall(ROOM, "right")), calibrated_thresholds())
     assert server.wait_finished(timeout=30)
 
     payload = get_json(server)
@@ -114,7 +126,7 @@ def test_api_state_returns_per_link_states_and_a_hot_heatmap_for_a_person_near_t
 
 def test_event_stream_emits_intermediate_events_that_follow_a_person_walking_left_to_right(serve):
     walk = Walk((ROOM.wall_point("left"), ROOM.wall_point("right")), speed_mps=0.5)
-    server = serve(room_streams(walk, duration_s=6.0), calibrated_thresholds(), frame_interval_s=0.5)
+    server = serve(quiet_then_streams(walk, duration_s=6.0), calibrated_thresholds(), frame_interval_s=0.5)
     assert server.wait_finished(timeout=30)
 
     events = read_events(server)  # attached after the run: replays the retained frames, paced
@@ -137,8 +149,8 @@ def failing_after(lines, n: int):
 
 
 def test_failing_receiver_is_reported_while_the_other_keeps_feeding(serve):
-    good = room_streams(stand_near_wall(ROOM, "right"), duration_s=10)["rx1"]
-    bad = failing_after(room_streams(stand_near_wall(ROOM, "right"), duration_s=10)["rx2"], 200)
+    good = quiet_then_streams(stand_near_wall(ROOM, "right"), duration_s=10)["rx1"]
+    bad = failing_after(quiet_then_streams(stand_near_wall(ROOM, "right"), duration_s=10)["rx2"], 200)
     server = serve({"rx1": good, "rx2": bad}, calibrated_thresholds())
     assert server.wait_finished(timeout=30)
 
