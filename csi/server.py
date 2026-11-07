@@ -469,7 +469,8 @@ class DashboardServer(FrameServer):
         self._thresholds_path = Path(thresholds_path) if thresholds_path else Path(DEFAULT_THRESHOLDS_FILE)
         self._calib: Optional[CalibrationJob] = None
         self._commands: deque[str] = deque(maxlen=COMMAND_LOG_MAX)
-        self._ms = MultiSource(sources)
+        # a stream for a disabled node (room config "enabled": false) is never read: it has no links
+        self._ms = MultiSource({name: s for name, s in sources.items() if name not in room.disabled})
         self._notes = list(notes)
         self._log_path = None if log is None else Path(log)
         self._log_file: Optional[TextIO] = None

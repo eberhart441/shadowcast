@@ -5,6 +5,10 @@ y down. Receivers (role ``receiver``) and senders (role ``sender``, with a MAC) 
 (receiver, sender) pair is a link, and its motion response to a person is a Gaussian falloff of the
 person's distance to the link's segment (clamped to the segment ends).
 
+A node may carry ``"enabled": false``; it is then left out of the room altogether (no receiver or
+sender, no links, nothing simulated), so a node can be defined before its board is plugged in. The
+default is ``true``. Its name is kept in ``Room.disabled``.
+
 Public API:
     load_room(path)                  -> Room (receivers and senders by name; optional link_weights)
     Room.links()                     -> [(receiver Node, sender Node)] for every pair
@@ -47,6 +51,7 @@ class Room:
     receivers: tuple[Node, ...]
     senders: tuple[Node, ...]
     link_weights: Mapping[str, float] = field(default_factory=dict)  # link label -> weight (default 1.0)
+    disabled: tuple[str, ...] = ()  # names of nodes with "enabled": false (not in receivers or senders)
 
     def links(self) -> list[tuple[Node, Node]]:
         return [(rx, tx) for rx in self.receivers for tx in self.senders]
@@ -65,15 +70,23 @@ class Room:
 
 def load_room(path: Union[str, Path] = DEFAULT_ROOM_PATH) -> Room:
     config = json.loads(Path(path).read_text())
-    nodes = [Node(name, spec["role"], float(spec["x"]), float(spec["y"]), spec.get("mac", ""),
-                  spec.get("chip", ""))
-             for name, spec in sorted(config["nodes"].items())]
+    nodes, disabled = [], []
+    for name, spec in sorted(config["nodes"].items()):
+        enabled = spec.get("enabled", True)
+        if not isinstance(enabled, bool):
+            raise ValueError(f"node {name}: enabled must be true or false, not {enabled!r}")
+        if not enabled:
+            disabled.append(name)
+            continue
+        nodes.append(Node(name, spec["role"], float(spec["x"]), float(spec["y"]), spec.get("mac", ""),
+                          spec.get("chip", "")))
     return Room(
         width_m=float(config["room"]["width_m"]),
         depth_m=float(config["room"]["depth_m"]),
         receivers=tuple(n for n in nodes if n.role == "receiver"),
         senders=tuple(n for n in nodes if n.role == "sender"),
         link_weights={k: float(v) for k, v in config.get("link_weights", {}).items()},
+        disabled=tuple(disabled),
     )
 
 

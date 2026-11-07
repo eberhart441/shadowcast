@@ -158,22 +158,40 @@ def _sender_lines(mac: str, seed: int, scenario: Sequence[Segment], rate_hz: flo
         yield pkt.host_ts, packet_to_line(pkt, idx=idx, mac=mac)
 
 
+def link_layout(room: Optional[Room], senders: Optional[Sequence[str]] = None,
+                receivers: Optional[Sequence[str]] = None) -> tuple[list[str], list[str]]:
+    """(sender MACs, receiver names) for the simulator. Explicit arguments win; the rest come from ``room``
+    (its enabled senders and receivers) when one is given, else from the built-in rig (SENDER_MACS and
+    DEFAULT_RECEIVERS)."""
+    if room is not None:
+        senders = [tx.mac for tx in room.senders] if senders is None else senders
+        receivers = [rx.name for rx in room.receivers] if receivers is None else receivers
+    else:
+        senders = SENDER_MACS if senders is None else senders
+        receivers = DEFAULT_RECEIVERS if receivers is None else receivers
+    return list(senders), list(receivers)
+
+
 def simulate_link_streams(
-    senders: Sequence[str] = SENDER_MACS,
-    receivers: Sequence[str] = DEFAULT_RECEIVERS,
+    senders: Optional[Sequence[str]] = None,
+    receivers: Optional[Sequence[str]] = None,
     scenario: Sequence[Segment] = DEFAULT_SCENARIO,
     rate_hz: float = 100.0,
     seed: int = 0,
     realtime: bool = False,
     loop: bool = False,
     t0: float = 1_700_000_000.0,
+    room: Optional[Room] = None,
 ) -> dict[str, Iterator[tuple[float, str]]]:
     """One (host_ts, line) stream per receiver, each carrying every sender's packets.
 
+    Senders and receivers come from ``room`` when one is given (its enabled nodes), else from the
+    built-in rig; explicit ``senders`` / ``receivers`` override either.
     Every (receiver, sender) link has its own seed, so its baseline and noise are independent.
     The scenario applies to all links at once. ``realtime`` paces each stream to the wall clock
     and stamps lines with ``time.time()``; otherwise host_ts is synthetic (t0 + index / rate).
     """
+    senders, receivers = link_layout(room, senders, receivers)
     streams: dict[str, Iterator[tuple[float, str]]] = {}
     for r_idx, name in enumerate(receivers):
         gens = [_sender_lines(mac, int(np.random.SeedSequence([seed, r_idx, s_idx]).generate_state(1)[0]),
@@ -276,21 +294,22 @@ def simulate_room_links(**kwargs) -> Iterator[tuple[str, CSIPacket]]:
 
 
 def simulate_links(
-    senders: Sequence[str] = SENDER_MACS,
-    receivers: Sequence[str] = DEFAULT_RECEIVERS,
+    senders: Optional[Sequence[str]] = None,
+    receivers: Optional[Sequence[str]] = None,
     scenario: Sequence[Segment] = DEFAULT_SCENARIO,
     rate_hz: float = 100.0,
     seed: int = 0,
     realtime: bool = False,
     loop: bool = False,
     t0: float = 1_700_000_000.0,
+    room: Optional[Room] = None,
 ) -> Iterator[tuple[str, CSIPacket]]:
-    """(receiver, packet) for every link, merged in host-time order.
+    """(receiver, packet) for every link, merged in host-time order. Layout as in ``simulate_link_streams``.
 
     Goes through the text seam: each receiver's lines are parsed by its own CSIParser, so the
     packet's mac comes from the line exactly as it would from hardware.
     """
-    streams = simulate_link_streams(senders, receivers, scenario, rate_hz, seed, realtime, loop, t0)
+    streams = simulate_link_streams(senders, receivers, scenario, rate_hz, seed, realtime, loop, t0, room=room)
     per_receiver = [_tagged(name, lines) for name, lines in streams.items()]
     yield from heapq.merge(*per_receiver, key=lambda item: item[1].host_ts)
 

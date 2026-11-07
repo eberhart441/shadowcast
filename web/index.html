@@ -194,8 +194,8 @@
 <main class="layout">
   <section class="card" id="map-card">
     <h2>Room</h2>
-    <canvas id="map" role="img" aria-label="Room map: heatmap of likely motion, four links and four nodes"></canvas>
-    <p class="caption">Rough motion-likelihood estimate from 4 links, not a position track.</p>
+    <canvas id="map" role="img" aria-label="Room map: heatmap of likely motion, with the room's links and nodes"></canvas>
+    <p class="caption" id="map-caption">Rough motion-likelihood estimate from 4 links, not a position track.</p>
     <div class="legend">
       <span><span class="sw EMPTY"></span>EMPTY</span>
       <span><span class="sw MOTION"></span>MOTION</span>
@@ -303,7 +303,8 @@
   var els = {
     connDot: $("conn-dot"), connText: $("conn-text"), pause: $("pause"), pausedFlag: $("paused-flag"),
     receivers: $("receivers"), counts: $("link-counts"), calib: $("calib"), packet: $("pkt-time"),
-    messages: $("messages"), map: $("map"), mapCard: $("map-card"), links: $("links")
+    messages: $("messages"), map: $("map"), mapCard: $("map-card"), links: $("links"),
+    caption: $("map-caption")
   };
   var ctx = els.map.getContext("2d");
   var heatCanvas = document.createElement("canvas");
@@ -344,6 +345,9 @@
     if (!p || !p.status || !p.links) return;
     recordHistory(p);
     latest = p;
+    // the count follows the payload, so a room with more links reads right
+    els.caption.textContent = "Rough motion-likelihood estimate from " + p.links.length +
+      " links, not a position track.";
     // A finished run must not reconnect: the server would replay the run from its log.
     if (p.status.finished) {
       finished = true;
