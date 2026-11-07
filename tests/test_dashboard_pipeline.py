@@ -23,7 +23,9 @@ def breaking_source(n_good: int = 300):
     """Good packets of rx1 for a short empty room, then one packet whose amplitude width changes mid-link."""
     packets = list(parse_stream(simulate_room(None, room=ROOM, duration_s=5, seed=12, t0=T0)["rx1"]))
     good = packets[:n_good]
-    bad = dataclasses.replace(good[-1], host_ts=good[-1].host_ts + 0.01, amplitude=np.ones(3, dtype=np.float32))
+    # later in device time too: a repeated device time would be dropped as out of order before the pipeline sees it
+    bad = dataclasses.replace(good[-1], host_ts=good[-1].host_ts + 0.01, device_ts=good[-1].device_ts + 10_000,
+                              amplitude=np.ones(3, dtype=np.float32))
     for pkt in good + [bad]:
         yield pkt.host_ts, pkt
 
