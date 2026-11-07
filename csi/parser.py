@@ -69,6 +69,11 @@ class CSIParser:
     _raw_len: Optional[int] = None          # raw int count locked from first packet
     _keep: Optional[np.ndarray] = None      # bool mask over subcarriers
 
+    @property
+    def kept_subcarriers(self) -> Optional[list[int]]:
+        """Raw subcarrier indices kept after null removal (None before first packet)."""
+        return None if self._keep is None else np.flatnonzero(self._keep).tolist()
+
     def parse_line(self, line: str, host_ts: Optional[float] = None) -> Optional[CSIPacket]:
         """Parse one line. Returns a packet, or None (header/ignored/bad)."""
         self.stats.lines += 1
