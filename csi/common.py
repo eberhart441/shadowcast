@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import argparse
-from typing import Iterator, Optional
+from typing import Callable, Iterable, Iterator, Optional
 
 from .detect import DEFAULT_MARGIN, SIM_THRESHOLD, load_threshold, validate_margin
 from .parser import CSIPacket, CSIParser, parse_stream, serial_stream
@@ -49,6 +49,32 @@ def add_threshold_args(ap: argparse.ArgumentParser) -> None:
              "about 2 m apart): empty scores ~3-9, walking ~25-70, so calibrate on the actual room with "
              "detect_live.py --calibrate instead of typing a value. Simulator scale (the --simulate "
              f"default is {SIM_THRESHOLD:g}): simulated empty ~0.2, motion ~3-9.")
+
+
+def several_senders_message(macs: Iterable[str]) -> str:
+    names = ", ".join(macs)
+    return (f"warning: {len(list(macs))} sender MACs on one stream ({names}). This tool scores them as one link, "
+            "so their different signal scales are mixed. Use scripts/links_live.py, which calibrates and scores "
+            "each sender on its own.")
+
+
+class SenderWatch:
+    """Notices a second sender on a single-link stream: ``warn`` is called once, with the message, the first
+    time two different non-empty sender MACs have been seen."""
+
+    def __init__(self, warn: Callable[[str], None]) -> None:
+        self._warn = warn
+        self._macs: set[str] = set()
+        self._warned = False
+
+    def observe_all(self, packets: Iterable[CSIPacket]) -> Iterator[CSIPacket]:
+        for pkt in packets:
+            if pkt.mac:
+                self._macs.add(pkt.mac)
+            if len(self._macs) > 1 and not self._warned:
+                self._warned = True
+                self._warn(several_senders_message(sorted(self._macs)))
+            yield pkt
 
 
 def simulated_rate_hz(args: argparse.Namespace) -> float:

@@ -22,9 +22,9 @@ from typing import Iterator
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from csi.common import add_margin_arg, add_threshold_args, resolve_threshold, simulated_rate_hz  # noqa: E402
-from csi.detect import MOTION, SIM_THRESHOLD, STILL_PRESENT, CalibrationError, Reading, calibrate, detect  # noqa: E402
-from csi.parser import CSIParser, Stream, serial_stream  # noqa: E402
+from csi.common import SenderWatch, add_margin_arg, add_threshold_args, resolve_threshold, simulated_rate_hz  # noqa: E402
+from csi.detect import MOTION, SIM_THRESHOLD, STILL_PRESENT, CalibrationError, Reading, calibrate, detect_packets  # noqa: E402
+from csi.parser import CSIParser, Stream, parse_stream, serial_stream  # noqa: E402
 from csi.simulate import Segment, simulate_stream  # noqa: E402
 
 SIM_DEMO_SCENARIO = (Segment("empty", 20), Segment("motion", 10), Segment("still", 30))  # 60 s cycle
@@ -116,8 +116,9 @@ def run_live(args: argparse.Namespace) -> int:
     print(f"threshold {threshold:.3f} ({mode}); Ctrl+C to stop", flush=True)
     state, printed_at = None, 0.0
     try:
-        readings = detect(until(open_stream(args), args.duration), threshold, parser, args.debounce,
-                          breathing=args.breathing)
+        watch = SenderWatch(lambda message: print(message, file=sys.stderr, flush=True))
+        packets = watch.observe_all(parse_stream(until(open_stream(args), args.duration), parser))
+        readings = detect_packets(packets, threshold, args.debounce, breathing=args.breathing)
         for r in readings:
             due = r.state == STILL_PRESENT and r.host_ts - printed_at >= STILL_REPRINT_S
             if r.state != state or due:
