@@ -86,6 +86,8 @@ def run_calibration(args: argparse.Namespace) -> int:
         print(f"calibration failed: {e}", file=sys.stderr)
         return 1
     cal.save(args.out)
+    print(f"clean {cal.clean_s:.1f} s, rejected {cal.rejected_s:.1f} s as movement "
+          f"({cal.pkt_rate_hz:.1f} pkt/s, loss {cal.loss:.1%})")
     print(f"threshold {cal.threshold:.3f} (rate {cal.rate_hz:.0f} Hz, loss {cal.loss:.1%}) -> {args.out}")
     return 0
 
