@@ -51,6 +51,17 @@ def speed_arg(text: str) -> float:
     return value
 
 
+def quiet_seconds(text: str) -> float:
+    """--sim-quiet-first: a non-negative number of seconds."""
+    try:
+        value = float(text)
+    except ValueError:
+        value = -1.0
+    if not value >= 0 or math.isinf(value):
+        raise argparse.ArgumentTypeError(f"seconds must be a number >= 0, got {text!r}")
+    return value
+
+
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     g = ap.add_argument_group("packet source")
@@ -60,6 +71,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="serial port of a csi_recv node; repeat for each receiver. Unnamed ports get rx1, rx2...")
     g.add_argument("--baud", type=int, default=921600)
     g.add_argument("--seed", type=int, default=0, help="simulator seed")
+    g.add_argument("--sim-quiet-first", type=quiet_seconds, default=0.0, metavar="SECONDS",
+                   help="with --simulate-room: the simulated room is empty for SECONDS before the walk starts, "
+                        "so Calibrate can run in the demo (the default calibration takes about 45 s; default 0)")
     r = ap.add_argument_group("replay (no hardware)")
     r.add_argument("--replay", type=Path, metavar="run.jsonl",
                    help="serve a run written with --log: the same states, at the logged pace")
@@ -105,6 +119,8 @@ def check_source(args: argparse.Namespace) -> None:
     replaying = args.replay is not None or args.replay_session is not None
     if args.speed is not None and not replaying:
         raise SystemExit("error: --speed applies to --replay and --replay-session only")
+    if args.sim_quiet_first and not args.simulate_room:
+        raise SystemExit("error: --sim-quiet-first applies to --simulate-room only")
     if args.margin is not None and args.replay_session is None:
         raise SystemExit("error: --margin applies to --replay-session only")
     if args.replay is not None and args.log is not None:
@@ -129,7 +145,8 @@ def build_sources(args: argparse.Namespace, room: Room) -> tuple[dict[str, Strea
         if thresholds is None:
             print("calibrating the simulated empty room...", flush=True)
             thresholds = simulated_thresholds(room)
-        return looping_room_streams(room, default_walk(room), seed=args.seed), thresholds
+        quiet = looping_room_streams(room, default_walk(room), seed=args.seed, quiet_first_s=args.sim_quiet_first)
+        return quiet, thresholds
     sources = {name: serial_stream(path, args.baud) for name, path in parse_port_specs(args.port)}
     return sources, load_link_thresholds(args.thresholds)
 

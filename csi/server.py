@@ -65,6 +65,7 @@ KEEPALIVE_S = 15.0         # SSE comment sent when idle, so dead clients are not
 WAIT_TICK_S = 0.2          # how often idle handlers re-check for shutdown
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 SIM_WALK_SPEED_MPS = 0.5
+SIM_T0 = 1_700_000_000.0  # synthetic host time of a simulated stream's first sample (as in csi.simulate)
 SIM_CALIBRATION_S = 25.0
 SIM_CALIBRATION_SEED = 10
 LOG_FORMAT = "csi-dashboard-log"  # first line of a --log file; replay.py refuses other files
@@ -807,16 +808,29 @@ def walk_period_s(walk: Walk) -> float:
     return length / walk.speed_mps
 
 
-def looping_room_streams(room: Room, person: Walk, *, seed: int = 0) -> dict[str, Stream]:
-    """Endless real-time streams, one per receiver, of a person repeating ``person``'s loop.
+def looping_room_streams(room: Room, person: Walk, *, seed: int = 0, quiet_first_s: float = 0.0,
+                         realtime: bool = True) -> dict[str, Stream]:
+    """Endless streams, one per receiver, of a person repeating ``person``'s loop.
 
-    Each cycle is ``simulate_room`` over one loop period with the same seed, so the cycles join smoothly.
+    ``quiet_first_s`` seconds of an empty room come first, so a calibration can run before anyone walks.
+    The timeline is one continuous run: cycle k starts where cycle k-1 ended, on both the host clock and
+    the device counter, so the receivers never look rebooted at a loop boundary.
     """
     period = walk_period_s(person)
-    return {rx.name: _looping(rx.name, room, person, period, seed) for rx in room.receivers}
+    return {rx.name: _looping(rx.name, room, person, period, seed, quiet_first_s, realtime)
+            for rx in room.receivers}
 
 
-def _looping(name: str, room: Room, person: Walk, period: float, seed: int) -> Iterator[tuple[float, str]]:
+def _looping(name: str, room: Room, person: Walk, period: float, seed: int, quiet_first_s: float,
+             realtime: bool) -> Iterator[tuple[float, str]]:
+    start_s = 0.0
     for cycle in itertools.count():
-        lines = simulate_room(person, room=room, duration_s=period, seed=seed, realtime=True)[name]
+        if cycle == 0 and quiet_first_s > 0:
+            cycle_person, duration_s = None, quiet_first_s
+        else:
+            cycle_person, duration_s = person, period
+        streams = simulate_room(cycle_person, room=room, duration_s=duration_s, seed=seed, realtime=realtime,
+                                t0=SIM_T0 + start_s, device_offset_us=round(start_s * 1e6))
+        lines = streams[name]
         yield from (lines if cycle == 0 else itertools.islice(lines, 1, None))  # one header is enough
+        start_s += duration_s

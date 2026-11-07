@@ -200,7 +200,7 @@ def _paced(lines: Iterator[tuple[float, str]], t0: float, realtime: bool) -> Ite
 
 
 def _room_link_lines(receiver: str, mac: str, seed: int, response: np.ndarray, rate_hz: float,
-                     t0: float, stop_idx: Optional[int]) -> Iterator[tuple[float, str]]:
+                     t0: float, stop_idx: Optional[int], device_offset_us: int = 0) -> Iterator[tuple[float, str]]:
     """(host_ts, line) for one link. Its motion term is scaled by the person's response at each sample.
 
     The per-link baseline and noise come from ``seed``, so links are independent. ``stop_idx`` ends the
@@ -216,7 +216,7 @@ def _room_link_lines(receiver: str, mac: str, seed: int, response: np.ndarray, r
     for idx in range(last):
         pkt = CSIPacket(
             host_ts=t0 + idx * dt,
-            device_ts=int(idx * dt * 1e6 + rng.integers(0, 500)),
+            device_ts=device_offset_us + int(idx * dt * 1e6 + rng.integers(0, 500)),
             rssi=int(-45 - 3 * response[idx] + rng.integers(-1, 2)),
             channel=6,
             amplitude=amp[idx],
@@ -236,8 +236,11 @@ def simulate_room(
     seed: int = 0,
     realtime: bool = False,
     t0: float = 1_700_000_000.0,
+    device_offset_us: int = 0,
 ) -> dict[str, Iterator[tuple[float, str]]]:
     """One (host_ts, line) stream per receiver, like ``simulate_link_streams``, with a person in the room.
+
+    ``device_offset_us`` is added to every device timestamp, so consecutive segments share one device timeline.
 
     Positions and nodes come from ``room`` (default: config/room.json). ``person=None`` is an empty room.
     ``drop_after`` maps a link label such as ``"rx1<-01"`` to the seconds after t0 when that link stops
@@ -256,7 +259,7 @@ def simulate_room(
             stop = drop_after.get(LinkId(rx.name, tx.mac).label)
             stop_idx = None if stop is None else int(round(stop * rate_hz))
             gens.append(_room_link_lines(rx.name, tx.mac, link_seed, responses[(rx.name, tx.mac)],
-                                         rate_hz, t0, stop_idx))
+                                         rate_hz, t0, stop_idx, device_offset_us))
         streams[rx.name] = _receiver_stream(gens, t0, realtime)
     return streams
 
