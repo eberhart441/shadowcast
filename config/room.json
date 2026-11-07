@@ -24,8 +24,8 @@
       "chip": "ESP32-S3",
       "x": 1.385,
       "y": 0.0,
-      "port_hint": "",
-      "enabled": false
+      "port_hint": "/dev/cu.usbmodem1101",
+      "enabled": true
     },
     "tx0": {
       "role": "sender",
