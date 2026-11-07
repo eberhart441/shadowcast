@@ -98,3 +98,14 @@ def test_interrupt_keeps_data_and_report_counts_drops(tmp_path):
 def test_duration_stops_recording(tmp_path):
     report = record(tmp_path, duration_s=3.0)
     assert 290 <= report.packets <= 310
+
+
+def test_second_recording_into_same_session_appends_metadata(tmp_path):
+    import json
+    from csi.recording import record_session
+    from csi.simulate import Segment, simulate_stream
+    for label in ("empty", "walking"):
+        record_session(simulate_stream(scenario=[Segment("empty", 3)], seed=1), tmp_path / "s",
+                       label, countdown_s=0)
+    meta = json.loads((tmp_path / "s" / "session.json").read_text())
+    assert [f["label"] for f in meta["files"]] == ["empty", "walking"]

@@ -95,6 +95,18 @@ class _Session:
                            "files": []}
         self.current: Optional[_LabelFile] = None
         self._last_flush = 0.0
+        self._resume_existing(notes)
+
+    def _resume_existing(self, notes: str) -> None:
+        """Re-opening a session folder appends to its metadata instead of replacing it."""
+        path = self.folder / META_NAME
+        if not path.exists():
+            return
+        prev = json.loads(path.read_text())
+        prev_notes = prev.get("placement_notes", "")
+        if notes and notes not in prev_notes:
+            prev["placement_notes"] = f"{prev_notes}; {notes}" if prev_notes else notes
+        self.meta.update(prev)
 
     def open_file(self, label: str, pkt: CSIPacket, kept: Optional[list[int]]) -> None:
         self.close_file()
@@ -128,7 +140,7 @@ class _Session:
 
     def finish(self, drops: int) -> None:
         self.close_file()
-        self.meta["drops_estimated"] = drops
+        self.meta["drops_estimated"] = self.meta.get("drops_estimated", 0) + drops
         self.write_meta()
 
 

@@ -99,3 +99,14 @@ def test_headerless_c5_layout_is_inferred_from_column_count():
     pkt = ps.parse_line(C5_LINE, host_ts=1.0)
     assert (pkt.rssi, pkt.channel, pkt.device_ts) == (-5, 6, 33253679)
     assert len(pkt.amplitude) == 3 and ps.stats.malformed == 0
+
+
+def test_c5_mask_is_stable_when_first_packet_is_mostly_zero():
+    # Low-gain C5 packets are mostly 0/+-1; the kept layout must not depend on the first packet.
+    ps = CSIParser()
+    sparse = [0, 0] * 117
+    sparse[10], sparse[11] = 1, 0
+    busy = [1, 1] * 117
+    a = ps.parse_line(line(values=sparse), host_ts=0.0)
+    b = ps.parse_line(line(values=busy), host_ts=0.1)
+    assert len(a.amplitude) == len(b.amplitude) == 114

@@ -30,6 +30,10 @@ C5_HEADER = (
     "local_timestamp,sig_len,rx_format,len,first_word,data"
 )
 KNOWN_HEADERS = (DEFAULT_HEADER, C5_HEADER)
+# Subcarriers that are always null for a given raw int count, measured on hardware.
+# Deriving them from one packet is unreliable: at low CSI gain most values are 0/+-1,
+# so a single packet's zeros are not a stable guard-band mask.
+KNOWN_NULL_SUBCARRIERS = {234: (57, 58, 59)}  # ESP32-C5, 117 subcarriers
 _ALIASES = {"primary_channel": "channel", "timestamp": "local_timestamp"}
 _REQUIRED = ("rssi", "channel", "local_timestamp", "data")
 
@@ -150,7 +154,11 @@ class CSIParser:
         iq = raw.reshape(-1, 2).astype(np.float32)
         amp = np.hypot(iq[:, 0], iq[:, 1])
         if self._raw_len is None:
-            keep = amp > 0
+            if raw.size in KNOWN_NULL_SUBCARRIERS:
+                keep = np.ones(len(amp), dtype=bool)
+                keep[list(KNOWN_NULL_SUBCARRIERS[raw.size])] = False
+            else:
+                keep = amp > 0
             if not keep.any():
                 raise ValueError("all subcarriers zero")
             self._raw_len, self._keep = raw.size, keep
