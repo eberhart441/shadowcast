@@ -13,7 +13,7 @@ Which board is which (chip, position, sender address, port hint) is in `config/r
 
 ## Setup (once per machine)
 
-ESP-IDF 5.5.6, kept outside the repo. Install per https://docs.espressif.com/projects/esp-idf/en/v5.5.6/ (a clone at `~/esp/esp-idf` is what the team uses), then in each shell:
+ESP-IDF 5.5.6, kept outside the repo. Install per https://docs.espressif.com/projects/esp-idf/en/v5.5.6/ (a clone at `~/esp/esp-idf` is what the team uses; its compilers and tools install to `~/.espressif`). Targets used: `esp32c5` and `esp32s3`. Then in each shell:
 
 ```
 . ~/esp/esp-idf/export.sh
@@ -42,6 +42,10 @@ idf.py -B build_c5_id01 -p /dev/cu.usbmodemXXXX flash
 ```
 
 Use `esp32s3` instead of `esp32c5` for an S3 board. Changing `SENDER_ID` in an existing build directory does not reliably rebuild; use a fresh directory.
+
+## Serial output
+
+The receiver prints one `CSI_DATA` line per packet at 921600 baud (set in `csi_recv/sdkconfig.defaults`; `csi/parser.py` `serial_stream` opens ports at the same rate). The column layout is `C5_HEADER` in `csi/parser.py`, which the receiver also prints once at boot. If you change the printed columns, change the parser and its tests with it.
 
 ## Before you flash a receiver
 
