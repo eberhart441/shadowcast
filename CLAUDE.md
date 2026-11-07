@@ -11,3 +11,11 @@ Default five-role vocabulary (`needs-triage`, `needs-info`, `ready-for-agent`, `
 ### Domain docs
 
 Single-context: one `GLOSSARY.md` + `docs/adr/` at the repo root. See `docs/agents/domain.md`.
+
+### Hardware and live rig
+
+Boards, ports, flashing, thresholds and dashboard restarts: read `docs/agents/hardware.md` first.
+
+### Subagents
+
+Setup, base branch and commit trailer for implementer and merger agents: `docs/agents/implementer-brief.md`.
