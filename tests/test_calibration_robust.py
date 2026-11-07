@@ -29,8 +29,9 @@ def window_scores(pkts):
 
 
 def contaminated(seed=41):
-    """5 s quiet, 13 s walking through, 7 s quiet: what a passer-by during a 25 s clip looks like."""
-    return packets([Segment("empty", 5), Segment("motion", 13), Segment("empty", 7)], seed=seed)
+    """5 s quiet, 13 s walking through, 17 s quiet: a passer-by in a 35 s clip. Quiet is 63 %, above the
+    50 % minimum; with less quiet the clip is refused instead (tests/test_calibration_clean_fraction.py)."""
+    return packets([Segment("empty", 5), Segment("motion", 13), Segment("empty", 17)], seed=seed)
 
 
 # --- 1. a passer-by inside the clip is rejected, not pooled into the threshold ---
@@ -122,7 +123,7 @@ def tagged(scenario, seed):
 
 
 def test_link_report_rejects_walk_through_and_reports_seconds():
-    report = calibrate_links_report(tagged([Segment("empty", 5), Segment("motion", 13), Segment("empty", 7)], 60))
+    report = calibrate_links_report(tagged([Segment("empty", 5), Segment("motion", 13), Segment("empty", 17)], 60))
     rx = LinkId("rx1", SENDER_MACS[0]).label
     assert rx in report.thresholds
     assert report.rejected_s[rx] >= 10

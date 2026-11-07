@@ -163,7 +163,7 @@ def test_a_link_with_no_packets_is_skipped_with_its_reason_and_the_others_are_ke
     assert any(DIAG_B in m and "no packets" in m for m in payload["status"]["messages"])
 
 
-def test_a_clip_with_movement_warns_and_keeps_the_previous_threshold(serve):
+def test_a_clip_that_is_mostly_movement_is_skipped_with_the_reason_and_keeps_the_previous_threshold(serve):
     go = serve.gate()
     # rx1 has someone walking for the first 27 s (clips 1 and 2 of 12 s each, with a 3 s pause), then an empty
     # room; rx2 is empty throughout. Only rx1's links see the walk, and only DIAG_B has most of its data rejected.
@@ -181,13 +181,11 @@ def test_a_clip_with_movement_warns_and_keeps_the_previous_threshold(serve):
     calibration = payload["status"]["calibration"]
 
     assert calibration["state"] == "done", calibration["message"]
-    warned = calibration["result"][DIAG_B]
-    assert warned["warning"].startswith("threshold may be unreliable: only ")
-    assert warned["applied"] is False
-    assert warned["rejected_s"] > warned["clean_s"]
+    assert DIAG_B not in calibration["result"]
+    assert calibration["skipped"][DIAG_B].startswith("only ") and "record again" in calibration["skipped"][DIAG_B]
     assert calibration["result"][RIGHT]["applied"] is True
     assert links_by_id(payload)[DIAG_B]["threshold"] == pytest.approx(0.6)   # the previous value stays
-    assert any(DIAG_B in m and "previous threshold" in m for m in payload["status"]["messages"])
+    assert any(DIAG_B in m and "was quiet" in m for m in payload["status"]["messages"])
 
 
 def test_a_source_that_ends_before_the_clips_finish_fails_the_job_and_keeps_the_thresholds(serve):

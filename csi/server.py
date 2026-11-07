@@ -649,7 +649,6 @@ class DashboardServer(FrameServer):
                         for name, msg in sorted(errors.items()))
         calibration = self._calib_status(now)
         if self._calib is not None:
-            messages.extend(f"calibration warning: {w}" for w in self._calib.warnings_kept)
             messages.extend(f"calibration skipped {label}: {why}" for label, why in self._calib.skipped.items())
         messages.extend(f"command: {line}" for line in self._commands)
         return {

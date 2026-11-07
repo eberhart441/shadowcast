@@ -9,8 +9,9 @@ The dashboard already owns the serial ports, so the job never opens any. The ser
     done        at least one link got a threshold; ``result`` and ``skipped`` say what happened
     failed      no link could be calibrated (thresholds unchanged), or the sources ended first
 
-A link whose clip data is more than REJECT_FRACTION movement is applied only if it keeps its previous
-threshold: the warning says so, and the link is not switched to the new value.
+A link whose clips are less than MIN_CLEAN_FRACTION quiet is skipped with the reason (as in
+calibrate_links_report: "record again"), and keeps its previous threshold. Refusal and the message are the
+same as scripts/links_live.py --calibrate.
 """
 from __future__ import annotations
 
@@ -21,7 +22,6 @@ from .detect import DEFAULT_MARGIN, validate_margin
 from .links import LinkId, calibrate_links_report
 
 PAUSE_S = 3.0
-REJECT_FRACTION = 0.5
 MAX_CLIPS = 10
 MAX_SECONDS = 120.0
 MAX_LEAD_S = 60.0
@@ -82,7 +82,6 @@ class CalibrationJob:
         self.message = ""
         self.result: dict[str, dict] = {}
         self.skipped: dict[str, str] = {}
-        self.warnings_kept: list[str] = []
         self._countdown_end = now_mono + self.request["lead_s"]
         self._t0: Optional[float] = None           # host time of the recording start
         self._period = self.request["seconds"] + PAUSE_S
@@ -173,24 +172,13 @@ class CalibrationJob:
         except Exception as e:  # any failure keeps the old thresholds and says why
             self._fail(f"calibration failed: {e}")
             return
-        previous = dict(self._current())
         applied: dict[str, float] = {}
-        self.result, self.skipped, self.warnings_kept = {}, dict(report.skipped), []
+        self.result, self.skipped = {}, dict(report.skipped)
         for label, cal in report.calibrations.items():
-            total = cal.clean_s + cal.rejected_s
-            entry = {"threshold": cal.threshold, "clean_s": cal.clean_s, "rejected_s": cal.rejected_s,
-                     "pkt_rate_hz": cal.pkt_rate_hz, "loss": cal.loss, "margin": cal.margin, "applied": False}
-            if total > 0 and cal.rejected_s > REJECT_FRACTION * total:
-                entry["warning"] = (f"threshold may be unreliable: only {cal.clean_s:.1f} s of {total:.1f} s kept")
-                if label in previous:
-                    note = f"{label} keeps its previous threshold {previous[label]:.4g}"
-                else:
-                    note = f"{label} stays uncalibrated"
-                self.warnings_kept.append(f"{label}: {entry['warning']}; {note}")
-            else:
-                applied[label] = cal.threshold
-                entry["applied"] = True
-            self.result[label] = entry
+            applied[label] = cal.threshold
+            self.result[label] = {"threshold": cal.threshold, "clean_s": cal.clean_s, "rejected_s": cal.rejected_s,
+                                  "pkt_rate_hz": cal.pkt_rate_hz, "loss": cal.loss, "margin": cal.margin,
+                                  "applied": True}
         for label, value in applied.items():
             self._apply(label, value)
         if applied:
@@ -198,10 +186,8 @@ class CalibrationJob:
             parts = [f"{len(applied)} link(s) calibrated"]
             if self.skipped:
                 parts.append(f"{len(self.skipped)} skipped")
-            if self.warnings_kept:
-                parts.append(f"{len(self.warnings_kept)} with a warning kept their previous threshold")
             self.message = "; ".join(parts) + "."
-        else:  # nothing usable: keep the per-link reasons and the warnings visible
+        else:  # nothing usable: keep the per-link reasons visible
             self.state = "failed"
             self.message = "no link could be calibrated; thresholds unchanged"
 
