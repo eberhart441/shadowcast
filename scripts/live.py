@@ -22,7 +22,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from csi.common import add_source_args, add_threshold_args, resolve_threshold  # noqa: E402
+from csi.common import add_source_args, add_threshold_args, link_send_rate, resolve_threshold, simulated_rate_hz  # noqa: E402
 from csi.detect import SIM_THRESHOLD  # noqa: E402
 from csi.parser import Stream, serial_stream  # noqa: E402
 from csi.simulate import simulate_stream  # noqa: E402
@@ -46,7 +46,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def open_lines(args: argparse.Namespace) -> Stream:
     if args.simulate:
-        return simulate_stream(rate_hz=args.rate, seed=args.seed, realtime=True, loop=True)
+        return simulate_stream(rate_hz=simulated_rate_hz(args), seed=args.seed, realtime=True, loop=True)
     if args.port:
         return serial_stream(args.port, args.baud)
     raise SystemExit("error: pass --port <serial port> or --simulate")
@@ -139,7 +139,7 @@ def run(args: argparse.Namespace, threshold: float) -> int:
     import matplotlib.pyplot as plt
     from matplotlib.animation import FuncAnimation
 
-    view = LiveView(threshold=threshold, send_rate_hz=args.rate)
+    view = LiveView(threshold=threshold, send_rate_hz=link_send_rate(args))
     lock = threading.Lock()
     reader = StreamReader(open_lines(args), view, lock)
     reader.start()

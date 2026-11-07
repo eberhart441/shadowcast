@@ -22,7 +22,7 @@ from typing import Iterator
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from csi.common import add_threshold_args, resolve_threshold  # noqa: E402
+from csi.common import add_threshold_args, resolve_threshold, simulated_rate_hz  # noqa: E402
 from csi.detect import MOTION, SIM_THRESHOLD, STILL_PRESENT, CalibrationError, Reading, calibrate, detect  # noqa: E402
 from csi.parser import CSIParser, Stream, serial_stream  # noqa: E402
 from csi.simulate import Segment, simulate_stream  # noqa: E402
@@ -37,7 +37,8 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--simulate", action="store_true", help="use fake CSI, no hardware")
     g.add_argument("--port", help="serial port of the csi_recv node")
     g.add_argument("--baud", type=int, default=921600)
-    g.add_argument("--rate", type=float, default=100.0, help="send rate in Hz (simulator)")
+    g.add_argument("--rate", type=float, default=None,
+                   help="sender's nominal send rate in Hz (simulator; default 100)")
     g.add_argument("--seed", type=int, default=0, help="simulator seed")
     add_threshold_args(ap)
     c = ap.add_argument_group("calibration")
@@ -53,7 +54,7 @@ def build_parser() -> argparse.ArgumentParser:
 def open_stream(args: argparse.Namespace, calibrating: bool = False) -> Stream:
     if args.simulate:
         scenario = (Segment("empty", args.calibrate),) if calibrating else SIM_DEMO_SCENARIO
-        return simulate_stream(scenario=scenario, rate_hz=args.rate, seed=args.seed,
+        return simulate_stream(scenario=scenario, rate_hz=simulated_rate_hz(args), seed=args.seed,
                                realtime=not calibrating, loop=not calibrating)
     if args.port:
         return serial_stream(args.port, args.baud)

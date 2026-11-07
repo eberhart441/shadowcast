@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from typing import Iterator, Sequence
+from typing import Callable, Iterator, Optional, Sequence
 
 import numpy as np
 
@@ -51,12 +51,15 @@ def simulate_packets(
     realtime: bool = False,
     loop: bool = False,
     t0: float = 1_700_000_000.0,
+    device_clock: Optional[Callable[[int], int]] = None,
 ) -> Iterator[tuple[CSIPacket, str]]:
     """Yield (packet, state_label). ``loop`` repeats the scenario forever.
 
     ``drop_prob`` randomly omits packets (device_ts keeps advancing, so gaps are
     visible). ``realtime`` sleeps to emulate the wire rate and uses the wall
     clock as host_ts; otherwise host_ts is synthetic and runs as fast as possible.
+    ``device_clock`` maps the ideal device time (us) to the value the receiver
+    reports, e.g. a 32-bit wrap or a reboot to 0; host_ts is unaffected.
     """
     rng = np.random.default_rng(seed)
     base = rng.uniform(15, 40, N_SUBCARRIERS)
@@ -77,9 +80,10 @@ def simulate_packets(
                 if drop_prob and rng.random() < drop_prob:
                     continue
                 host = time.time() if realtime else t0 + idx * dt
+                local = int(idx * dt * 1e6 + rng.integers(0, 500))
                 yield CSIPacket(
                     host_ts=host,
-                    device_ts=int(idx * dt * 1e6 + rng.integers(0, 500)),
+                    device_ts=device_clock(local) if device_clock else local,
                     rssi=int(-45 - 3 * (seg.state == "motion") + rng.integers(-1, 2)),
                     channel=6,
                     amplitude=block[j][_keep_mask()].astype(np.float32),

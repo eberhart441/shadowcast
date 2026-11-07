@@ -20,7 +20,7 @@ from typing import Callable, Iterator, Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from csi.common import add_source_args  # noqa: E402
+from csi.common import add_source_args, link_send_rate, simulated_rate_hz  # noqa: E402
 from csi.parser import serial_stream  # noqa: E402
 from csi.recording import LABELS, record_session  # noqa: E402
 from csi.simulate import simulate_stream  # noqa: E402
@@ -48,25 +48,30 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
 
 
 def keyboard_poll() -> tuple[Callable[[], Optional[str]], Callable[[], None]]:
-    """Return (poll_label, stop). Non-blocking single-key reads in a daemon thread."""
+    """Return (poll_label, stop). Non-blocking single-key reads in a daemon thread.
+
+    The terminal is switched to cbreak here, on the caller's thread, and ``stop`` restores
+    it there too. The reader thread never touches terminal settings, so the restore does not
+    depend on when the thread notices it should stop. Without a terminal, nothing changes.
+    """
     pending: queue.SimpleQueue = queue.SimpleQueue()
     done = threading.Event()
-
-    def reader() -> None:
+    thread: Optional[threading.Thread] = None
+    fd, old = None, None
+    if sys.stdin.isatty():
         import termios
         import tty
         fd = sys.stdin.fileno()
         old = termios.tcgetattr(fd)
-        try:
-            tty.setcbreak(fd)
+        tty.setcbreak(fd)
+
+        def reader() -> None:
             while not done.is_set():
                 if select.select([sys.stdin], [], [], 0.1)[0]:
                     pending.put(sys.stdin.read(1).lower())
-        finally:
-            termios.tcsetattr(fd, termios.TCSADRAIN, old)
 
-    if sys.stdin.isatty():
-        threading.Thread(target=reader, daemon=True).start()
+        thread = threading.Thread(target=reader, daemon=True)
+        thread.start()
 
     def poll() -> Optional[str]:
         with contextlib.suppress(queue.Empty):
@@ -76,12 +81,20 @@ def keyboard_poll() -> tuple[Callable[[], Optional[str]], Callable[[], None]]:
             return KEYS.get(key)
         return None
 
-    return poll, done.set
+    def stop() -> None:
+        done.set()
+        if thread is not None:
+            thread.join(timeout=1.0)
+        if fd is not None:
+            import termios
+            termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
+    return poll, stop
 
 
 def make_stream(args: argparse.Namespace) -> Iterator[tuple[float, str]]:
     if args.simulate:
-        return simulate_stream(rate_hz=args.rate, seed=args.seed, realtime=True, loop=True)
+        return simulate_stream(rate_hz=simulated_rate_hz(args), seed=args.seed, realtime=True, loop=True)
     if args.port:
         return serial_stream(args.port, args.baud)
     raise SystemExit("error: pass --port <serial port> or --simulate")
@@ -90,16 +103,18 @@ def make_stream(args: argparse.Namespace) -> Iterator[tuple[float, str]]:
 def main(argv: Optional[list[str]] = None) -> int:
     args = parse_args(argv)
     stream = make_stream(args)
-    poll, stop = keyboard_poll()
+    poll, stop = keyboard_poll()  # the terminal is restored by stop() in the finally below
     print(f"recording to {Path(args.data_dir) / args.session}; keys: "
           + ", ".join(f"{k}={v}" for k, v in KEYS.items()) + f", {QUIT_KEY}=stop")
     try:
         report = record_session(
             stream, Path(args.data_dir) / args.session, args.label,
-            send_rate_hz=args.rate, countdown_s=args.countdown, placement_notes=args.notes,
+            send_rate_hz=link_send_rate(args), countdown_s=args.countdown, placement_notes=args.notes,
             duration_s=args.duration, poll_label=poll,
             on_countdown=lambda n: print(f"starting in {n}...", flush=True),
         )
+    except ValueError as e:
+        raise SystemExit(f"error: {e}")
     finally:
         stop()
         close = getattr(stream, "close", None)
