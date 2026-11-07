@@ -177,6 +177,23 @@ and RSSI. A real port needs `--thresholds` (or `--calibrate` first). A link with
 little or too lossy calibration data is reported and gets no threshold, rather than
 a guessed one. The single-port scripts above are unchanged.
 
+## Heatmap payload (dashboard state)
+
+`csi.dashboard.DashboardState` turns per-receiver packets into one JSON payload
+(`snapshot(now)`): `room`, `nodes`, `links` (state, score, threshold, `normalised` =
+score / threshold, pkt rate, drops, rssi, age, `weight`, `contributes`), `heatmap`
+(`cols`, `rows`, `extents`, row-major `cells` in 0..1, `max`, `contributing` link ids)
+and `status` (links by state, parameters in use). Each link's evidence is
+`log(score / threshold)` clipped at 0, so only links above their own threshold add
+heat, and quiet links (ratio about 0.65 in the simulator) add none. It is spread along
+the sender-receiver segment with a Gaussian falloff (`falloff_m`, default 0.35 m), summed,
+soft-saturated (`sensitivity`, default 0.2), smoothed with a 0.3 s rise and a 1.5 s decay
+(`rise_tau_s`, `decay_tau_s`) on packet time, and sampled on a 28 x 18 grid (`cols`,
+`rows`). Only EMPTY and MOTION links with a threshold contribute. Per-link weights come
+from `link_weights` in `config/room.json` (default 1.0; `rx1<-01` is 0.3 because that
+diagonal false-alarms on the real rig). This is a rough motion-likelihood estimate, not
+a position track.
+
 ## Simulator
 
 `--simulate` needs no threshold. It uses a simulator default (1.0) that sits
