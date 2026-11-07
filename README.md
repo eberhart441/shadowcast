@@ -190,11 +190,11 @@ Warnings:
 
 ## Calibrating
 
-Each link has its own signal scale. The **dashboard needs no calibration**: without a `--thresholds`
-file it runs in auto mode, where each link learns its own noise baseline (WARMUP for the first 10 s)
-and a room MOTION needs at least two links elevated together (see [Dashboard options](#dashboard-options)).
-Calibration below sets fixed thresholds, for `--thresholds` or the Set button. The terminal tools
-(`links_live.py`, `detect_live.py`) still need thresholds: they refuse to start without one rather than guess.
+Each link has its own signal scale, so the dashboard uses **fixed thresholds by default**: from a
+`--thresholds` file, from the calibration below, or from the Set button. Without any of these, links show
+`UNCALIBRATED`. `--simulate-room` calibrates itself on a simulated empty room. The experimental
+`--auto-threshold` mode needs no calibration (see [Dashboard options](#dashboard-options)). The terminal tools
+(`links_live.py`, `detect_live.py`) need thresholds: they refuse to start without one rather than guess.
 
 **Reset the receivers in place after placing the boards, before calibrating.** A
 receiver that booted before the boards were placed keeps a gain baseline from the old
@@ -303,16 +303,19 @@ What the page shows (`web/index.html`, one static file with no network assets):
 ### Dashboard options
 
 - `--port [NAME=]PATH`: a receiver's serial port; repeat for each receiver.
-- `--thresholds links.json`: per-link thresholds, from `links_live.py --calibrate` or the dashboard. With a file, links are fixed (the old behaviour).
-- `--auto-threshold`: auto mode even with `--thresholds`; the file is then not used for state.
-- **Auto mode** (default without `--thresholds`, and `--auto-threshold`): each link is judged against its own
-  adaptive baseline: the median of its score over the last 75 s of packet time, with a robust spread (1.4826 x MAD).
-  A link is MOTION (elevated) when its score stays at or above `baseline + 5.5 x spread` and `2 x baseline` for
-  0.6 s, and leaves below a lower exit level. It is WARMUP for the first 10 s. If most of the last 30 s sits above
-  the enter level, that level becomes the new normal (a receiver re-baseline, or a room that stays busy), so a
-  person who stays still for about 25 s or more is absorbed. The room is MOTION when at least two links are
-  elevated together, or one link is well above its enter level for 0.6 s. A Set on a link makes it fixed
-  (`value: null` returns it to auto). The payload carries `mode`, `elevated`, `level` per link and `status.room`.
+- `--thresholds links.json`: per-link fixed thresholds, from `links_live.py --calibrate` or the dashboard. This is
+  the default mode. Without the file, live links show UNCALIBRATED until calibrated or set; `--simulate-room`
+  uses a calibration on a simulated empty room instead.
+- `--auto-threshold`: **experimental** auto mode, which ignores any `--thresholds` file. It adapts to each link's
+  noise, needs about 10 s of quiet at the start, and absorbs a person who stays still for about 25 s. It detects
+  walking less sensitively, because the room needs two links to agree.
+  Each link is judged against its own adaptive baseline: the median of its score over the last 75 s of packet
+  time, with a robust spread (1.4826 x MAD). A link is MOTION (elevated) when its score stays at or above
+  `baseline + 5.5 x spread` and `2 x baseline` for 0.6 s, and leaves below a lower exit level. It is WARMUP for the
+  first 10 s. If most of the last 30 s sits above the enter level, that level becomes the new normal (a receiver
+  re-baseline, or a room that stays busy). The room is MOTION when at least two links are elevated together, or one
+  link is well above its enter level for 0.6 s. A Set on a link makes it fixed (`value: null` returns it to auto).
+  The payload carries `mode`, `elevated`, `level` per link and `status.room`.
 - `--simulate-room`: a simulated person walks a loop through the room in real time.
 - `--http-port` (default 8000), `--host` (default `127.0.0.1`), `--room` (default
   `config/room.json`), `--baud`, `--seed`.

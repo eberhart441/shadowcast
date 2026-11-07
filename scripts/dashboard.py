@@ -3,17 +3,18 @@
 
     dashboard.py --simulate-room                                   # a simulated person walks the room, no hardware
     dashboard.py --simulate-room --http-port 8000 --host 0.0.0.0   # reachable from the network (opt-in)
-    dashboard.py --port rx1=/dev/cu.usbmodem2101 --port rx2=/dev/cu.usbmodem101   # auto: no calibration needed
+    dashboard.py --port rx1=/dev/cu.usbmodem2101 --port rx2=/dev/cu.usbmodem101   # fixed: links UNCALIBRATED until set
     dashboard.py --port rx1=/dev/cu.usbmodem2101 --thresholds data/links_cal1_m1.json   # fixed thresholds
-    dashboard.py --port ... --thresholds links.json --auto-threshold                 # auto, ignoring the file
+    dashboard.py --port ... --auto-threshold                       # experimental auto mode, no calibration needed
     dashboard.py --simulate-room --log run.jsonl                   # also append the state stream to a file
     dashboard.py --replay run.jsonl --speed 8                      # serve a logged run (1 = original pace, max = fastest)
     dashboard.py --replay-session data/hw5 --speed 8 [--margin X | --thresholds links.json]
 
 Endpoints: GET /  (page), GET /api/state  (one payload), GET /api/events  (SSE, ~5 Hz).
-Binds to 127.0.0.1 unless --host says otherwise. Mode: without --thresholds, live sources run in auto mode
-(each link learns its own baseline, no calibration; see csi/adaptive.py). With --thresholds, links are fixed
-at their file thresholds; --auto-threshold forces auto and ignores the file. A Set on a link makes it fixed.
+Binds to 127.0.0.1 unless --host says otherwise. Mode: links are fixed by default (--thresholds file, or the
+simulated empty-room calibration with --simulate-room; without either, links show UNCALIBRATED until calibrated
+or set). --auto-threshold switches live sources to auto mode (experimental: each link learns its own baseline,
+see csi/adaptive.py) and ignores any thresholds file. A Set on a link makes it fixed.
 Ctrl+C stops the server and releases every port.
 A replay needs no serial port; when it has finished, the final state stays up (status.finished is true).
 """
@@ -37,7 +38,7 @@ from csi.replay import ReplayError, ReplayServer, load_log, session_dashboard  #
 from csi.room import DEFAULT_ROOM_PATH, Room, load_room  # noqa: E402
 from csi.server import DEFAULT_HOST, DEFAULT_PORT, DEFAULT_THRESHOLDS_FILE, DashboardServer, FrameServer, \
     controls_allowed, \
-    default_walk, looping_room_streams  # noqa: E402
+    default_walk, looping_room_streams, simulated_thresholds  # noqa: E402
 
 TICK_S = 0.5
 
@@ -95,12 +96,13 @@ def build_parser() -> argparse.ArgumentParser:
                          "then one payload per line, the same as /api/events")
     ap.add_argument("--room", type=Path, default=DEFAULT_ROOM_PATH, help="room configuration (default config/room.json)")
     ap.add_argument("--thresholds", metavar="links.json",
-                    help="per-link fixed thresholds from links_live.py --calibrate (fixed mode). Without it, live "
-                         "sources run in auto mode. With --replay-session the default is one calibrated on the "
-                         "session's first empty recording.")
+                    help="per-link fixed thresholds from links_live.py --calibrate. With --simulate-room the default is "
+                         "a calibration on a simulated empty room; with --replay-session the default is one "
+                         "calibrated on the session's first empty recording.")
     ap.add_argument("--auto-threshold", action="store_true",
-                    help="auto mode even when --thresholds is given: each link uses its own adaptive baseline and the "
-                         "file is not used for state (live sources only)")
+                    help="experimental auto mode: each link adapts to its own noise baseline (about 10 s of quiet at "
+                         "start; a person still for about 25 s is absorbed; walking is detected less sensitively, since "
+                         "the room needs two links to agree). Ignores --thresholds. Live sources only")
     s = ap.add_argument_group("server")
     s.add_argument("--http-port", type=int, default=DEFAULT_PORT, help=f"HTTP port (default {DEFAULT_PORT})")
     s.add_argument("--host", default=DEFAULT_HOST,
@@ -148,26 +150,30 @@ def load_link_thresholds(path: Optional[Path]) -> Optional[Mapping[str, float]]:
 
 
 def server_mode(args: argparse.Namespace) -> str:
-    """"auto" or "fixed" for the live server. Auto without a thresholds file, or with --auto-threshold.
+    """"fixed" by default; "auto" only with --auto-threshold (live sources).
 
-    Replays keep their own behaviour (fixed, from the log or a calibration on the session's first empty recording).
+    Replays are always fixed (from the log, or a calibration on the session's first empty recording).
     """
     if args.replay is not None or args.replay_session is not None:
         return "fixed"
-    if args.auto_threshold or args.thresholds is None:
-        return "auto"
-    return "fixed"
+    return "auto" if args.auto_threshold else "fixed"
 
 
 def build_sources(args: argparse.Namespace, room: Room) -> tuple[dict[str, Stream], Optional[Mapping[str, float]]]:
     """Named (host_ts, line) streams and the per-link fixed thresholds for them (None in auto mode).
     Serial ports open on first read."""
-    thresholds = load_link_thresholds(args.thresholds) if server_mode(args) == "fixed" else None
+    fixed = server_mode(args) == "fixed"
     if args.simulate_room:
+        thresholds = None
+        if fixed:
+            thresholds = load_link_thresholds(args.thresholds)
+            if thresholds is None:
+                print("calibrating the simulated empty room...", flush=True)
+                thresholds = simulated_thresholds(room)
         quiet = looping_room_streams(room, default_walk(room), seed=args.seed, quiet_first_s=args.sim_quiet_first)
         return quiet, thresholds
     sources = {name: serial_stream(path, args.baud) for name, path in parse_port_specs(args.port)}
-    return sources, thresholds
+    return sources, load_link_thresholds(args.thresholds) if fixed else None
 
 
 def build_server(args: argparse.Namespace) -> FrameServer:
@@ -187,7 +193,11 @@ def build_server(args: argparse.Namespace) -> FrameServer:
     source = "simulate-room" if args.simulate_room else "ports " + ", ".join(n for n, _ in parse_port_specs(args.port))
     save_to = args.save_thresholds or args.thresholds
     mode = server_mode(args)
-    thresholds_source = ("none (auto mode)" if mode == "auto" else f"loaded from {args.thresholds}")
+    if mode == "auto":
+        thresholds_source = "none (auto mode)"
+    else:
+        thresholds_source = (f"loaded from {args.thresholds}" if args.thresholds else
+                             ("simulated empty room" if args.simulate_room else "none"))
     return DashboardServer(room, sources, thresholds, host=args.host, port=args.http_port, log=args.log,
                            allow_control=args.allow_control, thresholds_path=save_to, mode=mode,
                            log_meta={"source": source, "thresholds_source": thresholds_source})
@@ -205,7 +215,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     if not controls_allowed(args.host, args.allow_control) and not args.replay and not args.replay_session:
         print("commands disabled: not bound to localhost (calibrate and tuning need --allow-control)", flush=True)
     if server_mode(args) == "auto":
-        print("auto mode: each link learns its own baseline (WARMUP for the first 10 s, no calibration needed)",
+        print("auto mode (--auto-threshold, experimental): each link learns its own baseline "
+              "(WARMUP for the first 10 s, no calibration needed)", flush=True)
+    elif args.port and args.thresholds is None:
+        print("no thresholds: every link shows UNCALIBRATED until calibrated (see links_live.py --calibrate)",
               flush=True)
     announced = False
     try:

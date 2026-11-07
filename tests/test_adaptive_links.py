@@ -132,14 +132,29 @@ def test_fixed_mode_default_keeps_the_old_threshold_states_and_reports_mode_fixe
 # ---------------------------------------------------------------- CLI mode choice
 
 
-def test_cli_auto_is_the_default_without_a_thresholds_file_and_fixed_with_one(tmp_path):
+def test_cli_fixed_is_the_default_for_live_sources_with_or_without_a_thresholds_file(tmp_path):
     parser = cli.build_parser()
-    no_file = parser.parse_args(["--simulate-room"])
-    assert cli.server_mode(no_file) == "auto"
+    for argv in (["--port", "rx1=/dev/cu.x"], ["--simulate-room"]):
+        assert cli.server_mode(parser.parse_args(argv)) == "fixed", argv
     path = tmp_path / "links.json"
     path.write_text('{"rx1<-00": 3.0}')
     with_file = parser.parse_args(["--simulate-room", "--thresholds", str(path)])
     assert cli.server_mode(with_file) == "fixed"
+
+
+def test_cli_auto_only_with_the_auto_threshold_flag():
+    parser = cli.build_parser()
+    assert cli.server_mode(parser.parse_args(["--port", "rx1=/dev/cu.x", "--auto-threshold"])) == "auto"
+    assert cli.server_mode(parser.parse_args(["--simulate-room", "--auto-threshold"])) == "auto"
+
+
+def test_cli_simulate_room_without_a_file_is_calibrated_fixed_not_auto():
+    args = cli.build_parser().parse_args(["--simulate-room"])
+    streams, thresholds = cli.build_sources(args, ROOM)
+    assert thresholds is not None and set(thresholds) == LABELS  # the simulated empty-room calibration
+    assert all(value > 0 for value in thresholds.values())
+    _, auto_thresholds = cli.build_sources(cli.build_parser().parse_args(["--simulate-room", "--auto-threshold"]), ROOM)
+    assert auto_thresholds is None
 
 
 def test_cli_auto_threshold_forces_auto_even_with_a_file(tmp_path):
