@@ -102,8 +102,11 @@ scripts/detect_live.py --port <PORT> --calibrate 60 --out calibration.json
 ```
 
 It writes `calibration.json` with the threshold (a high percentile of the
-empty-room motion score, plus a margin), and rejects recordings that are too
-short or lossy.
+empty-room motion score, plus a margin). Calibration splits the recording into
+1 s chunks and drops any chunk where someone was moving (its median is well above
+the quiet baseline, or its scores are bursty), so a passer-by during the clip
+does not inflate the threshold. It needs at least 8 s of clean data and reports
+how many seconds were rejected; if it refuses, record the empty room again.
 
 **Reset the receiver in place after placing the boards, before calibrating.**
 The firmware computes a gain baseline from the first 100 packets after boot, so
@@ -156,6 +159,17 @@ scripts/links_live.py --simulate-links --calibrate 15 --out links.json
 scripts/links_live.py --port rx1=<PORT_A> --port rx2=<PORT_B> --calibrate 60 --out links.json   # empty room
 scripts/links_live.py --port rx1=<PORT_A> --port rx2=<PORT_B> --thresholds links.json
 ```
+
+If one empty clip is too short or someone walked through it, record several clips
+in one run (scored separately, pooled; a 3 s pause separates them):
+
+```bash
+scripts/links_live.py --port rx1=<PORT_A> --port rx2=<PORT_B> --calibrate 20 --clips 3 --out links.json
+```
+
+Loss on real ports is measured against the 4-node rig's 40 Hz sender rate unless
+`--rate` says otherwise. A link is refused only when it delivers under 15 packets/s
+or loses more than 60% of packets; the reason and the measured rate are printed.
 
 The table refreshes twice a second: state (EMPTY green, MOTION red, NO_SIGNAL grey
 when a link has been silent for 2 s), score against threshold, packet rate, drops

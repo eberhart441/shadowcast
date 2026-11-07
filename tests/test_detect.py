@@ -46,8 +46,9 @@ def test_calibration_rejects_too_short_input():
 
 
 def test_calibration_rejects_too_lossy_input():
+    # 70% loss is above the 60% limit; 50% is now accepted (see test_calibration_robust.py)
     with pytest.raises(CalibrationError, match="loss"):
-        calibrate(empty_stream(drop_prob=0.5))
+        calibrate(empty_stream(drop_prob=0.7))
 
 
 def test_state_changes_once_at_motion_onset_without_flicker():

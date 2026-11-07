@@ -25,7 +25,7 @@ import json
 from collections import deque
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Iterable, Iterator, Optional
+from typing import Iterable, Iterator, Optional, Sequence
 
 import numpy as np
 
@@ -55,15 +55,19 @@ class Reading:
 
 
 class CalibrationError(ValueError):
-    """Calibration input was unusable (too short or too lossy)."""
+    """Calibration input was unusable (too short, too sparse, too lossy or too contaminated)."""
 
 
 @dataclass(frozen=True)
 class Calibration:
     threshold: float
-    rate_hz: float
-    duration_s: float
+    rate_hz: float            # nominal send rate used for loss (given, or estimated)
+    duration_s: float         # total clip time
     loss: float
+    clean_s: float = 0.0      # seconds of kept (quiet) data the threshold came from
+    rejected_s: float = 0.0   # seconds rejected as movement
+    pkt_rate_hz: float = 0.0  # effective received packet rate
+    clips: int = 1
 
     def save(self, path: str | Path) -> None:
         Path(path).write_text(json.dumps(asdict(self), indent=2) + "\n")
@@ -75,12 +79,18 @@ def load_threshold(path: str | Path) -> float:
 
 
 def estimate_rate_hz(device_ts_us: Iterable[int]) -> float:
-    """Packet rate from the median device-timestamp interval (robust to drops)."""
+    """Send rate from device-timestamp intervals, robust to drops.
+
+    Drops make some intervals 2x, 3x... the send period, so the median can sit on a multiple when
+    loss is high. Instead, take the lower decile as the near-period interval and average the intervals
+    that are close to it.
+    """
     diffs = np.diff(np.asarray(list(device_ts_us), dtype=np.float64))
     diffs = diffs[diffs > 0]
     if diffs.size == 0:
         raise ValueError("need at least two packets to estimate a rate")
-    return 1e6 / float(np.median(diffs))
+    near = float(np.percentile(diffs, 10))
+    return 1e6 / float(np.median(diffs[diffs <= 1.5 * near]))
 
 
 HIGHPASS_TAU_S = 0.16   # time constant of each slow-component stage (device time)
@@ -231,25 +241,34 @@ def detect_packets(packets: Iterable[CSIPacket], threshold: float,
                           est.bpm, est.confidence, est.enough_data)
 
 
-MIN_CALIBRATION_S = 10.0
-MAX_CALIBRATION_LOSS = 0.2
+MIN_CLEAN_S = 8.0                 # clean (kept) empty-room data needed before a threshold is trusted
+MAX_CALIBRATION_LOSS = 0.6        # refuse only when most packets are missing
+MIN_CALIBRATION_PKT_RATE_HZ = 15.0  # below this the window scores are too thin to be stable
+CHUNK_S = 1.0                     # contamination is judged per 1 s chunk (see calibrate_clips)
+REJECT_RATIO = 3.0                # chunk median > 3x the quiet baseline -> someone is moving
+BURST_RATIO = 2.5                 # chunk p90 > 2.5x its own median -> a passer-by inside the chunk
 THRESHOLD_PERCENTILE = 99.0
 THRESHOLD_MARGIN = 1.5  # threshold = percentile * margin
 
 
-def packet_loss(device_ts_us: list[int]) -> float:
-    """Fraction of packets missing, from device-timestamp gaps vs the median interval."""
-    interval = 1e6 / estimate_rate_hz(device_ts_us)
-    expected = (device_ts_us[-1] - device_ts_us[0]) / interval + 1
+def packet_loss(device_ts_us: list[int], send_rate_hz: Optional[float] = None) -> float:
+    """Fraction of packets missing: 1 - received / expected, with expected from the send rate.
+
+    ``send_rate_hz`` is the sender's nominal rate when known; otherwise it is estimated from timestamps.
+    """
+    rate = send_rate_hz if send_rate_hz is not None else estimate_rate_hz(device_ts_us)
+    duration_s = (device_ts_us[-1] - device_ts_us[0]) / 1e6
+    expected = duration_s * rate + 1
     return max(0.0, 1.0 - len(device_ts_us) / expected)
 
 
-def calibrate(stream: Stream, parser: Optional[CSIParser] = None) -> Calibration:
+def calibrate(stream: Stream, parser: Optional[CSIParser] = None,
+              send_rate_hz: Optional[float] = None) -> Calibration:
     """Learn the motion threshold from an empty-room stream.
 
-    Raises CalibrationError if the input is too short or loses too many packets.
+    Raises CalibrationError if the input is too short, too sparse, too lossy or too contaminated.
     """
-    return calibrate_packets(list(parse_stream(stream, parser)))
+    return calibrate_packets(list(parse_stream(stream, parser)), send_rate_hz)
 
 
 def _since_last_reboot(packets: list[CSIPacket]) -> tuple[list[CSIPacket], list[int]]:
@@ -267,20 +286,84 @@ def _since_last_reboot(packets: list[CSIPacket]) -> tuple[list[CSIPacket], list[
     return packets[start:], times[start:]
 
 
-def calibrate_packets(packets: list[CSIPacket]) -> Calibration:
+def calibrate_packets(packets: list[CSIPacket], send_rate_hz: Optional[float] = None) -> Calibration:
     """``calibrate`` for packets already parsed (e.g. loaded from a recording)."""
-    packets, device_ts = _since_last_reboot(packets)
-    if len(packets) < 2:
-        raise CalibrationError("input too short: fewer than two packets")
-    duration = (device_ts[-1] - device_ts[0]) / 1e6
-    if duration < MIN_CALIBRATION_S:
-        raise CalibrationError(f"input too short: {duration:.1f}s < {MIN_CALIBRATION_S:.0f}s")
-    loss = packet_loss(device_ts)
-    if loss > MAX_CALIBRATION_LOSS:
-        raise CalibrationError(f"input too lossy: {loss:.0%} loss > {MAX_CALIBRATION_LOSS:.0%}")
-    scorer = MotionScorer()
-    scores = [s for s in (scorer.push(p) for p in packets) if s is not None]
-    if not scores:
+    return calibrate_clips([packets], send_rate_hz)
+
+
+def calibrate_clips(clips: Sequence[Sequence[CSIPacket]], send_rate_hz: Optional[float] = None) -> Calibration:
+    """Learn one threshold from one or more empty-room clips.
+
+    Each clip is scored on its own (fresh MotionScorer, so no window spans two clips). Scores are
+    judged in 1 s chunks: a chunk is contaminated when its median is more than REJECT_RATIO times
+    the quiet baseline (the median of the lowest-half chunk medians, pooled over all clips), or when
+    its p90 is more than BURST_RATIO times its own median (a passer-by in part of the chunk). The
+    threshold is THRESHOLD_MARGIN x the THRESHOLD_PERCENTILE of the windows in the kept chunks only.
+    Raises CalibrationError if fewer than MIN_CLEAN_S seconds are kept.
+    """
+    clips = [list(c) for c in clips]
+    if not clips:
+        raise CalibrationError("no calibration input")
+    chunks: list[tuple[float, np.ndarray]] = []  # (chunk length s, window scores)
+    rates, total_s, packets_n, expected_n = [], 0.0, 0, 0.0
+    for i, clip in enumerate(clips):
+        where = f"clip {i + 1}: " if len(clips) > 1 else ""
+        packets, device_ts = _since_last_reboot(clip)
+        if len(packets) < 2:
+            raise CalibrationError(f"{where}input too short: fewer than two packets")
+        duration = (device_ts[-1] - device_ts[0]) / 1e6
+        if duration <= 0:
+            raise CalibrationError(f"{where}input too short: no time elapsed between packets")
+        try:
+            rate = send_rate_hz if send_rate_hz is not None else estimate_rate_hz(device_ts)
+        except ValueError as e:
+            raise CalibrationError(f"{where}input too short: {e}") from e
+        rate_eff = len(packets) / duration
+        loss = max(0.0, 1.0 - len(packets) / (duration * rate + 1))
+        if rate_eff < MIN_CALIBRATION_PKT_RATE_HZ:
+            raise CalibrationError(
+                f"{where}link too sparse: {rate_eff:.1f} pkt/s < {MIN_CALIBRATION_PKT_RATE_HZ:.0f} pkt/s "
+                f"(loss {loss:.0%} of {rate:.0f} Hz); the window scores would be unstable. "
+                "Move the nodes closer or check the sender.")
+        if loss > MAX_CALIBRATION_LOSS:
+            raise CalibrationError(f"{where}input too lossy: {loss:.0%} loss > {MAX_CALIBRATION_LOSS:.0%}")
+        rates.append(rate)
+        total_s += duration
+        packets_n += len(packets)
+        expected_n += duration * rate + 1
+        per_chunk: dict[int, list[float]] = {}
+        scorer = MotionScorer()
+        t0 = device_ts[0]
+        for p, t in zip(packets, device_ts):
+            s = scorer.push(p)
+            if s is not None:
+                per_chunk.setdefault(int((t - t0) / 1e6 // CHUNK_S), []).append(s)
+        for k, scores in per_chunk.items():
+            chunks.append((max(0.0, min(CHUNK_S, duration - k * CHUNK_S)), np.array(scores)))
+    if not chunks:
         raise CalibrationError("input too short: no full 1 s window")
-    threshold = float(np.percentile(scores, THRESHOLD_PERCENTILE)) * THRESHOLD_MARGIN
-    return Calibration(threshold, estimate_rate_hz(device_ts), duration, loss)
+
+    medians = np.array([float(np.median(s)) for _, s in chunks])
+    order = np.sort(medians)
+    baseline = float(np.median(order[: max(1, len(order) // 2)]))
+    kept: list[np.ndarray] = []
+    clean_s = rejected_s = 0.0
+    for (length, scores), median in zip(chunks, medians):
+        bursty = float(np.percentile(scores, 90)) > BURST_RATIO * median
+        if median > REJECT_RATIO * baseline or bursty:
+            rejected_s += length
+        else:
+            kept.append(scores)
+            clean_s += length
+    if clean_s < MIN_CLEAN_S:
+        raise CalibrationError(
+            f"input too short: {clean_s:.1f} s of clean data < {MIN_CLEAN_S:.0f} s "
+            f"(rejected {rejected_s:.1f} s of {total_s:.1f} s as contaminated by movement). "
+            "Record the empty room again, with nobody walking through.")
+    pooled = np.concatenate(kept)
+    threshold = float(np.percentile(pooled, THRESHOLD_PERCENTILE)) * THRESHOLD_MARGIN
+    loss = max(0.0, 1.0 - packets_n / expected_n)
+    return Calibration(threshold=threshold,
+                       rate_hz=float(send_rate_hz) if send_rate_hz is not None else float(np.median(rates)),
+                       duration_s=total_s, loss=loss, clean_s=clean_s, rejected_s=rejected_s,
+                       pkt_rate_hz=packets_n / total_s, clips=len(clips))

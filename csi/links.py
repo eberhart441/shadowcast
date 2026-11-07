@@ -22,9 +22,9 @@ import json
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Mapping, Optional
+from typing import Iterable, Mapping, Optional, Sequence
 
-from .detect import DEBOUNCE_S, CalibrationError, MotionScorer, _Debouncer, calibrate_packets, classify
+from .detect import DEBOUNCE_S, Calibration, CalibrationError, MotionScorer, _Debouncer, calibrate_clips, classify
 from .health import LinkHealth
 from .parser import CSIPacket
 
@@ -124,32 +124,53 @@ class LinkMonitor:
 
 @dataclass(frozen=True)
 class LinkCalibration:
-    thresholds: dict[str, float]   # calibrated links
-    skipped: dict[str, str]        # link label -> why it was refused
+    calibrations: dict[str, Calibration]   # calibrated links: label -> full calibration report
+    skipped: dict[str, str]                # link label -> why it was refused
+
+    @property
+    def thresholds(self) -> dict[str, float]:
+        return {label: c.threshold for label, c in self.calibrations.items()}
+
+    @property
+    def clean_s(self) -> dict[str, float]:
+        return {label: c.clean_s for label, c in self.calibrations.items()}
+
+    @property
+    def rejected_s(self) -> dict[str, float]:
+        return {label: c.rejected_s for label, c in self.calibrations.items()}
 
 
-def calibrate_links_report(tagged: Iterable[tuple[str, CSIPacket]],
-                           expected: Iterable[LinkId] = ()) -> LinkCalibration:
-    """Calibrate each link from its own empty-room packets (see ``calibrate_packets``).
+def calibrate_links_report(tagged: Optional[Iterable[tuple[str, CSIPacket]]] = None,
+                           expected: Iterable[LinkId] = (), send_rate_hz: Optional[float] = None,
+                           *, clips: Optional[Sequence[Iterable[tuple[str, CSIPacket]]]] = None) -> LinkCalibration:
+    """Calibrate each link from its own empty-room packets (see ``calibrate_clips``).
 
-    A link with too few or too lossy packets is skipped and the reason is kept. ``expected`` links
-    with no packets at all are skipped as "no packets".
+    ``tagged`` is one clip; ``clips`` is several clips, each scored separately and pooled per link. A
+    link with too few packets, too sparse, too lossy or too contaminated is skipped and the reason is
+    kept. ``expected`` links with no packets at all are skipped as "no packets".
     """
-    groups: dict[LinkId, list[CSIPacket]] = {link_id: [] for link_id in expected}
-    for receiver, pkt in tagged:
-        groups.setdefault(LinkId(receiver, pkt.mac), []).append(pkt)
-    thresholds: dict[str, float] = {}
+    if clips is None:
+        clips = [tagged if tagged is not None else []]
+    expected = list(expected)
+    per_link: dict[LinkId, list[list[CSIPacket]]] = {link_id: [] for link_id in expected}
+    for clip in clips:
+        groups: dict[LinkId, list[CSIPacket]] = {}
+        for receiver, pkt in clip:
+            groups.setdefault(LinkId(receiver, pkt.mac), []).append(pkt)
+        for link_id, pkts in groups.items():
+            per_link.setdefault(link_id, []).append(pkts)
+    calibrations: dict[str, Calibration] = {}
     skipped: dict[str, str] = {}
-    for link_id in sorted(groups, key=lambda lid: lid.label):
-        label, pkts = link_id.label, groups[link_id]
-        if not pkts:
+    for link_id in sorted(per_link, key=lambda lid: lid.label):
+        label, link_clips = link_id.label, per_link[link_id]
+        if not link_clips:
             skipped[label] = "no packets"
             continue
         try:
-            thresholds[label] = calibrate_packets(pkts).threshold
+            calibrations[label] = calibrate_clips(link_clips, send_rate_hz)
         except CalibrationError as e:
             skipped[label] = str(e)
-    return LinkCalibration(thresholds, skipped)
+    return LinkCalibration(calibrations, skipped)
 
 
 def calibrate_links(tagged: Iterable[tuple[str, CSIPacket]]) -> dict[str, float]:

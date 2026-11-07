@@ -89,7 +89,7 @@ def test_calibrate_links_skips_short_and_lossy_links_with_a_reason():
             continue
         if label == lossy:
             lossy_count += 1
-            if lossy_count % 10 in (0, 3, 6):  # drop 30%: above the 20% limit, and below 50%
+            if lossy_count % 10 not in (0, 1, 2):  # keep 3 in a row, drop 70%: above the 60% limit
                 continue
         kept.append((receiver, pkt))
     report = calibrate_links_report(kept)

@@ -33,6 +33,8 @@ from csi.parser import CSIPacket, Stream, serial_stream  # noqa: E402
 from csi.simulate import DEFAULT_RECEIVERS, SENDER_MACS, Segment, simulate_link_streams  # noqa: E402
 
 SIM_DEMO_SCENARIO = (Segment("empty", 20), Segment("motion", 10), Segment("still", 30))  # loops
+CALIBRATION_RATE_HZ = 40.0  # 4-node rig sender rate: nominal rate for calibration loss on real ports
+CLIP_PAUSE_S = 3.0          # pause between --clips, to let the room settle (and the operator step out)
 CLEAR = "\033[H\033[2J"
 RESET = "\033[0m"
 COLOURS = {"EMPTY": "\033[32m", "MOTION": "\033[31m", NO_SIGNAL: "\033[90m",
@@ -49,13 +51,19 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--port", action="append", metavar="[NAME=]PATH",
                    help="serial port of a csi_recv node; repeat for each receiver. Unnamed ports get rx1, rx2...")
     g.add_argument("--baud", type=int, default=921600)
-    g.add_argument("--rate", type=float, default=None, help="simulator send rate in Hz (default 100)")
+    g.add_argument("--rate", type=float, default=None,
+                   help="sender's nominal send rate in Hz (simulator default 100). For --calibrate on real ports, "
+                        f"the loss estimate uses this, else {CALIBRATION_RATE_HZ:.0f} Hz (the 4-node rig).")
     g.add_argument("--seed", type=int, default=0, help="simulator seed")
     t = ap.add_argument_group("thresholds")
     t.add_argument("--thresholds", metavar="links.json", help="per-link thresholds from --calibrate")
     c = ap.add_argument_group("calibration")
     c.add_argument("--calibrate", type=float, metavar="SECONDS",
                    help="record an empty room for SECONDS, write per-link thresholds to --out, then exit")
+    c.add_argument("--clips", type=int, default=1, metavar="N",
+                   help="with --calibrate: record N clips of SECONDS each, with a 3 s pause between them, "
+                        "scored separately and pooled (default 1). Use it when one empty clip is too short "
+                        "or someone walked through it.")
     c.add_argument("--out", type=Path, default=Path("links.json"), help="where --calibrate writes the file")
     ap.add_argument("--duration", type=float, help="stop after this many seconds (default: until Ctrl+C)")
     ap.add_argument("--every", type=float, default=0.5, help="seconds between redraws (default 0.5 = 2 Hz)")
@@ -75,10 +83,10 @@ def simulated_links() -> list[LinkId]:
     return [LinkId(r, m) for r in DEFAULT_RECEIVERS for m in SENDER_MACS]
 
 
-def open_sources(args: argparse.Namespace, calibrating: bool) -> dict[str, Stream]:
+def open_sources(args: argparse.Namespace, calibrating: bool, seconds: Optional[float] = None) -> dict[str, Stream]:
     """Line streams per receiver. Serial streams open their port only when first read (on a reader thread)."""
     if args.simulate_links:
-        scenario = (Segment("empty", args.calibrate),) if calibrating else SIM_DEMO_SCENARIO
+        scenario = (Segment("empty", seconds),) if calibrating else SIM_DEMO_SCENARIO
         return simulate_link_streams(SENDER_MACS, DEFAULT_RECEIVERS, scenario, rate_hz=simulated_rate_hz(args),
                                      seed=args.seed, realtime=not calibrating, loop=not calibrating)
     return {name: serial_stream(path, args.baud) for name, path in parse_port_specs(args.port)}
@@ -99,40 +107,84 @@ def resolve_thresholds(args: argparse.Namespace) -> tuple[dict[str, float], str]
 
 # ------------------------------------------------------------------ run loops
 
-def collect(ms: MultiSource, seconds: Optional[float]) -> list[tuple[str, CSIPacket]]:
-    """Read every source until it ends or ``seconds`` of wall time pass. Closes the sources."""
-    ms.start()
+def calibration_rate(args: argparse.Namespace) -> float:
+    """Nominal sender rate for calibration loss: --rate, else the simulator or the 4-node rig default."""
+    if args.rate is not None:
+        return args.rate
+    return simulated_rate_hz(args) if args.simulate_links else CALIBRATION_RATE_HZ
+
+
+def clip_events(clip_s: float, n: int) -> list[tuple[float, str]]:
+    """(seconds from the first packet, message) for the operator: each clip's start and each pause."""
+    period = clip_s + CLIP_PAUSE_S
+    events: list[tuple[float, str]] = []
+    for k in range(n):
+        events.append((k * period, f"clip {k + 1}/{n}: keep the room empty for {clip_s:.0f} s..."))
+        if k < n - 1:
+            events.append((k * period + clip_s, f"next clip in {CLIP_PAUSE_S:.0f} s..."))
+    return events
+
+
+def record_clips(ms: MultiSource, clip_s: float, n: int) -> list[list[tuple[str, CSIPacket]]]:
+    """Record ``n`` clips of ``clip_s`` seconds with pauses between them, one port open throughout.
+
+    Packets are cut into clips by host time, so the pauses are dropped and each clip is kept whole.
+    Stops early on a source error or Ctrl+C; the clips recorded so far are still returned.
+    """
+    period = clip_s + CLIP_PAUSE_S
+    total = n * clip_s + (n - 1) * CLIP_PAUSE_S
+    pending = clip_events(clip_s, n)
     tagged: list[tuple[str, CSIPacket]] = []
+    ms.start()
     start = time.time()
+
+    def announce(elapsed: float) -> None:
+        while pending and pending[0][0] <= elapsed:
+            print(pending.pop(0)[1], flush=True)
+
     try:
         while True:
             tagged.extend(ms.drain(timeout=0.1))
-            if ms.finished():
-                break
-            if seconds is not None and time.time() - start >= seconds:
+            elapsed = time.time() - start
+            announce(elapsed)
+            if ms.finished() or elapsed >= total:
                 break
     except KeyboardInterrupt:
         print("\ninterrupted: calibrating on what was recorded", flush=True)
     finally:
         tagged.extend(ms.drain())
         ms.close()
-    return tagged
+    announce(float("inf"))  # simulator sources finish at once; the prompts still show in order
+    if not tagged:
+        return [[] for _ in range(n)]
+    origin = min(pkt.host_ts for _, pkt in tagged)
+    clips: list[list[tuple[str, CSIPacket]]] = [[] for _ in range(n)]
+    for item in tagged:
+        k = int((item[1].host_ts - origin) // period)
+        offset = item[1].host_ts - origin - k * period
+        if 0 <= k < n and offset < clip_s:
+            clips[k].append(item)
+    return clips
 
 
 def run_calibration(args: argparse.Namespace) -> int:
     expected = simulated_links() if args.simulate_links else []
-    ms = MultiSource(open_sources(args, calibrating=True))
-    print(f"calibrating for {args.calibrate:.0f}s: keep the room empty...", flush=True)
-    report = calibrate_links_report(collect(ms, args.calibrate), expected=expected)
-    for label, threshold in sorted(report.thresholds.items()):
-        print(f"  {label}  threshold {threshold:.2f}")
+    n = max(1, args.clips)
+    total = n * args.calibrate + (n - 1) * CLIP_PAUSE_S
+    ms = MultiSource(open_sources(args, calibrating=True, seconds=total))
+    print(f"calibrating: {n} clip(s) of {args.calibrate:.0f}s, keep the room empty...", flush=True)
+    clips = record_clips(ms, args.calibrate, n)
+    report = calibrate_links_report(clips=clips, expected=expected, send_rate_hz=calibration_rate(args))
+    for label, c in sorted(report.calibrations.items()):
+        print(f"  {label}  threshold {c.threshold:.2f}  clean {c.clean_s:.1f} s, rejected {c.rejected_s:.1f} s "
+              f"(movement), {c.pkt_rate_hz:.1f} pkt/s, loss {c.loss:.0%}")
     for label, why in sorted(report.skipped.items()):
         print(f"  {label}  NOT CALIBRATED: {why}")
-    if not report.thresholds:
+    if not report.calibrations:
         print("calibration failed: no link has enough data, nothing written", file=sys.stderr)
         return 1
     save_thresholds(args.out, report.thresholds)
-    print(f"wrote {len(report.thresholds)} link threshold(s) -> {args.out}")
+    print(f"wrote {len(report.calibrations)} link threshold(s) -> {args.out}")
     if report.skipped:
         print(f"{len(report.skipped)} link(s) have no threshold and will show UNCALIBRATED; "
               "record a longer empty room to calibrate them.", file=sys.stderr)
