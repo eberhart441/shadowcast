@@ -225,6 +225,9 @@
         <label>Margin <input type="number" id="cal-margin" min="0.1" max="10" step="0.05" value="1.25"></label>
       </div>
       <div class="ctl-row">
+        <label><input type="checkbox" id="cal-noisy" checked> noisy room (do not reject movement)</label>
+      </div>
+      <div class="ctl-row">
         <button type="button" id="cal-start">Start calibration</button>
         <button type="button" id="cal-cancel" disabled>Cancel</button>
       </div>
@@ -920,7 +923,7 @@
 
     $("cal-start").disabled = !on || active;
     $("cal-cancel").disabled = !on || !(cal.state === "countdown" || cal.state === "recording");
-    ["cal-clips", "cal-seconds", "cal-margin"].forEach(function (id) { $(id).disabled = !on || active; });
+    ["cal-clips", "cal-seconds", "cal-margin", "cal-noisy"].forEach(function (id) { $(id).disabled = !on || active; });
     $("thr-save").disabled = !on;
     TUNING.forEach(function (t) { $(t.id).disabled = !on; });
 
@@ -959,7 +962,7 @@
     $("cal-start").addEventListener("click", function () {
       command("/api/calibrate", {
         clips: Number($("cal-clips").value), seconds: Number($("cal-seconds").value),
-        margin: Number($("cal-margin").value)
+        margin: Number($("cal-margin").value), noisy: $("cal-noisy").checked
       }).then(function (r) { reply("cal-error", r); });
     });
     $("cal-cancel").addEventListener("click", function () {

@@ -77,6 +77,8 @@ class Calibration:
     pkt_rate_hz: float = 0.0  # effective received packet rate
     clips: int = 1
     margin: float = DEFAULT_MARGIN  # threshold = margin * p99 of the kept windows
+    noisy: bool = False             # noisy-room calibration: threshold = margin * p97 of all windows
+    warning: str = ""               # noisy mode: how much of the clip looked like movement
 
     def save(self, path: str | Path) -> None:
         Path(path).write_text(json.dumps(asdict(self), indent=2) + "\n")
@@ -275,6 +277,7 @@ CHUNK_S = 1.0                     # contamination is judged per 1 s chunk (see c
 REJECT_RATIO = 3.0                # chunk median > 3x the quiet baseline -> someone is moving
 BURST_RATIO = 2.5                 # chunk p90 > 2.5x its own median -> a passer-by inside the chunk
 THRESHOLD_PERCENTILE = 99.0
+NOISY_PERCENTILE = 97.0           # noisy-room calibration: p97 x margin over all windows, movement included
 
 
 def packet_loss(device_ts_us: list[int], send_rate_hz: Optional[float] = None) -> float:
@@ -320,7 +323,8 @@ def calibrate_packets(packets: list[CSIPacket], send_rate_hz: Optional[float] = 
 
 
 def calibrate_clips(clips: Sequence[Sequence[CSIPacket]], send_rate_hz: Optional[float] = None,
-                    margin: float = DEFAULT_MARGIN, min_clean_fraction: float = MIN_CLEAN_FRACTION) -> Calibration:
+                    margin: float = DEFAULT_MARGIN, min_clean_fraction: float = MIN_CLEAN_FRACTION,
+                    noisy: bool = False) -> Calibration:
     """Learn one threshold from one or more empty-room clips.
 
     Each clip is scored on its own (fresh MotionScorer, so no window spans two clips). Scores are
@@ -389,19 +393,32 @@ def calibrate_clips(clips: Sequence[Sequence[CSIPacket]], send_rate_hz: Optional
         else:
             kept.append(scores)
             clean_s += length
-    if clean_s < MIN_CLEAN_S:
-        raise CalibrationError(
-            f"input too short: {clean_s:.1f} s of clean data < {MIN_CLEAN_S:.0f} s "
-            f"(rejected {rejected_s:.1f} s of {total_s:.1f} s as contaminated by movement). "
-            "Record the empty room again, with nobody walking through.")
-    if clean_s < min_clean_fraction * total_s:
-        raise CalibrationError(
-            f"only {clean_s:.1f} s of {total_s:.1f} s was quiet; the link is bursty or someone was moving: "
-            "record again")
+    warning = ""
+    if noisy:
+        # A noisy room: movement is not refused. Every window counts, and the threshold is p97 x margin over
+        # all of them (the stopgap that worked on the real rig). The warning says how much looked like movement.
+        kept = [scores for _, scores in chunks]
+        clean_s = sum(length for length, _ in chunks)
+        percentile = NOISY_PERCENTILE
+        if rejected_s > 0:  # a clean clip carries no warning
+            warning = (f"noisy: {rejected_s:.1f} of {total_s:.1f} s looked like movement; threshold = "
+                       f"p{NOISY_PERCENTILE:g} x margin over all windows")
+    else:
+        if clean_s < MIN_CLEAN_S:
+            raise CalibrationError(
+                f"input too short: {clean_s:.1f} s of clean data < {MIN_CLEAN_S:.0f} s "
+                f"(rejected {rejected_s:.1f} s of {total_s:.1f} s as contaminated by movement). "
+                "Record the empty room again, with nobody walking through.")
+        if clean_s < min_clean_fraction * total_s:
+            raise CalibrationError(
+                f"only {clean_s:.1f} s of {total_s:.1f} s was quiet; the link is bursty or someone was moving: "
+                "record again")
+        percentile = THRESHOLD_PERCENTILE
     pooled = np.concatenate(kept)
-    threshold = float(np.percentile(pooled, THRESHOLD_PERCENTILE)) * margin
+    threshold = float(np.percentile(pooled, percentile)) * margin
     loss = max(0.0, 1.0 - packets_n / expected_n)
     return Calibration(threshold=threshold,
                        rate_hz=float(send_rate_hz) if send_rate_hz is not None else float(np.median(rates)),
                        duration_s=total_s, loss=loss, clean_s=clean_s, rejected_s=rejected_s,
-                       pkt_rate_hz=packets_n / total_s, clips=len(clips), margin=margin)
+                       pkt_rate_hz=packets_n / total_s, clips=len(clips), margin=margin,
+                       noisy=noisy, warning=warning)
