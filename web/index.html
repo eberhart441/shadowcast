@@ -135,6 +135,33 @@
     margin: 0 16px 24px; padding: 14px; border: 1px dashed var(--line); border-radius: 12px; color: var(--muted);
   }
   .controls h2 { font-size: 0.95rem; margin: 0; text-transform: uppercase; letter-spacing: 0.06em; }
+  .ctl-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; margin-top: 10px; }
+  .ctl-block {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px; min-width: 0;
+    color: var(--text);
+  }
+  .ctl-block h3 { margin: 0 0 8px; font-size: 0.95rem; }
+  .ctl-row { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: flex-end; margin: 6px 0; }
+  .ctl-row label { display: flex; flex-direction: column; gap: 4px; font-size: 0.85rem; color: var(--muted); }
+  .controls input[type="number"] {
+    font: inherit; min-height: 40px; width: 110px; padding: 6px 8px; border-radius: 8px;
+    border: 1px solid #3b4a5c; background: #0b1017; color: var(--text);
+  }
+  .controls button:disabled { opacity: 0.45; cursor: not-allowed; }
+  .controls button { min-width: 0; min-height: 40px; }
+  .ctl-note { color: var(--uncal); margin: 8px 0 0; }
+  .ctl-error { color: #ffb4ae; margin: 6px 0 0; }
+  .cal-state { margin: 6px 0; color: var(--text); font-weight: 600; }
+  .cal-table { width: 100%; border-collapse: collapse; font-size: 0.9rem; margin-top: 8px; color: var(--text); }
+  .cal-table th, .cal-table td { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--line); }
+  .cal-table tr.warn td { color: #ffb4ae; background: #3a1716; }
+  .thr-row { display: flex; flex-wrap: wrap; gap: 6px 8px; align-items: center; padding: 8px 0; border-top: 1px solid var(--line); }
+  .thr-row:first-child { border-top: 0; padding-top: 0; }
+  .thr-row .lid { min-width: 96px; }
+  .thr-row .thr-cur { flex: 1 1 100%; font-size: 0.88rem; }
+  .thr-row .thr-input { width: 120px; }
+  .tune-row { display: grid; grid-template-columns: 110px 1fr 56px; gap: 8px; align-items: center; margin: 8px 0; }
+  .tune-row output { font-variant-numeric: tabular-nums; text-align: right; }
 
   @media (max-width: 820px) {
     main.layout { grid-template-columns: 1fr; padding: 12px; gap: 12px; }
@@ -186,12 +213,59 @@
   </section>
 </main>
 
-<!--
-  CONTROLS: this container is intentionally empty. Ticket #15 (calibration and tuning controls)
-  adds its controls inside #controls. Keep the id and the heading so the layout does not move.
--->
 <section class="controls" id="controls" aria-label="Controls">
   <h2>Controls</h2>
+  <p class="ctl-note" id="ctl-reason" hidden></p>
+  <div class="ctl-grid">
+    <div class="ctl-block" aria-labelledby="cal-title">
+      <h3 id="cal-title">Calibrate on an empty room</h3>
+      <div class="ctl-row">
+        <label>Clips <input type="number" id="cal-clips" min="1" max="10" step="1" value="3"></label>
+        <label>Seconds per clip <input type="number" id="cal-seconds" min="1" max="120" step="1" value="10"></label>
+        <label>Margin <input type="number" id="cal-margin" min="0.1" max="10" step="0.05" value="1.25"></label>
+      </div>
+      <div class="ctl-row">
+        <button type="button" id="cal-start">Start calibration</button>
+        <button type="button" id="cal-cancel" disabled>Cancel</button>
+      </div>
+      <p class="cal-state" id="cal-state" aria-live="polite">Idle. Keep the room empty when you start.</p>
+      <div id="cal-result"></div>
+      <p class="ctl-error" id="cal-error" role="alert" hidden></p>
+    </div>
+    <div class="ctl-block" aria-labelledby="thr-title">
+      <h3 id="thr-title">Link thresholds</h3>
+      <div id="thr-list"><p class="muted">waiting for links</p></div>
+      <div class="ctl-row">
+        <button type="button" id="thr-save">Save thresholds</button>
+        <span class="muted" id="thr-saved"></span>
+      </div>
+      <p class="ctl-error" id="thr-error" role="alert" hidden></p>
+    </div>
+    <div class="ctl-block" aria-labelledby="tune-title">
+      <h3 id="tune-title">Heatmap tuning</h3>
+      <div class="tune-row">
+        <span>Sensitivity</span>
+        <input type="range" id="tune-sensitivity" min="0.01" max="2" step="0.01" value="0.2" aria-label="heatmap sensitivity">
+        <output id="tune-sensitivity-out">0.2</output>
+      </div>
+      <div class="tune-row">
+        <span>Decay (s)</span>
+        <input type="range" id="tune-decay" min="0.1" max="10" step="0.1" value="1.5" aria-label="heatmap decay in seconds">
+        <output id="tune-decay-out">1.5</output>
+      </div>
+      <div class="tune-row">
+        <span>Rise (s)</span>
+        <input type="range" id="tune-rise" min="0.05" max="3" step="0.05" value="0.3" aria-label="heatmap rise in seconds">
+        <output id="tune-rise-out">0.3</output>
+      </div>
+      <div class="tune-row">
+        <span>Falloff (m)</span>
+        <input type="range" id="tune-falloff" min="0.1" max="1.5" step="0.05" value="0.35" aria-label="heatmap falloff in metres">
+        <output id="tune-falloff-out">0.35</output>
+      </div>
+      <p class="ctl-error" id="tune-error" role="alert" hidden></p>
+    </div>
+  </div>
 </section>
 
 <noscript><p class="muted" style="padding:16px">This page needs JavaScript to draw the room map.</p></noscript>
@@ -674,11 +748,177 @@
 
   // ------------------------------------------------------------------ render
 
+  // ------------------------------------------------------------------ controls
+
+  var CAL_LABEL = { countdown: "Clear the room", recording: "Keep the room empty", processing: "Processing the clips" };
+  var TUNING = [
+    { key: "sensitivity", field: "sensitivity", id: "tune-sensitivity" },
+    { key: "decay", field: "decay_tau_s", id: "tune-decay" },
+    { key: "rise", field: "rise_tau_s", id: "tune-rise" },
+    { key: "falloff", field: "falloff_m", id: "tune-falloff" }
+  ];
+  var thrRows = {};             // link id -> { row, cur, input, btn }, built once per link
+
+  function command(path, body) {
+    return fetch(path, {
+      method: "POST", cache: "no-store",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body || {})
+    }).then(function (res) {
+      return res.json().catch(function () { return {}; }).then(function (j) {
+        return { ok: res.ok, status: res.status, body: j };
+      });
+    }, function () {
+      return { ok: false, status: 0, body: { error: "the server did not answer" } };
+    });
+  }
+
+  function reply(id, r, okText) {
+    if (r.ok) { showError(id, ""); return okText || ""; }
+    showError(id, r.body.error || ("error " + r.status));
+    return null;
+  }
+
+  function showError(id, text) {
+    var node = $(id);
+    node.textContent = text || "";
+    node.hidden = !text;
+  }
+
+  function thresholdRow(id) {
+    var row = el("div", "thr-row");
+    row.appendChild(el("span", "lid", id));
+    var cur = el("span", "muted thr-cur", "");
+    row.appendChild(cur);
+    var input = document.createElement("input");
+    input.type = "number";
+    input.min = "0";
+    input.step = "any";
+    input.className = "thr-input";
+    input.setAttribute("aria-label", "threshold for " + id);
+    row.appendChild(input);
+    var btn = el("button", null, "Set");
+    btn.type = "button";
+    btn.addEventListener("click", function () {
+      command("/api/threshold", { link: id, value: Number(input.value) }).then(function (r) {
+        reply("thr-error", r);
+      });
+    });
+    row.appendChild(btn);
+    return { row: row, cur: cur, input: input, btn: btn };
+  }
+
+  function renderCalibrationResult(cal) {
+    var box = $("cal-result");
+    clearChildren(box);
+    var result = cal.result || {}, skipped = cal.skipped || {};
+    var kept = Object.keys(result).sort(), skip = Object.keys(skipped).sort();
+    if (!kept.length && !skip.length) return;
+    var table = el("table", "cal-table");
+    var head = el("tr");
+    ["Link", "Kept", "Rejected", "Threshold", "Result"].forEach(function (h) { head.appendChild(el("th", null, h)); });
+    table.appendChild(el("thead")).appendChild(head);
+    var body = el("tbody");
+    kept.forEach(function (label) {
+      var r = result[label];
+      var tr = el("tr", r.warning ? "warn" : null);
+      tr.appendChild(el("td", null, label));
+      tr.appendChild(el("td", null, fmt(r.clean_s, 1) + " s"));
+      tr.appendChild(el("td", null, fmt(r.rejected_s, 1) + " s"));
+      tr.appendChild(el("td", null, fmt(r.threshold, 4)));
+      var text = r.warning ? "warning: " + r.warning + (r.applied ? "" : "; kept its previous threshold")
+                           : (r.applied ? "applied" : "not applied");
+      tr.appendChild(el("td", null, text));
+      body.appendChild(tr);
+    });
+    skip.forEach(function (label) {
+      var tr = el("tr", "warn");
+      tr.appendChild(el("td", null, label));
+      var td = el("td", null, "skipped: " + skipped[label]);
+      td.colSpan = 4;
+      tr.appendChild(td);
+      body.appendChild(tr);
+    });
+    table.appendChild(body);
+    box.appendChild(table);
+  }
+
+  function renderControls(p) {
+    var cmds = p.status.commands || { available: true };
+    var on = !!cmds.available;
+    showError("ctl-reason", on ? "" : (cmds.reason || "commands are not available"));
+    var cal = p.status.calibration || { state: "idle" };
+    var active = cal.state === "countdown" || cal.state === "recording" || cal.state === "processing";
+
+    $("cal-start").disabled = !on || active;
+    $("cal-cancel").disabled = !on || !(cal.state === "countdown" || cal.state === "recording");
+    ["cal-clips", "cal-seconds", "cal-margin"].forEach(function (id) { $(id).disabled = !on || active; });
+    $("thr-save").disabled = !on;
+    TUNING.forEach(function (t) { $(t.id).disabled = !on; });
+
+    $("cal-state").setAttribute("data-state", cal.state);
+    $("cal-state").textContent = cal.message || CAL_LABEL[cal.state] || "Idle. Keep the room empty when you start.";
+    renderCalibrationResult(cal);
+
+    var list = $("thr-list");
+    p.links.forEach(function (row) {
+      if (!thrRows[row.id]) {
+        if (!Object.keys(thrRows).length) clearChildren(list);
+        var made = thresholdRow(row.id);
+        thrRows[row.id] = made;
+        list.appendChild(made.row);
+      }
+      var t = thrRows[row.id];
+      t.cur.textContent = row.threshold == null ? "uncalibrated (no threshold)"
+        : "threshold " + fmt(row.threshold, 4) + ", now " + row.state;
+      t.input.disabled = !on;
+      t.btn.disabled = !on;
+      if (document.activeElement !== t.input) {
+        t.input.value = row.threshold == null ? "" : String(Number(row.threshold.toPrecision(4)));
+      }
+    });
+
+    var params = p.status.parameters || {};
+    TUNING.forEach(function (t) {
+      var input = $(t.id), value = params[t.field];
+      if (value == null) return;
+      if (document.activeElement !== input) input.value = value;
+      $(t.id + "-out").textContent = String(Number(value.toPrecision(3)));
+    });
+  }
+
+  function wireControls() {
+    $("cal-start").addEventListener("click", function () {
+      command("/api/calibrate", {
+        clips: Number($("cal-clips").value), seconds: Number($("cal-seconds").value),
+        margin: Number($("cal-margin").value)
+      }).then(function (r) { reply("cal-error", r); });
+    });
+    $("cal-cancel").addEventListener("click", function () {
+      command("/api/calibrate/cancel", {}).then(function (r) { reply("cal-error", r); });
+    });
+    $("thr-save").addEventListener("click", function () {
+      command("/api/thresholds/save", {}).then(function (r) {
+        if (reply("thr-error", r) !== null) $("thr-saved").textContent = "saved to " + r.body.path;
+      });
+    });
+    TUNING.forEach(function (t) {
+      var input = $(t.id);
+      input.addEventListener("input", function () { $(t.id + "-out").textContent = input.value; });
+      input.addEventListener("change", function () {
+        var body = {};
+        body[t.key] = Number(input.value);
+        command("/api/params", body).then(function (r) { reply("tune-error", r); });
+      });
+    });
+  }
+
   function render(p) {
     shown = p;
     drawMap(p);
     renderLinks(p);
     renderStatus(p);
+    renderControls(p);
   }
 
   var resizeQueued = false;
@@ -691,6 +931,7 @@
     });
   });
 
+  wireControls();
   drawWaiting();
   start();
 })();

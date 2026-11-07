@@ -260,6 +260,22 @@ Endpoints:
 - `GET /api/events`: the same payload as Server-Sent Events (`data: <json>`), at most about 5 per second.
   The last event has `status.finished` true when the sources end, and then the stream closes.
 
+Controls (the page's Controls panel calls these; `status.commands` says whether they are available):
+
+- `POST /api/calibrate` `{clips, seconds, margin, lead_s}` (defaults 3, 10, 1.25, 5): a countdown, then `clips` empty-room
+  clips of `seconds` each (3 s pauses), calibrated on the live stream the dashboard already reads. Usable links get
+  their threshold at once; a link with too little data is listed in `status.calibration.skipped` with the reason, and a
+  link whose clip data is more than half movement keeps its previous threshold and shows a warning. Returns 409 while
+  one runs. `POST /api/calibrate/cancel` stops it.
+- `POST /api/threshold` `{link, value}` sets one link's threshold; `GET /api/thresholds` lists them.
+- `POST /api/thresholds/save` writes all thresholds as `{label: number}` to `--save-thresholds`, else `--thresholds`,
+  else `links_thresholds.json` in the working directory, and returns the path.
+- `POST /api/params` `{sensitivity, decay, rise, falloff}` changes the heatmap live (`decay` and `rise` in seconds,
+  `falloff` in metres); unknown keys or out-of-range values give 400.
+- Commands take a JSON body. In replay modes (`--replay`, `--replay-session`) they return 409.
+- Safety: commands work only when `--host` is a loopback address. Any other `--host` disables them (403) unless you
+  also pass `--allow-control`; there is no authentication, so only do that on a network you trust.
+
 The library is `csi.server.DashboardServer(room, sources, thresholds)`, where `sources` maps receiver
 names to `(host_ts, line)` streams. `start()`, `stop()` and `wait_finished()` manage it.
 

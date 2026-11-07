@@ -153,7 +153,7 @@ def session_dashboard(folder: Pathlike, room: Room, *, speed: float = 1.0, margi
         thresholds, thresholds_source = _calibrate(session, receiver, default_mac, margin)
     return DashboardServer(
         room, {receiver: _paced(packets, speed)}, thresholds, host=host, port=port, log=log,
-        frame_interval_s=frame_interval_s,
+        frame_interval_s=frame_interval_s, replay=True,
         log_meta={"source": f"replay-session {folder}", "speed": speed,
                   "thresholds_source": thresholds_source or "given to the replay"},
         notes=_link_notes(packets, room, receiver))

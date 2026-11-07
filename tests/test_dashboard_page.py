@@ -58,3 +58,29 @@ def test_page_closes_the_event_stream_when_the_run_is_finished():
     assert hits
     assert any("source.close()" in html[i:i + 300] for i in hits)
     assert "run finished" in html
+
+
+def test_controls_container_holds_the_calibrate_panel_threshold_editors_and_tuning_sliders():
+    html = PAGE.read_text(encoding="utf-8")
+    start = html.index('id="controls"')
+    end = html.index("</section>", start)
+    controls = html[start:end]
+
+    for needle in ('id="cal-clips"', 'id="cal-seconds"', 'id="cal-margin"', 'id="cal-start"', 'id="cal-cancel"',
+                   'id="thr-save"', 'id="tune-sensitivity"', 'id="tune-decay"', "Calibrate", "Save thresholds",
+                   "sensitivity", "decay"):
+        assert needle in controls, needle
+    # the rest of the page is intact: the status bar and the links card are still there
+    assert html.index('id="calib"') < start and html.index('id="links"') < start
+
+
+def test_page_talks_to_the_command_endpoints_and_shows_the_countdown_text():
+    html = PAGE.read_text(encoding="utf-8")
+
+    for endpoint in ("/api/calibrate", "/api/calibrate/cancel", "/api/threshold", "/api/thresholds/save",
+                     "/api/params"):
+        assert f'"{endpoint}"' in html, endpoint
+    assert "Clear the room" in html
+    assert "Keep the room empty" in html
+    assert "commands" in html and "available" in html    # hides or disables the controls with the reason
+    assert "unreliable" in html or "warning" in html     # warnings are highlighted

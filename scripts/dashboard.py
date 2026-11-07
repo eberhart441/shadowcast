@@ -31,8 +31,9 @@ from csi.multisource import parse_port_specs  # noqa: E402
 from csi.parser import Stream, serial_stream  # noqa: E402
 from csi.replay import ReplayError, ReplayServer, load_log, session_dashboard  # noqa: E402
 from csi.room import DEFAULT_ROOM_PATH, Room, load_room  # noqa: E402
-from csi.server import DEFAULT_HOST, DEFAULT_PORT, DashboardServer, FrameServer, default_walk, \
-    looping_room_streams, simulated_thresholds  # noqa: E402
+from csi.server import DEFAULT_HOST, DEFAULT_PORT, DEFAULT_THRESHOLDS_FILE, DashboardServer, FrameServer, \
+    controls_allowed, \
+    default_walk, looping_room_streams, simulated_thresholds  # noqa: E402
 
 TICK_S = 0.5
 
@@ -83,6 +84,12 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--http-port", type=int, default=DEFAULT_PORT, help=f"HTTP port (default {DEFAULT_PORT})")
     s.add_argument("--host", default=DEFAULT_HOST,
                    help=f"address to listen on (default {DEFAULT_HOST}, localhost only; 0.0.0.0 for the network)")
+    s.add_argument("--allow-control", action="store_true",
+                   help="allow calibrate, threshold, save and parameter commands when --host is not localhost "
+                        "(there is no authentication: only on a network you trust)")
+    s.add_argument("--save-thresholds", type=Path, default=None, metavar="PATH",
+                   help=f"where POST /api/thresholds/save writes (default: --thresholds, else "
+                        f"{DEFAULT_THRESHOLDS_FILE} in the working directory)")
     return ap
 
 
@@ -142,7 +149,9 @@ def build_server(args: argparse.Namespace) -> FrameServer:
                                  host=args.host, port=args.http_port, log=args.log)
     sources, thresholds = build_sources(args, room)
     source = "simulate-room" if args.simulate_room else "ports " + ", ".join(n for n, _ in parse_port_specs(args.port))
+    save_to = args.save_thresholds or args.thresholds
     return DashboardServer(room, sources, thresholds, host=args.host, port=args.http_port, log=args.log,
+                           allow_control=args.allow_control, thresholds_path=save_to,
                            log_meta={"source": source, "thresholds_source":
                                      f"loaded from {args.thresholds}" if args.thresholds else
                                      ("simulated empty room" if args.simulate_room else "none")})
@@ -157,6 +166,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     except (ReplayError, OSError) as e:
         raise SystemExit(f"error: {e}")
     print(f"dashboard at {server.url}  (listening on {server.address[0]})  Ctrl+C to stop", flush=True)
+    if not controls_allowed(args.host, args.allow_control) and not args.replay and not args.replay_session:
+        print("commands disabled: not bound to localhost (calibrate and tuning need --allow-control)", flush=True)
     if args.port and args.thresholds is None:
         print("no thresholds: every link shows UNCALIBRATED until calibrated (see links_live.py --calibrate)",
               flush=True)
