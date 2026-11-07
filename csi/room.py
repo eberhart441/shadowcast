@@ -6,7 +6,7 @@ y down. Receivers (role ``receiver``) and senders (role ``sender``, with a MAC) 
 person's distance to the link's segment (clamped to the segment ends).
 
 Public API:
-    load_room(path)                  -> Room (receivers and senders by name)
+    load_room(path)                  -> Room (receivers and senders by name; optional link_weights)
     Room.links()                     -> [(receiver Node, sender Node)] for every pair
     Room.wall_point(side, inset)     -> (x, y) just inside a wall: "left" | "right" | "top" | "bottom"
     Walk(waypoints, speed_mps, loop) position(t) over time (metres)
@@ -18,7 +18,7 @@ Public API:
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Mapping, Optional, Sequence, Union
 
@@ -37,6 +37,7 @@ class Node:
     x: float
     y: float
     mac: str = ""
+    chip: str = ""
 
 
 @dataclass(frozen=True)
@@ -45,6 +46,7 @@ class Room:
     depth_m: float
     receivers: tuple[Node, ...]
     senders: tuple[Node, ...]
+    link_weights: Mapping[str, float] = field(default_factory=dict)  # link label -> weight (default 1.0)
 
     def links(self) -> list[tuple[Node, Node]]:
         return [(rx, tx) for rx in self.receivers for tx in self.senders]
@@ -63,13 +65,15 @@ class Room:
 
 def load_room(path: Union[str, Path] = DEFAULT_ROOM_PATH) -> Room:
     config = json.loads(Path(path).read_text())
-    nodes = [Node(name, spec["role"], float(spec["x"]), float(spec["y"]), spec.get("mac", ""))
+    nodes = [Node(name, spec["role"], float(spec["x"]), float(spec["y"]), spec.get("mac", ""),
+                  spec.get("chip", ""))
              for name, spec in sorted(config["nodes"].items())]
     return Room(
         width_m=float(config["room"]["width_m"]),
         depth_m=float(config["room"]["depth_m"]),
         receivers=tuple(n for n in nodes if n.role == "receiver"),
         senders=tuple(n for n in nodes if n.role == "sender"),
+        link_weights={k: float(v) for k, v in config.get("link_weights", {}).items()},
     )
 
 
