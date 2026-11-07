@@ -54,15 +54,36 @@ def test_still_labels_are_reported_on_separate_rows(tmp_path):
 def test_still_rows_are_still_present_not_motion_on_a_simulated_session(tmp_path):
     folder = record_plan(tmp_path / "room", [
         ("empty", 20), ("still_standing", 40), ("empty", 20), ("still_sitting_or_lying", 40)])
-    result = evaluate_sessions([folder]).sessions[0]
+    result = evaluate_sessions([folder], breathing=True).sessions[0]
     recordings = load_session(folder).recordings
     for label, rec in [("still_standing", recordings[1]), ("still_sitting_or_lying", recordings[3])]:
         assert rec.label == label
-        readings = list(detect_packets(rec.packets(), result.calibration.threshold))
+        readings = list(detect_packets(rec.packets(), result.calibration.threshold, breathing=True))
         with_breathing = sum(r.enough_data for r in readings)
         cm = result.confusion
         assert cm.loc[label, "MOTION"] == 0
         assert cm.loc[label, "STILL_PRESENT"] >= 0.9 * with_breathing > 0
+
+
+def test_default_evaluation_is_motion_only_and_never_predicts_still_present(tmp_path):
+    folder = record_plan(tmp_path / "room", [
+        ("empty", 20), ("walking", 10), ("empty", 20), ("still_standing", 30)])
+    report = evaluate_sessions([folder])
+    assert report.sessions[0].confusion["STILL_PRESENT"].sum() == 0
+    assert report.total()["STILL_PRESENT"].sum() == 0
+    text = format_report(report)
+    assert "breathing disabled" in text
+    assert "decisions without a full" not in text
+
+
+def test_breathing_opt_in_scores_still_rows_and_reports_breathing_window(tmp_path):
+    folder = record_plan(tmp_path / "room", [
+        ("empty", 20), ("walking", 10), ("empty", 20), ("still_standing", 30)])
+    report = evaluate_sessions([folder], breathing=True)
+    assert report.sessions[0].confusion.loc["still_standing", "STILL_PRESENT"] > 0
+    text = format_report(report)
+    assert "breathing disabled" not in text
+    assert "decisions without a full" in text
 
 
 def test_calibration_recording_is_excluded_from_scoring(tmp_path):
@@ -110,6 +131,19 @@ def test_evaluation_is_deterministic(tmp_path):
     first = evaluate_sessions([folder]).total()
     second = evaluate_sessions([folder]).total()
     assert first.equals(second)
+
+
+def test_cli_is_motion_only_by_default_and_takes_breathing_flag(tmp_path):
+    good = record_plan(tmp_path / "good", [
+        ("empty", 20), ("walking", 10), ("empty", 20), ("still_standing", 30)])
+    script = str(ROOT / "scripts" / "evaluate.py")
+    default = subprocess.run([sys.executable, script, str(good)], cwd=ROOT, capture_output=True, text=True)
+    assert default.returncode == 0, default.stderr
+    assert "breathing disabled" in default.stdout
+    opted = subprocess.run([sys.executable, script, "--breathing", str(good)],
+                           cwd=ROOT, capture_output=True, text=True)
+    assert opted.returncode == 0, opted.stderr
+    assert "decisions without a full" in opted.stdout
 
 
 def test_cli_prints_matrix_and_fails_clearly_without_empty(tmp_path):

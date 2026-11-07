@@ -1,12 +1,16 @@
 #!/usr/bin/env python
 """Live room state: EMPTY, MOTION or STILL_PRESENT (breathing), debounced.
 
-    detect_live.py --simulate --duration 65           # demo cycle, no hardware
-    detect_live.py --port /dev/ttyUSB0 --threshold-file calib.json
-    detect_live.py --port /dev/ttyUSB0 --calibrate 20 --out calib.json   # room empty!
+    detect_live.py --simulate --duration 65                  # demo cycle, no hardware
+    detect_live.py --port /dev/ttyUSB0 --threshold-file calibration.json
+    detect_live.py --port /dev/ttyUSB0 --calibrate 60 --out calibration.json   # room empty, receiver reset first!
+    detect_live.py --port /dev/ttyUSB0 --threshold 12 --breathing              # opt-in breathing (experimental)
 
-MOTION overrides breathing. Breathing needs a full 15 s window; until then the
-output says "not enough data".
+Motion-only by default: states are EMPTY and MOTION. Real ports need an explicit
+--threshold or --threshold-file (calibrate first). The simulator uses a default.
+--breathing turns on the breathing detector (STILL_PRESENT); it is off by default
+because it false-fires on empty rooms on real hardware. Breathing needs a full
+15 s window; until then the output says "not enough data".
 """
 from __future__ import annotations
 
@@ -18,11 +22,11 @@ from typing import Iterator
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from csi.detect import MOTION, STILL_PRESENT, CalibrationError, Reading, calibrate, detect, load_threshold  # noqa: E402
+from csi.common import add_threshold_args, resolve_threshold  # noqa: E402
+from csi.detect import MOTION, SIM_THRESHOLD, STILL_PRESENT, CalibrationError, Reading, calibrate, detect  # noqa: E402
 from csi.parser import CSIParser, Stream, serial_stream  # noqa: E402
 from csi.simulate import Segment, simulate_stream  # noqa: E402
 
-SIM_DEMO_THRESHOLD = 2.0
 SIM_DEMO_SCENARIO = (Segment("empty", 20), Segment("motion", 10), Segment("still", 30))  # 60 s cycle
 STILL_REPRINT_S = 5.0  # while STILL_PRESENT, refresh the bpm line this often (host time)
 
@@ -35,12 +39,12 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--baud", type=int, default=921600)
     g.add_argument("--rate", type=float, default=100.0, help="send rate in Hz (simulator)")
     g.add_argument("--seed", type=int, default=0, help="simulator seed")
-    t = ap.add_argument_group("threshold")
-    t.add_argument("--threshold-file", type=Path, help="calibration JSON from --calibrate")
-    t.add_argument("--threshold", type=float, help="manual motion threshold")
+    add_threshold_args(ap)
     c = ap.add_argument_group("calibration")
     c.add_argument("--calibrate", type=float, metavar="SECONDS", help="learn threshold from an empty room")
     c.add_argument("--out", type=Path, default=Path("calibration.json"), help="where to save it")
+    ap.add_argument("--breathing", action="store_true",
+                    help="opt in to breathing detection (STILL_PRESENT); off by default")
     ap.add_argument("--debounce", type=float, default=0.5, help="seconds a state must persist")
     ap.add_argument("--duration", type=float, help="stop after this many seconds (default: run until Ctrl+C)")
     return ap
@@ -85,19 +89,9 @@ def run_calibration(args: argparse.Namespace) -> int:
     return 0
 
 
-def resolve_threshold(args: argparse.Namespace) -> float:
-    if args.threshold is not None:
-        return args.threshold
-    if args.threshold_file:
-        return load_threshold(args.threshold_file)
-    if args.simulate:
-        return SIM_DEMO_THRESHOLD
-    raise SystemExit("error: pass --threshold-file or --threshold (or run --calibrate first)")
-
-
-def describe(r: Reading) -> str:
+def describe(r: Reading, breathing: bool) -> str:
     """Human-readable detail for the state line."""
-    if r.state == MOTION:
+    if r.state == MOTION or not breathing:
         return f"score {r.score:.2f}"
     if r.state == STILL_PRESENT and r.bpm is not None:
         return f"{r.bpm:.1f} breaths/min, confidence {r.confidence:.2f}"
@@ -109,17 +103,20 @@ def describe(r: Reading) -> str:
 
 
 def run_live(args: argparse.Namespace) -> int:
-    threshold = resolve_threshold(args)
+    threshold = resolve_threshold(args, SIM_THRESHOLD)
     parser = CSIParser()
-    print(f"threshold {threshold:.3f}; Ctrl+C to stop", flush=True)
+    mode = "motion + breathing" if args.breathing else "motion-only"
+    print(f"threshold {threshold:.3f} ({mode}); Ctrl+C to stop", flush=True)
     state, printed_at = None, 0.0
     try:
-        for r in detect(until(open_stream(args), args.duration), threshold, parser, args.debounce):
+        readings = detect(until(open_stream(args), args.duration), threshold, parser, args.debounce,
+                          breathing=args.breathing)
+        for r in readings:
             due = r.state == STILL_PRESENT and r.host_ts - printed_at >= STILL_REPRINT_S
             if r.state != state or due:
                 state, printed_at = r.state, r.host_ts
-                print(f"{time.strftime('%H:%M:%S', time.localtime(r.host_ts))}  {state:<13} {describe(r)}",
-                      flush=True)
+                print(f"{time.strftime('%H:%M:%S', time.localtime(r.host_ts))}  {state:<13} "
+                      f"{describe(r, args.breathing)}", flush=True)
     except KeyboardInterrupt:
         pass
     s = parser.stats

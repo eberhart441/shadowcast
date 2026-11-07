@@ -11,19 +11,22 @@ from typing import Optional
 
 import numpy as np
 
-from .detect import MotionScorer
+from .detect import SIM_THRESHOLD, MotionScorer
 from .health import LinkHealth
 from .parser import CSIParser, Stream
 
 HISTORY_S = 10.0          # seconds shown in the heatmap and variance trace
-DEFAULT_THRESHOLD = 2.0   # motion-score threshold when none is given
 THRESHOLD_STEP = 1.25     # multiplicative change per key press
 
 
 class LiveView:
-    """Rolling buffers for the viewer, fed one (host_ts, line) at a time."""
+    """Rolling buffers for the viewer, fed one (host_ts, line) at a time.
 
-    def __init__(self, threshold: float = DEFAULT_THRESHOLD, send_rate_hz: float = 100.0,
+    ``threshold`` defaults to the simulator's score scale; real ports must pass one explicitly
+    (the CLI enforces that via ``csi.common.resolve_threshold``).
+    """
+
+    def __init__(self, threshold: float = SIM_THRESHOLD, send_rate_hz: float = 100.0,
                  history_s: float = HISTORY_S, parser: Optional[CSIParser] = None) -> None:
         self.parser = parser or CSIParser()
         self.health = LinkHealth(send_rate_hz=send_rate_hz)

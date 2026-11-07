@@ -11,7 +11,7 @@ WINDOW_S = 15.0
 
 def readings(scenario, seed: int = 1, **kwargs):
     stream = simulate_stream(scenario=scenario, seed=seed, **kwargs)
-    out = list(detect(stream, THRESHOLD))
+    out = list(detect(stream, THRESHOLD, breathing=True))
     assert out
     return out
 
@@ -67,7 +67,7 @@ def test_motion_after_still_overrides_breathing():
 def test_still_reaches_still_present_at_18bpm_with_threshold_calibrated_on_empty():
     empty = simulate_stream(scenario=[Segment("empty", 20)], seed=5)
     threshold = calibrate(empty).threshold
-    last = list(detect(simulate_stream(scenario=[Segment("still", 30)], seed=6), threshold))[-1]
+    last = list(detect(simulate_stream(scenario=[Segment("still", 30)], seed=6), threshold, breathing=True))[-1]
     assert last.state == STILL_PRESENT
     assert last.bpm == pytest.approx(BPM_TRUE, abs=BPM_TOL)
 

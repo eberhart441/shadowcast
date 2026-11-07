@@ -11,6 +11,10 @@ compared to the label of the file it came from. Nothing is split at random.
 
 Label mapping: walking -> MOTION, still_* -> STILL_PRESENT, empty -> EMPTY. The
 confusion matrix has one row per label, so the two still labels stay separate.
+
+Motion-only is the default (``breathing=False``): STILL_PRESENT is never predicted,
+so the still_* rows have no valid prediction. They are printed but marked
+"breathing disabled" rather than scored as 0%. ``breathing=True`` scores them.
 """
 from __future__ import annotations
 
@@ -52,6 +56,7 @@ class SessionResult:
 @dataclass
 class EvaluationReport:
     sessions: list[SessionResult]
+    breathing: bool = False  # whether STILL_PRESENT predictions were made (and the still rows scored)
 
     def total(self) -> pd.DataFrame:
         """Confusion matrix summed over all sessions."""
@@ -78,7 +83,7 @@ def _missing_empty_message(name: str) -> str:
             f"first with: scripts/record.py --session {name} --label empty")
 
 
-def _evaluate_session(session: Session) -> SessionResult:
+def _evaluate_session(session: Session, breathing: bool) -> SessionResult:
     name = session.path.name
     empties = [r for r in session.recordings if r.label == "empty"]
     if not empties:
@@ -93,7 +98,7 @@ def _evaluate_session(session: Session) -> SessionResult:
     no_breathing = 0
     scored: list[Recording] = [r for r in session.recordings if r is not calib_rec]
     for rec in scored:
-        for reading in detect_packets(rec.packets(), calibration.threshold):
+        for reading in detect_packets(rec.packets(), calibration.threshold, breathing=breathing):
             pairs.append((rec.label, reading.state))
             no_breathing += not reading.enough_data
 
@@ -112,8 +117,11 @@ def _evaluate_session(session: Session) -> SessionResult:
     )
 
 
-def evaluate_sessions(folders: Sequence[Path | str]) -> EvaluationReport:
-    """Evaluate each session folder. Raises EvaluationError listing every unusable session."""
+def evaluate_sessions(folders: Sequence[Path | str], breathing: bool = False) -> EvaluationReport:
+    """Evaluate each session folder. Raises EvaluationError listing every unusable session.
+
+    ``breathing=False`` (default) scores motion-only; ``True`` also makes STILL_PRESENT predictions.
+    """
     problems: list[str] = []
     sessions: list[Session] = []
     for folder in map(Path, folders):
@@ -126,10 +134,16 @@ def evaluate_sessions(folders: Sequence[Path | str]) -> EvaluationReport:
         sessions.append(session)
     if problems:
         raise EvaluationError("\n".join(problems))
-    return EvaluationReport([_evaluate_session(s) for s in sessions])
+    return EvaluationReport([_evaluate_session(s, breathing) for s in sessions], breathing)
 
 
-def _label_accuracy(matrix: pd.DataFrame, label: str) -> str:
+STILL_LABELS = tuple(label for label, state in LABEL_STATE.items() if state == STILL_PRESENT)
+BREATHING_DISABLED = "breathing disabled"
+
+
+def _label_accuracy(matrix: pd.DataFrame, label: str, breathing: bool) -> str:
+    if label in STILL_LABELS and not breathing:
+        return BREATHING_DISABLED  # no valid prediction exists for these rows without breathing
     row = matrix.loc[label]
     total = int(row.sum())
     if total == 0:
@@ -137,25 +151,30 @@ def _label_accuracy(matrix: pd.DataFrame, label: str) -> str:
     return f"{row[LABEL_STATE[label]] / total:.0%}"
 
 
-def _format_matrix(matrix: pd.DataFrame) -> str:
+def _format_matrix(matrix: pd.DataFrame, breathing: bool) -> str:
     table = matrix.copy()
-    table["correct"] = [_label_accuracy(matrix, label) for label in table.index]
+    table["correct"] = [_label_accuracy(matrix, label, breathing) for label in table.index]
     table.insert(0, "expected", [LABEL_STATE[label] for label in table.index])
     return table.to_string()
 
 
 def format_report(report: EvaluationReport) -> str:
     out: list[str] = []
+    if not report.breathing:
+        out.append("mode: motion-only (breathing disabled; STILL_PRESENT is never predicted). "
+                   "Pass --breathing to score the still_* labels.")
+        out.append("")
     for s in report.sessions:
         c = s.calibration
         out.append(f"session {s.name}: threshold {c.threshold:.3f} "
                    f"(calibrated on {s.calibration_file}, {c.duration_s:.0f}s, loss {c.loss:.1%})")
         out.append(f"scored: {', '.join(s.scored_files) or 'nothing'}")
-        out.append(_format_matrix(s.confusion))
-        out.append(f"decisions without a full {BREATH_WINDOW_S:.0f} s breathing window: {s.no_breathing_window}")
+        out.append(_format_matrix(s.confusion, report.breathing))
+        if report.breathing:
+            out.append(f"decisions without a full {BREATH_WINDOW_S:.0f} s breathing window: {s.no_breathing_window}")
         out.extend(f"note: {n}" for n in s.notes)
         out.append("")
     if len(report.sessions) > 1:
         out.append("all sessions:")
-        out.append(_format_matrix(report.total()))
+        out.append(_format_matrix(report.total(), report.breathing))
     return "\n".join(out).rstrip() + "\n"

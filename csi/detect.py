@@ -13,9 +13,11 @@ Public API (reused by the viewer and evaluator):
     calibrate         empty stream -> Calibration (threshold), raises CalibrationError
     Calibration.save / load_threshold   small JSON threshold file
 
-Breathing (STILL_PRESENT) comes from ``csi.breathing.estimate_breathing``, which
-the evaluator can also call directly on an amplitude window.
-MOTION overrides breathing; breathing needs a 15 s window and enough confidence.
+Motion-only is the default: states are EMPTY and MOTION, and STILL_PRESENT is never
+emitted. Breathing is opt-in (``breathing=True``) and is not computed otherwise. The
+breathing detector (``csi.breathing.estimate_breathing``) was false-firing on empty
+rooms on real hardware, so it stays off until it is trusted. With it on, MOTION
+overrides breathing; breathing needs a 15 s window and enough confidence.
 """
 from __future__ import annotations
 
@@ -34,6 +36,7 @@ EMPTY = "EMPTY"
 MOTION = "MOTION"
 STILL_PRESENT = "STILL_PRESENT"
 
+SIM_THRESHOLD = 1.0           # simulator default: simulated empty scores ~0.2, motion ~3-9
 WINDOW_S = 1.0
 MIN_WINDOW_PACKETS = 5
 DEBOUNCE_S = 0.5
@@ -191,20 +194,26 @@ def classify(score: float, bpm: Optional[float], threshold: float) -> str:
 
 
 def detect(stream: Stream, threshold: float, parser: Optional[CSIParser] = None,
-           debounce_s: float = DEBOUNCE_S) -> Iterator[Reading]:
+           debounce_s: float = DEBOUNCE_S, breathing: bool = False) -> Iterator[Reading]:
     """Yield a debounced Reading per packet once a full motion window is available."""
-    return detect_packets(parse_stream(stream, parser), threshold, debounce_s)
+    return detect_packets(parse_stream(stream, parser), threshold, debounce_s, breathing)
 
 
 def detect_packets(packets: Iterable[CSIPacket], threshold: float,
-                   debounce_s: float = DEBOUNCE_S) -> Iterator[Reading]:
-    """``detect`` for packets already parsed (e.g. loaded from a recording)."""
-    scorer, breath, debounce = MotionScorer(), _BreathingTracker(), _Debouncer(debounce_s)
+                   debounce_s: float = DEBOUNCE_S, breathing: bool = False) -> Iterator[Reading]:
+    """``detect`` for packets already parsed (e.g. loaded from a recording).
+
+    ``breathing=False`` (default) never computes breathing and never emits STILL_PRESENT.
+    """
+    scorer, debounce = MotionScorer(), _Debouncer(debounce_s)
+    breath = _BreathingTracker() if breathing else None
     for pkt in packets:
         score = scorer.push(pkt)
-        if score is not None and score > threshold:
-            breath.reset()
-        est = breath.push(pkt)
+        est = NOT_ENOUGH
+        if breath is not None:
+            if score is not None and score > threshold:
+                breath.reset()
+            est = breath.push(pkt)
         if score is not None:
             raw = classify(score, est.bpm, threshold)
             yield Reading(pkt.host_ts, score, debounce.update(raw, pkt.host_ts),
