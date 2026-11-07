@@ -288,8 +288,9 @@ What the page shows (`web/index.html`, one static file with no network assets):
 - Only EMPTY and MOTION links contribute. Each link's evidence, times its weight
   (`link_weights` in `config/room.json`, default 1.0), is spread along its
   sender-receiver line with a Gaussian falloff of 0.35 m. Where two links agree, the cell is hotter (`agreement` 0.5).
-- `sensitivity` (default 0.8) is the soft-saturation gain. Cells rise in 0.3 s and decay
-  in 1.5 s. The grid is 28 x 18. The threshold is shown but does not decide heat.
+- `sensitivity` (default 1.3) is the soft-saturation gain. Cells rise in 0.3 s and cool
+  in 0.3 s (`rise_tau_s`, `decay_tau_s` in `status.parameters`), so the map follows people quickly. The grid is 28 x 18.
+  The threshold is shown but does not decide heat. The page's sliders start at these values.
 - The map shows change, not presence: a person who stands still for more than about
   30 s is absorbed into the baseline and fades.
 
