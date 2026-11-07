@@ -36,4 +36,5 @@ echo "== ruff check ."
 "$PY" -m ruff check .
 
 echo "== pytest ${MARKER[*]:-(full suite)} -n auto"
-"$PY" -m pytest -q -n auto "${MARKER[@]}"
+# ${arr[@]+...} keeps an empty array from tripping `set -u` on macOS bash 3.2.
+"$PY" -m pytest -q -n auto ${MARKER[@]+"${MARKER[@]}"}
