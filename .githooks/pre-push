@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Runs scripts/check.sh (ruff + fast test tier) before a push. Skip with SKIP_CHECK=1 git push ...
+# Enable once per clone: git config core.hooksPath .githooks
+set -euo pipefail
+
+if [ "${SKIP_CHECK:-0}" = "1" ]; then
+  echo "pre-push: SKIP_CHECK=1, not running scripts/check.sh" >&2
+  exit 0
+fi
+
+exec "$(git rev-parse --show-toplevel)/scripts/check.sh"

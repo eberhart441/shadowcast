@@ -2,7 +2,7 @@ import pytest
 
 from csi.health import LinkHealth
 from csi.parser import CSIParser
-from csi.simulate import Segment, simulate_packets, simulate_stream
+from csi.simulate import Segment, simulate_stream
 
 EMPTY = (Segment("empty", 30),)
 

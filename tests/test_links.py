@@ -45,6 +45,7 @@ def test_two_senders_on_two_receivers_are_four_separate_links():
         assert row["age_s"] == pytest.approx(0, abs=0.05)
 
 
+@pytest.mark.slow
 def test_empty_room_keeps_every_link_empty_and_motion_drives_every_link_to_motion():
     # margin 1.5 (not the default 1.0): at 1.0 a held-out empty clip crosses a single-clip p99 on the simulator
     cal = calibrate_links_report(empty_links(seed=10), margin=1.5).thresholds
@@ -61,6 +62,7 @@ def test_empty_room_keeps_every_link_empty_and_motion_drives_every_link_to_motio
         assert row["threshold"] == pytest.approx(cal[row["id"]])
 
 
+@pytest.mark.slow
 def test_link_silent_for_over_two_seconds_reports_no_signal_while_others_continue():
     tagged = empty_links(seconds=25, seed=21)
     cal = calibrate_links(empty_links(seed=20))

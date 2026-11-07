@@ -17,7 +17,7 @@ import pytest
 from csi.links import calibrate_links
 from csi.parser import DEFAULT_HEADER
 from csi.room import Walk, load_room, stand_near_wall
-from csi.server import DashboardServer, default_walk, looping_room_streams
+from csi.server import MIN_EVENT_GAP_S, DashboardServer, default_walk, looping_room_streams
 from csi.simulate import simulate_room, simulate_room_links
 
 ROOM = load_room()
@@ -41,10 +41,10 @@ def room_streams(person=None, duration_s=10.0, seed=12, **kwargs):
 LEAD_S = 12.0  # an empty room first, so each link learns its quiet baseline before the person arrives
 
 
-def quiet_then_streams(person, duration_s=10.0, seed=12):
-    """Per receiver: an empty room for LEAD_S seconds, then ``person`` on the same host clock."""
-    lead = simulate_room(None, room=ROOM, duration_s=LEAD_S, seed=seed)
-    stay = simulate_room(person, room=ROOM, duration_s=duration_s, seed=seed, t0=T0 + LEAD_S)
+def quiet_then_streams(person, duration_s=10.0, seed=12, lead_s=LEAD_S):
+    """Per receiver: an empty room for ``lead_s`` seconds, then ``person`` on the same host clock."""
+    lead = simulate_room(None, room=ROOM, duration_s=lead_s, seed=seed)
+    stay = simulate_room(person, room=ROOM, duration_s=duration_s, seed=seed, t0=T0 + lead_s)
     return {rx: itertools.chain(lead[rx], stay[rx]) for rx in lead}
 
 
@@ -140,6 +140,21 @@ def test_event_stream_emits_intermediate_events_that_follow_a_person_walking_lef
     assert centres[-1] - centres[0] > 0.5          # the heat has moved right, early to late
 
 
+@pytest.mark.slow
+@pytest.mark.real_sse_pacing
+def test_event_stream_is_paced_to_at_most_about_five_events_a_second(serve):
+    server = serve(quiet_then_streams(None, duration_s=1.0, lead_s=1.0), calibrated_thresholds(),
+                   frame_interval_s=0.25)  # 2 s of packet time: 8 frames
+    assert server.wait_finished(timeout=30)
+
+    started = time.monotonic()
+    events = read_events(server)
+    elapsed = time.monotonic() - started
+
+    assert len(events) >= 6
+    assert elapsed >= 0.8 * (len(events) - 1) * MIN_EVENT_GAP_S   # consecutive events are spaced, not bunched
+
+
 def failing_after(lines, n: int):
     """Yields ``n`` lines, then raises like an unplugged port would."""
     for i, item in enumerate(lines):
@@ -227,6 +242,7 @@ def live_room_streams():
     return looping_room_streams(ROOM, default_walk(ROOM), seed=3)
 
 
+@pytest.mark.slow
 def test_live_sources_are_reported_as_connected_and_not_finished(serve):
     server = serve(live_room_streams(), calibrated_thresholds())
     time.sleep(1.0)
@@ -238,6 +254,7 @@ def test_live_sources_are_reported_as_connected_and_not_finished(serve):
     assert links_by_id(payload)[RIGHT]["pkt_rate"] > 0
 
 
+@pytest.mark.slow
 def test_client_disconnecting_mid_stream_leaves_no_thread_and_no_traceback(serve, capfd):
     server = serve(live_room_streams(), calibrated_thresholds())
     time.sleep(0.5)

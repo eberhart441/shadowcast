@@ -19,3 +19,7 @@ Boards, ports, flashing, thresholds and dashboard restarts: read `docs/agents/ha
 ### Subagents
 
 Setup, base branch and commit trailer for implementer and merger agents: `docs/agents/implementer-brief.md`.
+
+### Checks
+
+Run `scripts/check.sh` before committing (fast tier); `scripts/check.sh --full` before a merge. See docs/agents/implementer-brief.md.

@@ -11,7 +11,6 @@ import time
 import urllib.error
 import urllib.request
 from functools import lru_cache
-from itertools import islice
 
 import pytest
 
@@ -118,6 +117,7 @@ def empty_room(go=None, drop_after=None, duration_s=EMPTY_S, seed=12):
 
 # ----------------------------------------------------------------- calibration on the live stream
 
+@pytest.mark.slow
 def test_calibrate_on_the_simulator_runs_the_clips_and_links_become_calibrated(serve):
     go = serve.gate()
     server = serve(empty_room(go), thresholds=None)
@@ -143,6 +143,7 @@ def test_calibrate_on_the_simulator_runs_the_clips_and_links_become_calibrated(s
     assert links_by_id(payload)[RIGHT]["threshold"] == pytest.approx(calibration["result"][RIGHT]["threshold"], rel=1e-3)
 
 
+@pytest.mark.slow
 def test_a_link_with_no_packets_is_skipped_with_its_reason_and_the_others_are_kept(serve):
     go = serve.gate()
     server = serve(empty_room(go, drop_after={DIAG_B: 0.0}), thresholds=None)
@@ -163,6 +164,7 @@ def test_a_link_with_no_packets_is_skipped_with_its_reason_and_the_others_are_ke
     assert any(DIAG_B in m and "no packets" in m for m in payload["status"]["messages"])
 
 
+@pytest.mark.slow
 def test_a_clip_that_is_mostly_movement_is_skipped_with_the_reason_and_keeps_the_previous_threshold(serve):
     go = serve.gate()
     # rx1 has someone walking for the first 27 s (clips 1 and 2 of 12 s each, with a 3 s pause), then an empty
@@ -204,7 +206,7 @@ def test_a_source_that_ends_before_the_clips_finish_fails_the_job_and_keeps_the_
 
 
 def test_second_calibrate_while_one_runs_is_409_and_the_countdown_is_reported(serve):
-    server = serve(empty_room(threading.Event()), thresholds=None)
+    server = serve(empty_room(serve.gate()), thresholds=None)
     status, _ = post(server.url, "/api/calibrate", {"lead_s": 60})
     assert status == 202
 
@@ -219,7 +221,7 @@ def test_second_calibrate_while_one_runs_is_409_and_the_countdown_is_reported(se
 
 
 def test_cancel_stops_a_running_calibration_and_a_new_one_can_start(serve):
-    server = serve(empty_room(threading.Event()), thresholds=None)
+    server = serve(empty_room(serve.gate()), thresholds=None)
     post(server.url, "/api/calibrate", {"lead_s": 60})
 
     status, body = post(server.url, "/api/calibrate/cancel", {})
@@ -232,7 +234,7 @@ def test_cancel_stops_a_running_calibration_and_a_new_one_can_start(serve):
 
 
 def test_calibrate_rejects_bad_options_with_400(serve):
-    server = serve(empty_room(threading.Event()), thresholds=None)
+    server = serve(empty_room(serve.gate()), thresholds=None)
     for body in ({"clips": 0}, {"clips": 2.5}, {"clips": 11}, {"seconds": 0}, {"margin": 0},
                  {"margin": "1.2"}, {"lead_s": -1}, {"colour": "red"}):
         status, reply = post(server.url, "/api/calibrate", body)

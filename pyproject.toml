@@ -13,3 +13,16 @@ packages = ["csi"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "slow: runs a subprocess or takes more than about 2 s; skipped by `pytest -m \"not slow\"` (scripts/check.sh fast tier)",
+    "serial: must not run in parallel with other tests under pytest-xdist (use --dist loadgroup)",
+    "real_sse_pacing: keep the event stream's wall-clock pace (conftest removes it for other tests)",
+]
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+# Pyflakes plus syntax errors. E/I were left out: with them the repo has 18 long lines and 20 unsorted import
+# blocks that autofix would reflow across unrelated code, so they are a follow-up, not part of this change.
+select = ["F", "E9"]

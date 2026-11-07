@@ -7,7 +7,6 @@ and read back through the CSV loader, so the mac column is what the evaluator se
 import heapq
 from operator import itemgetter
 
-import pytest
 
 from csi.evaluate import evaluate_sessions, format_report
 from csi.recording import record_session

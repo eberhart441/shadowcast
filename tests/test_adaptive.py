@@ -2,7 +2,7 @@
 import math
 import random
 
-from csi.adaptive import CAP_S, AdaptiveDetector, RoomDecision, replay_series
+from csi.adaptive import CAP_S, AdaptiveDetector, RoomDecision
 
 HZ = 25.0  # samples per second, roughly the real packet rate
 

@@ -1,5 +1,8 @@
+import atexit
+import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -13,10 +16,23 @@ from csi.simulate import Segment, simulate_stream
 ROOT = Path(__file__).resolve().parents[1]
 SIM_STATE = {"empty": "empty", "walking": "motion",
              "still_standing": "still", "still_sitting_or_lying": "still"}
+_RECORDED: dict[tuple, Path] = {}
+_CACHE_DIR = Path(tempfile.mkdtemp(prefix="csi-recorded-plans-"))
+atexit.register(shutil.rmtree, _CACHE_DIR, True)
 
 
 def record_plan(folder: Path, plan: list[tuple[str, float]], seed: int = 0) -> Path:
-    """Record a simulator session with one labeled recording per (label, seconds) entry."""
+    """Record a simulator session into ``folder``. Each (plan, seed) is recorded once per process and copied."""
+    key = (tuple(plan), seed)
+    if key not in _RECORDED:
+        built = _CACHE_DIR / f"plan{len(_RECORDED)}"
+        _record_plan(built, plan, seed)
+        _RECORDED[key] = built
+    shutil.copytree(_RECORDED[key], folder)
+    return folder
+
+
+def _record_plan(folder: Path, plan: list[tuple[str, float]], seed: int) -> Path:
     scenario = [Segment(SIM_STATE[label], secs) for label, secs in plan]
     starts = np.cumsum([0] + [round(secs * 100) for _, secs in plan])
     switches = {int(starts[i]): label for i, (label, _) in enumerate(plan) if i > 0}
@@ -52,6 +68,7 @@ def test_still_labels_are_reported_on_separate_rows(tmp_path):
     assert cm.loc["still_sitting_or_lying"].sum() > 0
 
 
+@pytest.mark.slow
 def test_still_rows_are_still_present_not_motion_on_a_simulated_session(tmp_path):
     folder = record_plan(tmp_path / "room", [
         ("empty", 20), ("still_standing", 40), ("empty", 20), ("still_sitting_or_lying", 40)])
@@ -118,6 +135,7 @@ def test_unusable_calibration_recording_fails_clearly(tmp_path):
         evaluate_sessions([folder])
 
 
+@pytest.mark.slow
 def test_multiple_sessions_in_one_run_sum_into_total(tmp_path):
     a = record_plan(tmp_path / "a", [("empty", 20), ("walking", 10), ("empty", 20), ("walking", 10)])
     b = record_plan(tmp_path / "b", [("empty", 20), ("walking", 10), ("empty", 20), ("walking", 10)], seed=3)
@@ -135,6 +153,7 @@ def test_evaluation_is_deterministic(tmp_path):
     assert first.equals(second)
 
 
+@pytest.mark.slow
 def test_cli_is_motion_only_by_default_and_takes_breathing_flag(tmp_path):
     good = record_plan(tmp_path / "good", [
         ("empty", 20), ("walking", 10), ("empty", 20), ("still_standing", 30)])
@@ -148,6 +167,7 @@ def test_cli_is_motion_only_by_default_and_takes_breathing_flag(tmp_path):
     assert "decisions without a full" in opted.stdout
 
 
+@pytest.mark.slow
 def test_cli_prints_matrix_and_fails_clearly_without_empty(tmp_path):
     good = record_plan(tmp_path / "good", [("empty", 20), ("walking", 10), ("empty", 20), ("walking", 10)])
     bad = record_plan(tmp_path / "bad", [("walking", 10)])
@@ -171,6 +191,7 @@ def test_evaluate_margin_scales_the_session_threshold_and_is_printed(tmp_path):
     assert "margin 2.00" in format_report(doubled_report)
 
 
+@pytest.mark.slow
 def test_larger_margin_never_detects_more_motion_in_evaluation(tmp_path):
     folder = record_plan(tmp_path / "room", [("empty", 20), ("walking", 10), ("empty", 20), ("walking", 10)])
     motion = []
@@ -180,6 +201,7 @@ def test_larger_margin_never_detects_more_motion_in_evaluation(tmp_path):
     assert motion == sorted(motion, reverse=True)
 
 
+@pytest.mark.slow
 def test_cli_margin_is_accepted_printed_and_validated(tmp_path):
     good = record_plan(tmp_path / "good", [("empty", 20), ("walking", 10), ("empty", 20), ("walking", 10)])
     script = str(ROOT / "scripts" / "evaluate.py")

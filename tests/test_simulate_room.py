@@ -1,6 +1,7 @@
-"""Simulated person in the room from config/room.json, driven through the text seam into LinkMonitor."""
+"""Simulated person in the room from the committed room config, driven through the text seam into LinkMonitor."""
 import json
 import time
+from functools import lru_cache
 
 import pytest
 
@@ -36,9 +37,16 @@ def run(tagged_packets, thresholds):
     return monitor, states
 
 
+@lru_cache(maxsize=None)
+def _calibrated_committed_room():
+    # margin 1.5 (not the default 1.0): at 1.0 the held-out empty room crosses the single-clip p99 (see test_calibration_margin.py)
+    return calibrate_links_report(tagged(person=None, duration_s=25, seed=10), margin=1.5).thresholds
+
+
 def calibrated(config=None):
     """Thresholds per link from an empty room, the calibration the monitor would be given."""
-    # margin 1.5 (not the default 1.0): at 1.0 the held-out empty room crosses the single-clip p99 (see test_calibration_margin.py)
+    if config is None:
+        return _calibrated_committed_room()  # the same empty room for every test: simulated once per process
     return calibrate_links_report(tagged(person=None, duration_s=25, seed=10, room=config), margin=1.5).thresholds
 
 
@@ -48,6 +56,7 @@ def motion_fraction(states, label, start_s=1.5, end_s=float("inf")):
     return sum(s == MOTION for s in seq) / len(seq)
 
 
+@pytest.mark.slow
 def test_empty_room_keeps_every_link_quiet():
     cal = calibrated()
     assert set(cal) == LABELS
@@ -102,6 +111,7 @@ def test_link_that_drops_out_sends_nothing_afterwards_and_reports_no_signal():
     assert rows[RIGHT]["state"] != NO_SIGNAL
 
 
+@pytest.mark.slow
 def test_moving_a_sender_in_the_config_moves_which_link_responds(tmp_path):
     config = json.loads(DEFAULT_ROOM_PATH.read_text())
     config["nodes"]["tx1"]["x"], config["nodes"]["tx1"]["y"] = 2.77, 1.84  # tx1 moved to the far corner

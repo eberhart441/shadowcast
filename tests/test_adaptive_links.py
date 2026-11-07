@@ -83,6 +83,7 @@ def test_auto_payload_reports_mode_elevated_level_and_room_state_and_is_json_ser
     assert payload["status"]["room"]["state"] == "EMPTY"
 
 
+@pytest.mark.slow
 def test_scale_jump_is_relearned_and_then_quiet_in_auto_mode():
     packets = empty(100, seed=5)
     jump_at = T0 + 20.0
@@ -95,6 +96,7 @@ def test_scale_jump_is_relearned_and_then_quiet_in_auto_mode():
     assert len(seen_after) > 20 and set(seen_after) <= {"EMPTY"}
 
 
+@pytest.mark.slow
 def test_a_person_walking_makes_the_room_motion_via_at_least_two_links():
     state = DashboardState(ROOM, mode="auto")
     feed(state, empty(14, seed=6))
@@ -180,6 +182,7 @@ def mixed_clip(seed=40):
     return quiet + shifted
 
 
+@pytest.mark.slow
 def test_quiet_mode_refuses_a_busy_clip_but_noisy_mode_calibrates_it_with_a_warning():
     clip = mixed_clip()
     quiet = calibrate_links_report(clip, margin=1.25)

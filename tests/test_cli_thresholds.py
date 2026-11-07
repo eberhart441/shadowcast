@@ -46,6 +46,7 @@ def test_resolve_threshold_reads_threshold_file(tmp_path):
     assert resolve_threshold(ns(port=FAKE_PORT, threshold_file=path), SIM_THRESHOLD) == 11.5
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("script", ["detect_live.py", "telemetry.py", "live.py"])
 def test_real_port_without_threshold_fails_clearly_before_opening_it(script):
     r = run(script, "--port", FAKE_PORT)
@@ -54,12 +55,14 @@ def test_real_port_without_threshold_fails_clearly_before_opening_it(script):
     assert "calibrat" in r.stderr.lower()
 
 
+@pytest.mark.slow
 def test_detect_live_simulate_runs_without_threshold_and_uses_simulator_default():
     r = run("detect_live.py", "--simulate", "--duration", "3")
     assert r.returncode == 0, r.stderr
     assert f"threshold {SIM_THRESHOLD:.3f}" in r.stdout
 
 
+@pytest.mark.slow
 def test_calibrate_then_live_round_trip_on_simulator(tmp_path):
     out = tmp_path / "calib.json"
     cal = run("detect_live.py", "--simulate", "--calibrate", "15", "--out", str(out))

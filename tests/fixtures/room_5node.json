@@ -1,5 +1,5 @@
 {
-  "comment": "Test fixture: the committed rig plus a third receiver rx3 at top-middle. Same room and senders as config/room.json.",
+  "comment": "Test fixture: the committed rig plus a third receiver rx3 at top-middle. Same room and senders as the committed room config.",
   "room": {
     "width_m": 2.77,
     "depth_m": 1.84

@@ -103,7 +103,7 @@ def test_real_rig_modest_rise_below_threshold_still_forms_visible_heat():
 
 
 def test_weight_scales_a_links_evidence():
-    # rx1<-01 is down-weighted to 0.3 in config/room.json; rx1<-00 has weight 1.0. Same score history.
+    # rx1<-01 is down-weighted to 0.3 in the committed room config; rx1<-00 has weight 1.0. Same score history.
     assert ROOM.link_weights["rx1<-01"] == 0.3
     down, full = Heatmap(ROOM), Heatmap(ROOM)
     replay(down, "rx1<-01", [1.0] * 44 + [5.0] * 40)

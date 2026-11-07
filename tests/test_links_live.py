@@ -21,18 +21,21 @@ def run(*args: str, timeout: float = 120) -> subprocess.CompletedProcess:
                           cwd=ROOT, capture_output=True, text=True, timeout=timeout)
 
 
+@pytest.mark.slow
 def test_real_port_without_thresholds_fails_clearly_before_opening_it():
     r = run("--port", FAKE_PORT)
     assert r.returncode != 0
     assert "--thresholds" in r.stderr and "--calibrate" in r.stderr
 
 
+@pytest.mark.slow
 def test_no_source_is_an_error():
     r = run()
     assert r.returncode != 0
     assert "--port" in r.stderr and "--simulate-links" in r.stderr
 
 
+@pytest.mark.slow
 def test_simulate_links_draws_one_row_per_link():
     r = run("--simulate-links", "--duration", "3")
     assert r.returncode == 0, r.stderr
@@ -41,6 +44,7 @@ def test_simulate_links_draws_one_row_per_link():
     assert "EMPTY" in r.stdout
 
 
+@pytest.mark.slow
 def test_calibrate_writes_one_threshold_per_link(tmp_path):
     out = tmp_path / "links.json"
     r = run("--simulate-links", "--calibrate", "15", "--out", str(out))
@@ -50,6 +54,7 @@ def test_calibrate_writes_one_threshold_per_link(tmp_path):
     assert all(t > 0 for t in thresholds.values())
 
 
+@pytest.mark.slow
 def test_calibrate_refuses_links_without_enough_data_and_explains(tmp_path):
     out = tmp_path / "links.json"
     r = run("--simulate-links", "--calibrate", "5", "--out", str(out))
@@ -58,6 +63,7 @@ def test_calibrate_refuses_links_without_enough_data_and_explains(tmp_path):
     assert not out.exists()
 
 
+@pytest.mark.slow
 def test_thresholds_file_sets_each_links_threshold(tmp_path):
     path = tmp_path / "links.json"
     path.write_text('{"rx1<-00": 123.0, "rx1<-01": 4.5, "rx2<-00": 6.5, "rx2<-01": 7.5}')

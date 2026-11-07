@@ -7,10 +7,11 @@ import json
 from functools import lru_cache
 
 import numpy as np
+import pytest
 
 from csi.dashboard import DashboardState
-from csi.links import LinkId, calibrate_links_report
-from csi.room import Walk, load_room, stand_at_centre, stand_near_wall
+from csi.links import calibrate_links_report
+from csi.room import load_room, stand_at_centre, stand_near_wall
 from csi.simulate import simulate_room_links
 
 T0 = 1_700_000_000.0
@@ -18,7 +19,7 @@ ROOM = load_room()
 LEFT = "rx2<-01"    # rx2 (0, 0) to tx1 (0, 1.84): the left wall
 RIGHT = "rx1<-00"   # rx1 (2.77, 0) to tx0 (2.77, 1.84): the right wall
 DIAG_A = "rx2<-00"  # rx2 (0, 0) to tx0 (2.77, 1.84)
-DIAG_B = "rx1<-01"  # rx1 (2.77, 0) to tx1 (0, 1.84): down-weighted in config/room.json
+DIAG_B = "rx1<-01"  # rx1 (2.77, 0) to tx1 (0, 1.84): down-weighted in the committed room config
 LABELS = {LEFT, RIGHT, DIAG_A, DIAG_B}
 
 
@@ -140,6 +141,7 @@ def test_person_at_centre_is_hot_driven_by_both_diagonals_and_hotter_than_corner
     assert centre > max(corners)
 
 
+@pytest.mark.slow
 def test_link_that_drops_out_stops_contributing_and_its_heat_vanishes():
     packets = quiet_then(stand_near_wall(ROOM, "left"), 10, seed=16, drop_after={LEFT: 3.0})  # drops at T0+15
     state = new_state()

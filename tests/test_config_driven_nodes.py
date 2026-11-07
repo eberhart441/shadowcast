@@ -187,6 +187,7 @@ def test_links_live_simulated_table_is_built_from_the_room(tmp_path):
     assert {lid.label for lid in links_live.simulated_links(off)} == LABELS4
 
 
+@pytest.mark.slow
 def test_links_live_command_line_draws_a_row_for_every_link_of_the_room_it_is_given(tmp_path):
     script = str(ROOT / "scripts" / "links_live.py")
     r = subprocess.run([sys.executable, script, "--simulate-links", "--room", str(FIXTURE), "--duration", "2"],
@@ -201,6 +202,7 @@ def test_links_live_command_line_draws_a_row_for_every_link_of_the_room_it_is_gi
 
 # ---------------------------------------------------------------- the room responds where the geometry says
 
+@pytest.mark.slow
 def test_person_at_top_middle_excites_the_rx3_links_and_not_the_wall_links():
     states = states_by_label(tagged(ROOM5, person=stand_near_wall(ROOM5, "top"), duration_s=12, seed=21),
                              calibrated5())
@@ -217,6 +219,7 @@ def test_person_near_the_bottom_left_corner_excites_rx3_and_left_wall_more_than_
     assert motion_fraction(states, LEFT) > motion_fraction(states, RIGHT) + 0.3
 
 
+@pytest.mark.slow
 def test_person_walking_along_the_bottom_edge_moves_the_heat_centre_from_left_to_right():
     walk = Walk(((0.25, ROOM5.depth_m - 0.25), (ROOM5.width_m - 0.25, ROOM5.depth_m - 0.25)), speed_mps=0.5)
     packets = quiet_then(ROOM5, walk, duration_s=6.0)

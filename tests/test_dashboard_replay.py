@@ -14,7 +14,7 @@ from csi.room import Walk
 from csi.server import DashboardServer
 from tests.test_evaluate import record_plan
 from tests.test_dashboard_server import (LABELS, RIGHT, ROOM, calibrated_thresholds, get_json, grid,
-                                         links_by_id, quiet_then_streams, read_events, room_streams)
+                                         links_by_id, quiet_then_streams, read_events)
 
 
 @pytest.fixture
@@ -77,6 +77,7 @@ def hot_cell(payload: dict):
     return divmod(int(g.argmax()), g.shape[1])
 
 
+@pytest.mark.slow
 def test_log_has_a_header_then_one_line_per_event_with_the_same_payloads(tmp_path, run_server):
     log = tmp_path / "run.jsonl"
     server = run_server(DashboardServer(ROOM, walk_left_to_right(2.0), calibrated_thresholds(), port=0, log=log,
@@ -116,6 +117,7 @@ def test_replayed_log_serves_the_logged_states_and_hot_cell_track_in_order(walk_
     assert get_json(server)["status"]["finished"] is True
 
 
+@pytest.mark.slow
 def test_replay_at_original_speed_takes_about_the_logged_time(walk_log, run_server):
     span = logged_span_s(walk_log)
     started = time.monotonic()
@@ -125,6 +127,7 @@ def test_replay_at_original_speed_takes_about_the_logged_time(walk_log, run_serv
     assert 0.8 * span <= elapsed <= span + 1.5
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("speed", [4.0, math.inf])
 def test_accelerated_and_max_replays_finish_sooner(walk_log, run_server, speed):
     span = logged_span_s(walk_log)

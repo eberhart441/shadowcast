@@ -65,6 +65,7 @@ def next_items(stream, n: int, within_s: float) -> list:
     return out
 
 
+@pytest.mark.slow
 def test_a_silent_port_yields_heartbeats_about_once_a_second(fake_serial):
     stream = serial_stream("/dev/cu.fake", timeout=1.0)
     start = time.time()
@@ -77,6 +78,7 @@ def test_a_silent_port_yields_heartbeats_about_once_a_second(fake_serial):
     assert fake_serial.opened[0].closed is True        # closing the generator releases the port
 
 
+@pytest.mark.slow
 def test_closing_sources_of_a_silent_port_stops_the_reader_and_closes_the_port_quickly(fake_serial):
     ms = MultiSource({"rx1": serial_stream("/dev/cu.fake", timeout=1.0)})
     ms.start()

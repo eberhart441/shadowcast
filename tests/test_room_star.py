@@ -128,6 +128,7 @@ def test_star_payload_over_http_lists_rx3_at_minus_1_5_and_six_links():
 
 # ---------------------------------------------------------------- the room responds where the geometry says
 
+@pytest.mark.slow
 def test_person_on_the_rx3_diagonal_inside_the_room_lights_rx3_a_and_puts_heat_on_it(thresholds):
     person = Stand(2.13, 0.3)   # on the rx3 -> tx0 diagonal, 0.3 m below the top wall
     packets = quiet_then(person, duration_s=12, seed=21)
@@ -144,6 +145,7 @@ def test_person_on_the_rx3_diagonal_inside_the_room_lights_rx3_a_and_puts_heat_o
     assert np.hypot(hot[0] - person.x, hot[1] - person.y) < 0.4
 
 
+@pytest.mark.slow
 def test_top_middle_person_is_0_69_m_from_both_rx3_diagonals_so_their_motion_stays_low(thresholds):
     # (1.385, 0.3) is 0.69 m from each rx3 diagonal; with the simulator's 0.25 m falloff that is too far to
     # reach MOTION, so the rx3 links stay quiet here. This pins that limit of the model, not a hardware claim.
@@ -152,6 +154,7 @@ def test_top_middle_person_is_0_69_m_from_both_rx3_diagonals_so_their_motion_sta
     assert motion_fraction(states, RX3_B) < 0.05
 
 
+@pytest.mark.slow
 def test_person_near_the_bottom_left_corner_lights_the_links_that_pass_near_it(thresholds):
     # distances to the segments: rx1<-01 0.07 m, rx3<-01 0.14 m, rx2<-01 0.25 m; rx1<-00 2.5 m, rx3<-00 2.2 m
     states = states_by_label(quiet_then(Stand(0.25, ROOM.depth_m - 0.25), duration_s=12, seed=22), thresholds)
@@ -161,6 +164,7 @@ def test_person_near_the_bottom_left_corner_lights_the_links_that_pass_near_it(t
         assert motion_fraction(states, label) < 0.05, label
 
 
+@pytest.mark.slow
 def test_person_near_the_bottom_left_corner_puts_heat_in_the_corner_from_the_links_that_pass_it(thresholds):
     corner = Stand(0.25, ROOM.depth_m - 0.25)
     packets = quiet_then(corner, duration_s=12, seed=22)

@@ -65,6 +65,7 @@ def test_no_link_goes_to_warmup_after_the_first_full_window_across_loop_boundari
     assert len(warmed) == 4
 
 
+@pytest.mark.slow
 def test_quiet_first_seconds_are_empty_so_a_user_can_calibrate_then_the_walk_starts():
     quiet_s = 14.0
     thresholds = simulated_thresholds(ROOM)

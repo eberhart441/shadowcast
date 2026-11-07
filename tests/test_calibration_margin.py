@@ -7,6 +7,7 @@ proportionality of the rule, and the stated false-alarm tolerance, not from re-r
 import json
 import subprocess
 import sys
+from functools import lru_cache
 from pathlib import Path
 
 import pytest
@@ -23,6 +24,22 @@ FALSE_ALARM_TOLERANCE = 0.02  # at margin 1.0, under 2% of held-out empty decisi
 
 def packets(scenario, seed=0):
     return list(parse_stream(simulate_stream(scenario=scenario, seed=seed)))
+
+
+# The clips below are simulated once per seed and shared by the tests that use them (read-only).
+@lru_cache(maxsize=None)
+def empty_clip(seed):
+    return packets([Segment("empty", 20)], seed=seed)
+
+
+@lru_cache(maxsize=None)
+def held_out_empty_clip(seed):
+    return packets([Segment("empty", 30)], seed=seed + 1000)
+
+
+@lru_cache(maxsize=None)
+def held_out_still_clip(seed):
+    return packets([Segment("still", 30)], seed=seed + 2000)
 
 
 def tagged(seconds, seed):
@@ -55,6 +72,7 @@ def test_threshold_is_margin_times_the_same_percentile_on_every_entry_point():
     assert calibrate(stream, margin=2.0).threshold == pytest.approx(2 * base, rel=1e-12)
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("bad", [0.0, -1.0, float("nan")])
 def test_non_positive_margin_is_a_value_error_naming_the_margin(bad):
     clip = packets([Segment("empty", 20)], seed=3)
@@ -94,12 +112,13 @@ def held_out_false_alarm_rate(margin: float) -> float:
     """Mean fraction of held-out empty decisions reading MOTION, each clip calibrated on its own empty clip."""
     rates = []
     for seed in HELD_OUT_SEEDS:
-        cal = calibrate_packets(packets([Segment("empty", 20)], seed=seed), margin=margin)
-        held_out = [r.state for r in detect_packets(packets([Segment("empty", 30)], seed=seed + 1000), cal.threshold)]
+        cal = calibrate_packets(empty_clip(seed), margin=margin)
+        held_out = [r.state for r in detect_packets(held_out_empty_clip(seed), cal.threshold)]
         rates.append(sum(s == MOTION for s in held_out) / len(held_out))
     return sum(rates) / len(rates)
 
 
+@pytest.mark.slow
 def test_margin_1_5_keeps_held_out_empty_within_tolerance():
     assert held_out_false_alarm_rate(1.5) < FALSE_ALARM_TOLERANCE
 
@@ -114,12 +133,13 @@ def still_person_motion_rate(margin: float) -> float:
     """Mean fraction of decisions reading MOTION for a still person, calibrated on an empty clip."""
     rates = []
     for seed in HELD_OUT_SEEDS:
-        cal = calibrate_packets(packets([Segment("empty", 20)], seed=seed), margin=margin)
-        st = [r.state for r in detect_packets(packets([Segment("still", 30)], seed=seed + 2000), cal.threshold)]
+        cal = calibrate_packets(empty_clip(seed), margin=margin)
+        st = [r.state for r in detect_packets(held_out_still_clip(seed), cal.threshold)]
         rates.append(sum(s == MOTION for s in st) / len(st))
     return sum(rates) / len(rates)
 
 
+@pytest.mark.slow
 def test_margin_1_5_does_not_read_a_still_person_as_motion():
     assert still_person_motion_rate(1.5) < FALSE_ALARM_TOLERANCE
 
@@ -129,6 +149,7 @@ def test_default_margin_does_not_read_a_still_person_as_motion():
     assert still_person_motion_rate(DEFAULT_MARGIN) < FALSE_ALARM_TOLERANCE
 
 
+@pytest.mark.slow
 def test_larger_margin_never_detects_more_motion_on_the_same_session():
     calib = packets([Segment("empty", 20)], seed=14)
     session = packets([Segment("empty", 15), Segment("motion", 5), Segment("empty", 10),
@@ -143,6 +164,7 @@ def test_larger_margin_never_detects_more_motion_on_the_same_session():
 
 # --- 3. CLI: --margin on links_live.py and detect_live.py; file format unchanged ---
 
+@pytest.mark.slow
 def test_links_live_margin_scales_saved_thresholds_and_is_printed(tmp_path):
     default_out, doubled_out = tmp_path / "a.json", tmp_path / "b.json"
     a = run("links_live.py", "--simulate-links", "--calibrate", "15", "--margin", "1", "--out", str(default_out))
@@ -159,6 +181,7 @@ def test_links_live_margin_scales_saved_thresholds_and_is_printed(tmp_path):
     assert all(isinstance(v, float) for v in json.loads(doubled_out.read_text()).values())
 
 
+@pytest.mark.slow
 def test_links_live_rejects_non_positive_margin_before_writing(tmp_path):
     out = tmp_path / "links.json"
     r = run("links_live.py", "--simulate-links", "--calibrate", "15", "--margin", "0", "--out", str(out))
@@ -167,6 +190,7 @@ def test_links_live_rejects_non_positive_margin_before_writing(tmp_path):
     assert not out.exists()
 
 
+@pytest.mark.slow
 def test_detect_live_margin_scales_threshold_and_is_printed(tmp_path):
     from csi.detect import load_threshold
     default_out, doubled_out = tmp_path / "a.json", tmp_path / "b.json"
@@ -178,6 +202,7 @@ def test_detect_live_margin_scales_threshold_and_is_printed(tmp_path):
     assert load_threshold(doubled_out) == pytest.approx(2 * load_threshold(default_out), rel=1e-9)
 
 
+@pytest.mark.slow
 def test_detect_live_rejects_non_positive_margin(tmp_path):
     r = run("detect_live.py", "--simulate", "--calibrate", "15", "--margin", "-1",
             "--out", str(tmp_path / "c.json"))

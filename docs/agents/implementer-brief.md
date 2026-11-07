@@ -15,6 +15,11 @@ Setup and conventions for any subagent that implements or merges work in this re
 - Leave hardware, serial ports, GitHub issues, `README.md` and pushing to the lead, unless the task says otherwise.
 - A live dashboard may be running on port 8000 and holding serial ports. Use ephemeral ports in tests and leave that process running.
 
+## Checks
+
+- `scripts/check.sh` runs `ruff check .` and the fast test tier (`-m "not slow"`, parallel with `-n auto`). `scripts/check.sh --full` runs the whole suite before a merge.
+- Enable the pre-push hook once per clone with `git config core.hooksPath .githooks`. It runs `scripts/check.sh`; skip it with `SKIP_CHECK=1`.
+
 ## Commits
 
 End every commit message with:

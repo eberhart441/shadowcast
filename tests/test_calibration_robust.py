@@ -122,6 +122,7 @@ def tagged(scenario, seed):
     return list(simulate_links(senders=SENDER_MACS, receivers=RECEIVERS, scenario=scenario, seed=seed))
 
 
+@pytest.mark.slow
 def test_link_report_rejects_walk_through_and_reports_seconds():
     report = calibrate_links_report(tagged([Segment("empty", 5), Segment("motion", 13), Segment("empty", 17)], 60))
     rx = LinkId("rx1", SENDER_MACS[0]).label
@@ -145,6 +146,7 @@ def run_links(*args, timeout=120):
                           cwd=ROOT, capture_output=True, text=True, timeout=timeout)
 
 
+@pytest.mark.slow
 def test_cli_clips_records_several_clips_and_reports_rejected_seconds(tmp_path):
     out = tmp_path / "links.json"
     r = run_links("--simulate-links", "--calibrate", "6", "--clips", "2", "--out", str(out))

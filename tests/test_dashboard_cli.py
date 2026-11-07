@@ -46,6 +46,7 @@ def test_exactly_one_source_is_required():
         cli.check_source(parser.parse_args(["--simulate-room", "--port", "rx1=/dev/cu.a"]))
 
 
+@pytest.mark.slow
 def test_serves_the_simulated_room_over_http_and_stops_cleanly_on_ctrl_c():
     port = free_port()
     proc = subprocess.Popen([sys.executable, str(ROOT / "scripts" / "dashboard.py"), "--simulate-room",
@@ -109,6 +110,7 @@ def run_cli(*argv: str, timeout: float = 120.0) -> subprocess.CompletedProcess:
                           capture_output=True, text=True, timeout=timeout)
 
 
+@pytest.mark.slow
 def test_replay_of_a_missing_log_exits_with_a_clear_error(tmp_path):
     result = run_cli("--replay", str(tmp_path / "missing.jsonl"))
     assert result.returncode != 0
@@ -116,6 +118,7 @@ def test_replay_of_a_missing_log_exits_with_a_clear_error(tmp_path):
     assert "Traceback" not in result.stderr
 
 
+@pytest.mark.slow
 def test_replay_of_a_corrupt_log_names_the_bad_line(tmp_path):
     bad = tmp_path / "bad.jsonl"
     bad.write_text('{"format": "csi-dashboard-log", "version": 1}\n{"links": [\n')
@@ -125,6 +128,7 @@ def test_replay_of_a_corrupt_log_names_the_bad_line(tmp_path):
     assert "Traceback" not in result.stderr
 
 
+@pytest.mark.slow
 def test_replay_session_serves_the_recorded_walk_and_logs_it_with_its_thresholds_source(tmp_path):
     folder = record_plan(tmp_path / "room", [("empty", 20), ("walking", 10)])
     log, port = tmp_path / "session.jsonl", free_port()

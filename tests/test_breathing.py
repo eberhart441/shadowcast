@@ -1,6 +1,6 @@
 import pytest
 
-from csi.detect import EMPTY, MOTION, STILL_PRESENT, calibrate, detect
+from csi.detect import MOTION, STILL_PRESENT, calibrate, detect
 from csi.simulate import Segment, simulate_stream
 
 THRESHOLD = 2.0  # same manual threshold as test_detect.py

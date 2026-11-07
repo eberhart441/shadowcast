@@ -199,6 +199,7 @@ def draw_page_with_stub(tmp_path, payload):
     return result["calls"]
 
 
+@pytest.mark.slow
 @needs_node
 def test_page_draws_rx3_above_the_room_outline_and_heat_exactly_over_the_room_rectangle(tmp_path):
     calls = draw_page_with_stub(tmp_path, star_payload())
@@ -221,6 +222,7 @@ def test_page_has_marked_pure_geometry_block_and_the_map_draws_from_it():
     assert "leaderEnd(" in html                           # and get a dashed leader to the nearest room edge
 
 
+@pytest.mark.slow
 @needs_node
 def test_map_bounds_are_the_room_and_every_node_plus_a_0_3_m_margin(tmp_path):
     payload = star_payload()
@@ -229,6 +231,7 @@ def test_map_bounds_are_the_room_and_every_node_plus_a_0_3_m_margin(tmp_path):
     assert b["y0"] == pytest.approx(-1.5 - 0.3) and b["y1"] == pytest.approx(1.84 + 0.3)
 
 
+@pytest.mark.slow
 @needs_node
 def test_map_bounds_without_an_outside_node_are_just_the_room_plus_margin(tmp_path):
     payload = star_payload()
@@ -238,6 +241,7 @@ def test_map_bounds_without_an_outside_node_are_just_the_room_plus_margin(tmp_pa
     assert b["x1"] == pytest.approx(2.77 + 0.3) and b["y1"] == pytest.approx(1.84 + 0.3)
 
 
+@pytest.mark.slow
 @needs_node
 def test_rx3_is_outside_the_room_with_a_leader_to_the_top_wall_and_labels_point_into_the_bounds(tmp_path):
     payload = star_payload()
