@@ -1,33 +1,699 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>CSI dashboard (placeholder)</title>
-  <style>
-    body { font-family: ui-monospace, Menlo, monospace; margin: 16px; background: #fff; color: #111; }
-    pre { white-space: pre-wrap; word-break: break-word; }
-    @media (prefers-color-scheme: dark) {
-      body { background: #111; color: #eee; }
-    }
-  </style>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CSI room map</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #0b0f14;
+    --panel: #131a22;
+    --panel-2: #1a232d;
+    --line: #2a3644;
+    --text: #e8edf3;
+    --muted: #9aa7b4;
+    --empty: #3fb950;
+    --motion: #f85149;
+    --nosig: #8b949e;
+    --uncal: #e3a008;
+    --warm: #7d9ab5;
+    --sender: #58a6ff;
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 16px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    font-variant-numeric: tabular-nums;
+  }
+  header.top {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px;
+    padding: 12px 16px; border-bottom: 1px solid var(--line);
+  }
+  h1 { font-size: 1.4rem; margin: 0; font-weight: 650; letter-spacing: 0.01em; }
+  .spacer { flex: 1 1 auto; }
+  .conn { display: flex; align-items: center; gap: 8px; font-weight: 650; font-size: 1.05rem; }
+  .dot { display: inline-block; width: 12px; height: 12px; border-radius: 50%; background: var(--nosig); }
+  .dot.connecting { background: var(--warm); }
+  .dot.live { background: var(--empty); }
+  .dot.reconnecting { background: var(--uncal); }
+  .dot.finished { background: var(--nosig); }
+  .paused-flag {
+    padding: 4px 10px; border-radius: 6px; background: var(--uncal); color: #0b0f14;
+    font-weight: 800; letter-spacing: 0.06em;
+  }
+  button {
+    font: inherit; font-weight: 600; min-height: 44px; min-width: 110px; padding: 8px 18px;
+    border-radius: 8px; border: 1px solid #3b4a5c; background: var(--panel-2); color: var(--text); cursor: pointer;
+  }
+  button:focus-visible { outline: 3px solid var(--sender); outline-offset: 2px; }
+  button[aria-pressed="true"] { border-color: var(--uncal); color: var(--uncal); }
+
+  .statusbar {
+    display: flex; flex-wrap: wrap; gap: 10px 28px; padding: 10px 16px;
+    background: var(--panel); border-bottom: 1px solid var(--line); font-size: 0.98rem;
+  }
+  .group { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+  .label { color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; font-size: 0.78rem; font-weight: 650; }
+  .chip {
+    display: inline-block; padding: 2px 9px; border-radius: 6px; background: var(--panel-2);
+    border: 1px solid var(--line); font-weight: 650;
+  }
+  .chip.connected { border-color: var(--empty); }
+  .chip.finished { border-color: var(--nosig); color: var(--muted); }
+  .chip.failed { border-color: var(--motion); color: #ffb4ae; background: #3a1716; }
+  .chip.state { border-left-width: 4px; }
+  .msgs { margin: 0; padding: 0; list-style: none; color: var(--uncal); }
+  .msgs li { margin: 0; }
+  .msgs li.muted { color: var(--muted); }
+  .muted { color: var(--muted); }
+
+  main.layout {
+    display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(300px, 1fr);
+    gap: 16px; padding: 16px; align-items: start;
+  }
+  .card {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px; min-width: 0;
+  }
+  .card.paused { border-color: var(--uncal); box-shadow: 0 0 0 2px rgba(227, 160, 8, 0.35); }
+  .card h2 {
+    font-size: 0.95rem; margin: 0 0 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em;
+  }
+  #map { display: block; width: 100%; height: 300px; }
+  .caption { margin: 12px 0 8px; font-size: 1.05rem; font-weight: 650; }
+  .legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 0.92rem; color: var(--muted); }
+  .sw {
+    display: inline-block; width: 16px; height: 6px; border-radius: 3px; margin-right: 6px; vertical-align: middle;
+  }
+  .sw.EMPTY { background: var(--empty); }
+  .sw.MOTION { background: var(--motion); }
+  .sw.NO_SIGNAL { background: var(--nosig); }
+  .sw.UNCALIBRATED { background: var(--uncal); }
+  .sw.WARMUP { background: var(--warm); }
+  .shape-rx { display: inline-block; width: 11px; height: 11px; background: #e8edf3; margin-right: 6px; vertical-align: middle; }
+  .shape-tx {
+    display: inline-block; width: 11px; height: 11px; border-radius: 50%; background: var(--sender);
+    margin-right: 6px; vertical-align: middle;
+  }
+
+  .link { padding: 12px 0; border-top: 1px solid var(--line); }
+  .link:first-child { border-top: 0; padding-top: 0; }
+  .head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+  .lid { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 1.15rem; font-weight: 700; }
+  .route { color: var(--muted); font-size: 0.92rem; flex: 1 1 auto; }
+  .badge {
+    padding: 2px 9px; border-radius: 5px; font-weight: 750; font-size: 0.85rem; letter-spacing: 0.04em; color: #0b0f14;
+  }
+  .badge.s-EMPTY { background: var(--empty); }
+  .badge.s-MOTION { background: var(--motion); }
+  .badge.s-NO_SIGNAL { background: var(--nosig); }
+  .badge.s-UNCALIBRATED { background: var(--uncal); }
+  .badge.s-WARMUP { background: var(--warm); }
+  .contrib {
+    font-size: 0.85rem; padding: 2px 8px; border-radius: 5px; border: 1px solid var(--line); color: var(--muted);
+  }
+  .contrib.on { border-color: var(--motion); color: #ffb4ae; font-weight: 650; }
+  .bar {
+    position: relative; height: 12px; margin: 10px 0 8px; background: #0b1017;
+    border: 1px solid var(--line); border-radius: 6px;
+  }
+  .fill { height: 100%; width: 0; border-radius: 6px; }
+  .mark { position: absolute; left: 50%; top: -5px; bottom: -5px; width: 2px; background: var(--text); }
+  .nums {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(104px, 1fr)); gap: 6px 12px; margin: 0;
+  }
+  .kv dt { font-size: 0.76rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+  .kv dd { margin: 0; font-size: 1.05rem; font-weight: 650; }
+  .spark {
+    display: block; width: 100%; height: 36px; margin-top: 10px; border-radius: 6px; background: #0b1017;
+  }
+
+  .controls {
+    margin: 0 16px 24px; padding: 14px; border: 1px dashed var(--line); border-radius: 12px; color: var(--muted);
+  }
+  .controls h2 { font-size: 0.95rem; margin: 0; text-transform: uppercase; letter-spacing: 0.06em; }
+
+  @media (max-width: 820px) {
+    main.layout { grid-template-columns: 1fr; padding: 12px; gap: 12px; }
+    header.top { padding: 10px 12px; }
+    .statusbar { padding: 10px 12px; }
+    .controls { margin: 0 12px 20px; }
+  }
+</style>
 </head>
 <body>
-  <h1>CSI dashboard</h1>
-  <p>Placeholder page: the live view arrives in ticket #13. This shows <code>/api/state</code>.</p>
-  <pre id="state">loading...</pre>
-  <script>
-    const out = document.getElementById("state");
-    async function refresh() {
-      try {
-        const res = await fetch("/api/state", { cache: "no-store" });
-        out.textContent = JSON.stringify(await res.json(), null, 2);
-      } catch (err) {
-        out.textContent = "cannot reach /api/state: " + err;
-      }
+<header class="top">
+  <h1>CSI room map</h1>
+  <div class="conn" role="status" aria-live="polite">
+    <span class="dot connecting" id="conn-dot"></span>
+    <span id="conn-text">connecting</span>
+  </div>
+  <span class="paused-flag" id="paused-flag" hidden>PAUSED</span>
+  <span class="spacer"></span>
+  <button type="button" id="pause" aria-pressed="false">Pause</button>
+</header>
+
+<section class="statusbar" aria-label="Status">
+  <div class="group"><span class="label">Receivers</span><span id="receivers"><span class="muted">waiting</span></span></div>
+  <div class="group"><span class="label">Links</span><span id="link-counts"></span></div>
+  <div class="group"><span class="label">Calibration</span><span id="calib">-</span></div>
+  <div class="group"><span class="label">Packet time</span><span id="pkt-time">-</span></div>
+  <div class="group"><span class="label">Messages</span><ul class="msgs" id="messages"><li class="muted">none</li></ul></div>
+</section>
+
+<main class="layout">
+  <section class="card" id="map-card">
+    <h2>Room</h2>
+    <canvas id="map" role="img" aria-label="Room map: heatmap of likely motion, four links and four nodes"></canvas>
+    <p class="caption">Rough motion-likelihood estimate from 4 links, not a position track.</p>
+    <div class="legend">
+      <span><span class="sw EMPTY"></span>EMPTY</span>
+      <span><span class="sw MOTION"></span>MOTION</span>
+      <span><span class="sw NO_SIGNAL"></span>NO_SIGNAL</span>
+      <span><span class="sw UNCALIBRATED"></span>UNCALIBRATED</span>
+      <span><span class="sw WARMUP"></span>WARMUP</span>
+      <span><span class="shape-rx"></span>receiver</span>
+      <span><span class="shape-tx"></span>sender</span>
+    </div>
+  </section>
+
+  <section class="card" id="links-card" aria-labelledby="links-title">
+    <h2 id="links-title">Links</h2>
+    <div id="links"><p class="muted">waiting for data</p></div>
+  </section>
+</main>
+
+<!--
+  CONTROLS: this container is intentionally empty. Ticket #15 (calibration and tuning controls)
+  adds its controls inside #controls. Keep the id and the heading so the layout does not move.
+-->
+<section class="controls" id="controls" aria-label="Controls">
+  <h2>Controls</h2>
+</section>
+
+<noscript><p class="muted" style="padding:16px">This page needs JavaScript to draw the room map.</p></noscript>
+
+<script>
+(function () {
+  "use strict";
+
+  var WINDOW_S = 30;            // sparkline history, in packet time
+  var FULL_SCALE = 2;           // bars and sparklines run to this multiple of the threshold; the mark is at 1
+  var STATES = ["EMPTY", "MOTION", "NO_SIGNAL", "UNCALIBRATED", "WARMUP"];
+  var COLOR = {
+    EMPTY: "#3fb950", MOTION: "#f85149", NO_SIGNAL: "#8b949e", UNCALIBRATED: "#e3a008", WARMUP: "#7d9ab5"
+  };
+  // Inferno-like ramp: cold (dark, transparent) to hot (pale yellow).
+  var RAMP = [[0, 0, 4], [87, 16, 110], [188, 55, 84], [249, 142, 9], [252, 255, 164]];
+  var MAP_PAD = { left: 46, right: 14, top: 14, bottom: 44 };
+  var MAP_MAX_H = 560;          // css px: keeps the whole map on one laptop screen
+  var RETRY_MIN_MS = 500;
+  var RETRY_MAX_MS = 8000;
+  var FONT = "600 13px -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif";
+  var TICK_FONT = "12px -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif";
+
+  function $(id) { return document.getElementById(id); }
+  function clamp(v, lo, hi) { return Math.min(hi, Math.max(lo, v)); }
+  function fmt(v, digits) { return v == null ? "-" : Number(v).toFixed(digits); }
+  function el(tag, cls, text) {
+    var node = document.createElement(tag);
+    if (cls) node.className = cls;
+    if (text != null) node.textContent = text;
+    return node;
+  }
+  function clearChildren(node) { while (node.firstChild) node.removeChild(node.firstChild); }
+
+  var els = {
+    connDot: $("conn-dot"), connText: $("conn-text"), pause: $("pause"), pausedFlag: $("paused-flag"),
+    receivers: $("receivers"), counts: $("link-counts"), calib: $("calib"), packet: $("pkt-time"),
+    messages: $("messages"), map: $("map"), mapCard: $("map-card"), links: $("links")
+  };
+  var ctx = els.map.getContext("2d");
+  var heatCanvas = document.createElement("canvas");
+  var heatCtx = heatCanvas.getContext("2d");
+
+  var shown = null;             // payload on screen
+  var latest = null;            // newest payload received; kept while paused, shown on resume
+  var paused = false;
+  var missed = 0;               // payloads received while paused
+  var finished = false;
+  var source = null;            // the EventSource, or null
+  var retryMs = RETRY_MIN_MS;
+  var retryTimer = null;
+  var history = {};             // link id -> [[packet time, normalised or null], ...] for the last WINDOW_S
+  var lastTime = null;
+  var rows = {};                // link id -> DOM row, built once and updated per payload
+
+  // ------------------------------------------------------------------ connection and data
+
+  function setConn(state) {
+    var text = { connecting: "connecting", live: "live", reconnecting: "reconnecting", finished: "run finished" };
+    els.connText.textContent = text[state] || state;
+    els.connDot.className = "dot " + state;
+  }
+
+  function recordHistory(p) {
+    var t = p.status.time_s;
+    if (lastTime !== null && t < lastTime - 1) history = {};   // a new server run: start the sparklines again
+    lastTime = t;
+    p.links.forEach(function (row) {
+      var list = history[row.id] || (history[row.id] = []);
+      list.push([t, row.normalised]);
+      while (list.length && list[0][0] < t - WINDOW_S) list.shift();
+    });
+  }
+
+  function ingest(p) {
+    if (!p || !p.status || !p.links) return;
+    recordHistory(p);
+    latest = p;
+    // A finished run must not reconnect: the server would replay the run from its log.
+    if (p.status.finished) {
+      finished = true;
+      if (source) { source.close(); source = null; }
+      clearTimeout(retryTimer);
+      setConn("finished");
     }
-    refresh();
-    setInterval(refresh, 1000);
-  </script>
+    if (paused) {
+      missed += 1;
+      els.pausedFlag.textContent = "PAUSED, " + missed + " newer";
+      return;
+    }
+    render(p);
+  }
+
+  function openStream() {
+    if (finished) return;
+    var s = new EventSource("/api/events");
+    source = s;
+    s.onopen = function () {
+      retryMs = RETRY_MIN_MS;
+      if (!finished) setConn("live");
+    };
+    s.onmessage = function (ev) {
+      if (finished || source !== s) return;
+      var p;
+      try { p = JSON.parse(ev.data); } catch (err) { return; }
+      setConn("live");
+      ingest(p);
+    };
+    s.onerror = function () {
+      if (finished || source !== s) return;
+      s.close();
+      source = null;
+      setConn("reconnecting");
+      clearTimeout(retryTimer);
+      retryTimer = setTimeout(openStream, retryMs);
+      retryMs = Math.min(retryMs * 2, RETRY_MAX_MS);
+    };
+  }
+
+  function start() {
+    setConn("connecting");
+    fetch("/api/state", { cache: "no-store" })
+      .then(function (res) { return res.json(); })
+      .then(ingest)
+      .catch(function () { /* the stream below retries */ })
+      .then(function () { if (!finished && !source) openStream(); });
+  }
+
+  // ------------------------------------------------------------------ pause
+
+  els.pause.addEventListener("click", function () {
+    paused = !paused;
+    els.pause.textContent = paused ? "Resume" : "Pause";
+    els.pause.setAttribute("aria-pressed", String(paused));
+    els.pausedFlag.hidden = !paused;
+    els.pausedFlag.textContent = "PAUSED";
+    els.mapCard.classList.toggle("paused", paused);
+    missed = 0;
+    if (!paused && latest) render(latest);   // resume jumps to the latest payload
+  });
+
+  // ------------------------------------------------------------------ map
+
+  function rampColor(v) {
+    var pos = v * (RAMP.length - 1);
+    var i = Math.min(Math.floor(pos), RAMP.length - 2);
+    var f = pos - i;
+    var a = RAMP[i], b = RAMP[i + 1];
+    return [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f];
+  }
+
+  function sizeMap(roomW, roomH) {
+    var cssW = els.map.clientWidth || 300;
+    var dpr = window.devicePixelRatio || 1;
+    var availW = cssW - MAP_PAD.left - MAP_PAD.right;
+    var maxW = (MAP_MAX_H - MAP_PAD.top - MAP_PAD.bottom) * roomW / roomH;
+    var rw = Math.max(50, Math.min(availW, maxW));
+    var rh = rw * roomH / roomW;
+    var cssH = Math.round(rh + MAP_PAD.top + MAP_PAD.bottom);
+    var cssWFinal = Math.round(cssW);
+    els.map.style.height = cssH + "px";
+    els.map.width = Math.round(cssWFinal * dpr);
+    els.map.height = Math.round(cssH * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    return { W: cssWFinal, H: cssH, x0: MAP_PAD.left, y0: MAP_PAD.top, rw: rw, rh: rh, s: rw / roomW };
+  }
+
+  function drawHeat(hm, g) {
+    if (!hm || !hm.cells || !hm.cells.length) return;
+    heatCanvas.width = hm.cols;
+    heatCanvas.height = hm.rows;
+    var img = heatCtx.createImageData(hm.cols, hm.rows);
+    for (var i = 0; i < hm.cells.length; i++) {
+      var v = clamp(hm.cells[i] || 0, 0, 1);
+      var c = rampColor(v);
+      img.data[i * 4] = c[0];
+      img.data[i * 4 + 1] = c[1];
+      img.data[i * 4 + 2] = c[2];
+      img.data[i * 4 + 3] = Math.round(255 * 0.92 * clamp(v * 2.2, 0, 1));
+    }
+    heatCtx.putImageData(img, 0, 0);
+    ctx.save();
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
+    ctx.drawImage(heatCanvas, g.x0, g.y0, g.rw, g.rh);   // row 0 is y = 0, the top edge
+    ctx.restore();
+  }
+
+  function labelBlock(lines, x, y, hAlign, vAlign, colour) {
+    ctx.save();
+    ctx.font = FONT;
+    ctx.textBaseline = "top";
+    var lineH = 16, pad = 5;
+    var w = 0;
+    lines.forEach(function (line) { w = Math.max(w, ctx.measureText(line.text).width); });
+    var h = lines.length * lineH + pad * 2 - 2;
+    var bx = hAlign === "left" ? x : hAlign === "right" ? x - w - pad * 2 : x - (w + pad * 2) / 2;
+    var by = vAlign === "top" ? y : vAlign === "bottom" ? y - h : y - h / 2;
+    ctx.fillStyle = "rgba(7, 10, 15, 0.82)";
+    ctx.fillRect(bx, by, w + pad * 2, h);
+    lines.forEach(function (line, i) {
+      ctx.fillStyle = line.colour || colour || "#e8edf3";
+      ctx.font = line.font || FONT;
+      ctx.fillText(line.text, bx + pad, by + pad + i * lineH - 2);
+    });
+    ctx.restore();
+  }
+
+  function drawMap(p) {
+    var room = p.room;
+    var g = sizeMap(room.width_m, room.depth_m);
+    var X = function (x) { return g.x0 + x * g.s; };
+    var Y = function (y) { return g.y0 + y * g.s; };
+    ctx.clearRect(0, 0, g.W, g.H);
+
+    // room floor, then the heat, then a faint metre grid
+    ctx.fillStyle = "#070a0f";
+    ctx.fillRect(g.x0, g.y0, g.rw, g.rh);
+    drawHeat(p.heatmap, g);
+    ctx.save();
+    ctx.strokeStyle = "rgba(154, 167, 180, 0.14)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (var gx = 0.5; gx < room.width_m; gx += 0.5) { ctx.moveTo(X(gx), Y(0)); ctx.lineTo(X(gx), Y(room.depth_m)); }
+    for (var gy = 0.5; gy < room.depth_m; gy += 0.5) { ctx.moveTo(X(0), Y(gy)); ctx.lineTo(X(room.width_m), Y(gy)); }
+    ctx.stroke();
+    ctx.restore();
+
+    // room outline and metre ticks (x along the bottom edge, y down the left edge)
+    ctx.save();
+    ctx.strokeStyle = "#8b949e";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(g.x0, g.y0, g.rw, g.rh);
+    ctx.strokeStyle = "#9aa7b4";
+    ctx.lineWidth = 1;
+    ctx.fillStyle = "#9aa7b4";
+    ctx.font = TICK_FONT;
+    ctx.beginPath();
+    for (var tx = 0; tx <= room.width_m + 1e-9; tx += 0.5) {
+      ctx.moveTo(X(tx), Y(room.depth_m)); ctx.lineTo(X(tx), Y(room.depth_m) + 5);
+    }
+    for (var ty = 0; ty <= room.depth_m + 1e-9; ty += 0.5) {
+      ctx.moveTo(X(0) - 5, Y(ty)); ctx.lineTo(X(0), Y(ty));
+    }
+    ctx.stroke();
+    ctx.textAlign = "center";
+    ctx.textBaseline = "top";
+    for (var lx = 0; lx <= room.width_m + 1e-9; lx += 0.5) {
+      ctx.fillText(String(lx), X(lx), Y(room.depth_m) + 8);
+    }
+    ctx.textAlign = "right";
+    ctx.textBaseline = "middle";
+    for (var ly = 0; ly <= room.depth_m + 1e-9; ly += 0.5) {
+      ctx.fillText(String(ly), X(0) - 8, Y(ly));
+    }
+    ctx.textAlign = "center";
+    ctx.textBaseline = "top";
+    ctx.fillText("metres: x across, y down", g.x0 + g.rw / 2, Y(room.depth_m) + 26);
+    ctx.restore();
+
+    // links: colour by state, width and opacity by normalised score
+    var nodes = {};
+    p.nodes.forEach(function (n) { nodes[n.name] = n; });
+    p.links.forEach(function (row) {
+      var rx = nodes[row.receiver], tx = nodes[row.sender];
+      if (!rx || !tx) return;
+      var colour = COLOR[row.state] || COLOR.NO_SIGNAL;
+      var norm = row.normalised == null ? 0 : clamp(row.normalised / FULL_SCALE, 0, 1);
+      var x1 = X(rx.x), y1 = Y(rx.y), x2 = X(tx.x), y2 = Y(tx.y);
+      ctx.save();
+      ctx.strokeStyle = colour;
+      ctx.lineCap = "round";
+      ctx.lineWidth = 2 + 6 * norm;
+      ctx.globalAlpha = row.state === "EMPTY" || row.state === "MOTION" ? 0.45 + 0.5 * norm : 0.7;
+      if (row.state === "NO_SIGNAL" || row.state === "UNCALIBRATED") ctx.setLineDash([9, 6]);
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(x2, y2);
+      ctx.stroke();
+      ctx.restore();
+      // link id near the receiver end, where the diagonals do not cross
+      var t = 0.25;
+      labelBlock([{ text: row.id, font: FONT }], x1 + (x2 - x1) * t, y1 + (y2 - y1) * t, "center", "middle", "#e8edf3");
+    });
+
+    // nodes: receivers are squares, senders are circles; the label sits inside the room at each corner
+    p.nodes.forEach(function (n) {
+      var x = X(n.x), y = Y(n.y);
+      ctx.save();
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = "#070a0f";
+      if (n.role === "receiver") {
+        ctx.fillStyle = "#e8edf3";
+        ctx.fillRect(x - 7, y - 7, 14, 14);
+        ctx.strokeRect(x - 7, y - 7, 14, 14);
+      } else {
+        ctx.fillStyle = "#58a6ff";
+        ctx.beginPath();
+        ctx.arc(x, y, 8, 0, 2 * Math.PI);
+        ctx.fill();
+        ctx.stroke();
+      }
+      ctx.restore();
+      var left = n.x < room.width_m / 2, up = n.y < room.depth_m / 2;
+      labelBlock([
+        { text: n.name + " " + n.role, font: FONT },
+        { text: n.chip, font: TICK_FONT, colour: "#9aa7b4" }
+      ], x + (left ? 14 : -14), y + (up ? 14 : -14), left ? "left" : "right", up ? "top" : "bottom");
+    });
+  }
+
+  function drawWaiting() {
+    var g = sizeMap(2.77, 1.84);
+    ctx.clearRect(0, 0, g.W, g.H);
+    ctx.fillStyle = "#070a0f";
+    ctx.fillRect(g.x0, g.y0, g.rw, g.rh);
+    ctx.fillStyle = "#9aa7b4";
+    ctx.font = FONT;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText("waiting for data", g.x0 + g.rw / 2, g.y0 + g.rh / 2);
+  }
+
+  // ------------------------------------------------------------------ links panel
+
+  function makeRow(id) {
+    var art = el("article", "link");
+    var head = el("div", "head");
+    var badge = el("span", "badge");
+    var route = el("span", "route");
+    var contrib = el("span", "contrib");
+    head.appendChild(el("span", "lid", id));
+    head.appendChild(route);
+    head.appendChild(badge);
+    head.appendChild(contrib);
+    var bar = el("div", "bar", null);
+    bar.setAttribute("role", "img");
+    var fill = el("div", "fill");
+    bar.appendChild(fill);
+    bar.appendChild(el("div", "mark"));
+    var nums = el("dl", "nums");
+    var cells = {};
+    [["score", "Score"], ["thr", "Threshold"], ["norm", "vs threshold"], ["rate", "Packets/s"],
+     ["drops", "Drops"], ["rssi", "RSSI"], ["weight", "Weight"]].forEach(function (f) {
+      var wrap = el("div", "kv");
+      wrap.appendChild(el("dt", null, f[1]));
+      var dd = el("dd", null, "-");
+      wrap.appendChild(dd);
+      nums.appendChild(wrap);
+      cells[f[0]] = dd;
+    });
+    var spark = el("canvas", "spark");
+    spark.setAttribute("role", "img");
+    spark.setAttribute("aria-label", "score history for the last 30 seconds");
+    art.appendChild(head);
+    art.appendChild(bar);
+    art.appendChild(nums);
+    art.appendChild(spark);
+    return { art: art, badge: badge, route: route, contrib: contrib, bar: bar, fill: fill, cells: cells, spark: spark };
+  }
+
+  function updateRow(r, row, now) {
+    var state = row.state;
+    r.badge.textContent = state;
+    r.badge.className = "badge s-" + state;
+    r.route.textContent = row.receiver + " from " + (row.sender || row.mac);
+    var norm = row.normalised;
+    r.fill.style.width = norm == null ? "0%" : (clamp(norm / FULL_SCALE, 0, 1) * 100).toFixed(1) + "%";
+    r.fill.style.background = COLOR[state] || COLOR.NO_SIGNAL;
+    r.bar.setAttribute("aria-label", norm == null ? "no threshold" : "score " + fmt(norm, 2) + " times threshold");
+    r.cells.score.textContent = fmt(row.score, 3);
+    r.cells.thr.textContent = fmt(row.threshold, 3);
+    r.cells.norm.textContent = norm == null ? "-" : fmt(norm, 2) + "x";
+    r.cells.rate.textContent = fmt(row.pkt_rate, 1);
+    r.cells.drops.textContent = row.drops == null ? "-" : String(row.drops);
+    r.cells.rssi.textContent = row.rssi == null ? "-" : row.rssi + " dBm";
+    r.cells.weight.textContent = fmt(row.weight, 2);
+    r.contrib.textContent = row.contributes ? "contributes" : "no heat";
+    r.contrib.className = "contrib" + (row.contributes ? " on" : "");
+    drawSpark(r.spark, history[row.id] || [], state, now);
+  }
+
+  function drawSpark(canvas, points, state, now) {
+    var dpr = window.devicePixelRatio || 1;
+    var w = canvas.clientWidth, h = canvas.clientHeight;
+    if (!w || !h) return;
+    if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
+      canvas.width = Math.round(w * dpr);
+      canvas.height = Math.round(h * dpr);
+    }
+    var c = canvas.getContext("2d");
+    c.setTransform(dpr, 0, 0, dpr, 0, 0);
+    c.clearRect(0, 0, w, h);
+    c.fillStyle = "#0b1017";
+    c.fillRect(0, 0, w, h);
+    var top = 3, bottom = h - 3;
+    var maxV = FULL_SCALE;
+    points.forEach(function (pt) { if (pt[1] != null && pt[1] > maxV) maxV = pt[1]; });
+    var yOf = function (v) { return bottom - (clamp(v, 0, maxV) / maxV) * (bottom - top); };
+    var tStart = now - WINDOW_S;
+    var xOf = function (t) { return clamp((t - tStart) / WINDOW_S, 0, 1) * w; };
+    // the threshold, at normalised 1
+    c.setLineDash([3, 3]);
+    c.strokeStyle = "rgba(232, 237, 243, 0.55)";
+    c.lineWidth = 1;
+    c.beginPath();
+    c.moveTo(0, yOf(1));
+    c.lineTo(w, yOf(1));
+    c.stroke();
+    c.setLineDash([]);
+    // the score history; a gap where the link had no threshold or no signal
+    c.strokeStyle = COLOR[state] || COLOR.NO_SIGNAL;
+    c.lineWidth = 2;
+    c.lineJoin = "round";
+    c.beginPath();
+    var pen = false;
+    points.forEach(function (pt) {
+      if (pt[1] == null) { pen = false; return; }
+      var x = xOf(pt[0]), y = yOf(pt[1]);
+      if (pen) c.lineTo(x, y); else c.moveTo(x, y);
+      pen = true;
+    });
+    c.stroke();
+  }
+
+  function renderLinks(p) {
+    // one row per link, in payload order; rows are reused, and placeholder text is replaced
+    var seen = {};
+    clearChildren(els.links);
+    p.links.forEach(function (row) {
+      var r = rows[row.id] || (rows[row.id] = makeRow(row.id));
+      seen[row.id] = true;
+      updateRow(r, row, p.status.time_s);
+      els.links.appendChild(r.art);
+    });
+    Object.keys(rows).forEach(function (id) { if (!seen[id]) delete rows[id]; });
+    if (!p.links.length) els.links.appendChild(el("p", "muted", "no links"));
+  }
+
+  // ------------------------------------------------------------------ status bar
+
+  function clock(t) {
+    if (t == null) return "-";
+    var d = new Date(t * 1000);
+    var pad = function (n, w) { return String(n).padStart(w || 2, "0"); };
+    return pad(d.getHours()) + ":" + pad(d.getMinutes()) + ":" + pad(d.getSeconds()) + "." + pad(d.getMilliseconds(), 3);
+  }
+
+  function renderStatus(p) {
+    var st = p.status;
+
+    clearChildren(els.receivers);
+    var names = Object.keys(st.receivers || {}).sort();
+    if (!names.length) els.receivers.appendChild(el("span", "muted", "none"));
+    names.forEach(function (name) {
+      var s = st.receivers[name];
+      var text = s === "failed" ? name + " failed: " + ((st.errors || {})[name] || "error") : name + " " + s;
+      els.receivers.appendChild(el("span", "chip " + s, text));
+      els.receivers.appendChild(document.createTextNode(" "));
+    });
+
+    clearChildren(els.counts);
+    var byState = st.links_by_state || {};
+    STATES.forEach(function (s) {
+      var chip = el("span", "chip state", (byState[s] || 0) + " " + s);
+      chip.style.borderLeftColor = COLOR[s];
+      els.counts.appendChild(chip);
+      els.counts.appendChild(document.createTextNode(" "));
+    });
+
+    els.calib.textContent = (st.calibrated_links || []).length + " calibrated, " +
+      (st.uncalibrated_links || []).length + " uncalibrated";
+    els.packet.textContent = clock(st.time_s);
+
+    clearChildren(els.messages);
+    var messages = st.messages || [];
+    if (!messages.length) els.messages.appendChild(el("li", "muted", "none"));
+    messages.forEach(function (m) { els.messages.appendChild(el("li", null, m)); });
+  }
+
+  // ------------------------------------------------------------------ render
+
+  function render(p) {
+    shown = p;
+    drawMap(p);
+    renderLinks(p);
+    renderStatus(p);
+  }
+
+  var resizeQueued = false;
+  window.addEventListener("resize", function () {
+    if (resizeQueued) return;
+    resizeQueued = true;
+    window.requestAnimationFrame(function () {
+      resizeQueued = false;
+      if (shown) render(shown); else drawWaiting();
+    });
+  });
+
+  drawWaiting();
+  start();
+})();
+</script>
 </body>
 </html>

@@ -228,7 +228,10 @@ a position track.
 ## Dashboard
 
 `scripts/dashboard.py` runs the multi-link pipeline as a small web server (standard library only). It
-serves the heatmap payload over HTTP, so the page (placeholder for now) and any script can read it.
+serves the heatmap payload over HTTP, so the room page and any script can read it. Open
+`http://127.0.0.1:8000/` (or the `--http-port` you chose) in a browser: a room map with the four links coloured by
+state, the heatmap, a per-link panel with a 30 s score sparkline, and a status bar. The page works offline, follows
+the live stream and reconnects by itself after a restart; Pause freezes the display while the server keeps running.
 
 ```bash
 # No hardware: a simulated person walks a loop through the room, in real time
@@ -245,7 +248,7 @@ scripts/dashboard.py --port rx1=/dev/cu.usbmodem2101 --port rx2=/dev/cu.usbmodem
 
 Endpoints:
 
-- `GET /`: the page (`web/index.html`, a placeholder until the real page lands).
+- `GET /`: the room page (`web/index.html`, one static file, no network assets).
 - `GET /api/state`: the heatmap payload described above, plus a `status` block with `receivers`
   (`connected`, `finished` or `failed` per receiver), `errors`, `finished`, `calibrated_links`,
   `uncalibrated_links` and `messages`.
