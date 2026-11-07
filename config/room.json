@@ -1,5 +1,5 @@
 {
-  "comment": "x runs left to right, y runs top to bottom, metres, origin at the top-left corner",
+  "comment": "x runs left to right, y runs top to bottom, metres, origin at the top-left corner rx3 sits 1.5 m beyond the top wall (y negative = outside the room rectangle).",
   "room": {
     "width_m": 2.77,
     "depth_m": 1.84
@@ -23,7 +23,7 @@
       "role": "receiver",
       "chip": "ESP32-S3",
       "x": 1.385,
-      "y": 0.0,
+      "y": -1.5,
       "port_hint": "/dev/cu.usbmodem1101",
       "enabled": true
     },
