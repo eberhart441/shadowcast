@@ -1,4 +1,4 @@
-"""Calibration margin: an explicit parameter (default DEFAULT_MARGIN = 1.0), threshold = margin * p99.
+"""Calibration margin: an explicit parameter (default DEFAULT_MARGIN = 1.25), threshold = margin * p99.
 
 Seams: the stream/packet seam (simulator -> text -> parser -> calibrate / detect_packets), the per-link
 report, and the CLI boundary (subprocess). Expected values come from the scenario (quiet vs walking), the
@@ -37,8 +37,8 @@ def run(script, *args, timeout=150):
 
 # --- 1. the parameter: default, record, proportional, validated ---
 
-def test_default_margin_is_one_and_is_recorded_on_the_calibration():
-    assert DEFAULT_MARGIN == 1.0
+def test_default_margin_is_recorded_on_the_calibration():
+    assert DEFAULT_MARGIN == 1.25
     cal = calibrate_packets(packets([Segment("empty", 20)], seed=1))
     assert cal.margin == DEFAULT_MARGIN
 
@@ -69,13 +69,13 @@ def test_non_positive_margin_is_a_value_error_naming_the_margin(bad):
 def test_link_report_records_margin_and_scales_each_links_threshold():
     clip = tagged(20, 4)
     base = calibrate_links_report(clip)
-    doubled = calibrate_links_report(clip, margin=2.0)
+    doubled = calibrate_links_report(clip, margin=2 * DEFAULT_MARGIN)
     assert base.margin == DEFAULT_MARGIN
-    assert doubled.margin == 2.0
+    assert doubled.margin == 2 * DEFAULT_MARGIN
     assert set(base.thresholds) == set(doubled.thresholds) and base.thresholds
     for label, t in base.thresholds.items():
         assert doubled.thresholds[label] == pytest.approx(2 * t, rel=1e-12)
-        assert doubled.calibrations[label].margin == 2.0
+        assert doubled.calibrations[label].margin == 2 * DEFAULT_MARGIN
 
 
 # --- 2. behaviour at margin 1.0 on the simulator ---
@@ -104,12 +104,10 @@ def test_margin_1_5_keeps_held_out_empty_within_tolerance():
     assert held_out_false_alarm_rate(1.5) < FALSE_ALARM_TOLERANCE
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "simulator finding: at the default margin 1.0 a single-clip p99 is crossed by held-out empty clips "
-    "(mean ~39% of decisions over 20 seeds, 1.25 gives 0%). Real 4-link data at 1.0 showed ~0% in clear periods; "
-    "this xfail flips to a failure once the margin-1.0 false-alarm rate is under the tolerance."))
-def test_margin_one_keeps_held_out_empty_within_tolerance():
-    assert held_out_false_alarm_rate(1.0) < FALSE_ALARM_TOLERANCE
+def test_default_margin_keeps_held_out_empty_within_tolerance():
+    # margin 1.0 fails this on the simulator (mean ~39% MOTION over 20 seeds); 1.25 gives 0%
+    assert DEFAULT_MARGIN == 1.25
+    assert held_out_false_alarm_rate(DEFAULT_MARGIN) < FALSE_ALARM_TOLERANCE
 
 
 def still_person_motion_rate(margin: float) -> float:
@@ -126,12 +124,9 @@ def test_margin_1_5_does_not_read_a_still_person_as_motion():
     assert still_person_motion_rate(1.5) < FALSE_ALARM_TOLERANCE
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "simulator finding: at the default margin 1.0 a simulated still person reads MOTION for most decisions "
-    "(mean ~68% over 10 seeds; 1.25 gives 0%). Breathing is supposed to stay out of MOTION; this flips to a "
-    "failure once the margin-1.0 still-person rate is under the tolerance."))
-def test_margin_one_does_not_read_a_still_person_as_motion():
-    assert still_person_motion_rate(1.0) < FALSE_ALARM_TOLERANCE
+def test_default_margin_does_not_read_a_still_person_as_motion():
+    # margin 1.0 reads a simulated breathing person as MOTION ~68% of the time; 1.25 gives 0%
+    assert still_person_motion_rate(DEFAULT_MARGIN) < FALSE_ALARM_TOLERANCE
 
 
 def test_larger_margin_never_detects_more_motion_on_the_same_session():
@@ -150,7 +145,7 @@ def test_larger_margin_never_detects_more_motion_on_the_same_session():
 
 def test_links_live_margin_scales_saved_thresholds_and_is_printed(tmp_path):
     default_out, doubled_out = tmp_path / "a.json", tmp_path / "b.json"
-    a = run("links_live.py", "--simulate-links", "--calibrate", "15", "--out", str(default_out))
+    a = run("links_live.py", "--simulate-links", "--calibrate", "15", "--margin", "1", "--out", str(default_out))
     b = run("links_live.py", "--simulate-links", "--calibrate", "15", "--margin", "2",
             "--out", str(doubled_out))
     assert a.returncode == 0, a.stderr
@@ -175,7 +170,7 @@ def test_links_live_rejects_non_positive_margin_before_writing(tmp_path):
 def test_detect_live_margin_scales_threshold_and_is_printed(tmp_path):
     from csi.detect import load_threshold
     default_out, doubled_out = tmp_path / "a.json", tmp_path / "b.json"
-    a = run("detect_live.py", "--simulate", "--calibrate", "15", "--out", str(default_out))
+    a = run("detect_live.py", "--simulate", "--calibrate", "15", "--margin", "1", "--out", str(default_out))
     b = run("detect_live.py", "--simulate", "--calibrate", "15", "--margin", "2", "--out", str(doubled_out))
     assert a.returncode == 0, a.stderr
     assert b.returncode == 0, b.stderr

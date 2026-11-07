@@ -102,7 +102,7 @@ scripts/detect_live.py --port <PORT> --calibrate 60 --out calibration.json
 ```
 
 It writes `calibration.json` with the threshold: `margin x p99`, the 99th percentile
-of the empty-room motion score times the margin (`--margin`, default 1.0, see
+of the empty-room motion score times the margin (`--margin`, default 1.25, see
 [Calibration margin](#calibration-margin)). Calibration splits the recording into
 1 s chunks and drops any chunk where someone was moving (its median is well above
 the quiet baseline, or its scores are bursty), so a passer-by during the clip
@@ -114,7 +114,7 @@ how many seconds were rejected; if it refuses, record the empty room again.
 The threshold is `margin x p99`, where p99 is the 99th percentile of the motion
 scores of the kept (non-moving) empty-room windows. `--margin` sets the factor on
 `detect_live.py --calibrate`, `links_live.py --calibrate` and `evaluate.py`; the default
-is `1.0` (`csi.detect.DEFAULT_MARGIN`), and the margin used is printed and recorded in
+is `1.25` (`csi.detect.DEFAULT_MARGIN`), and the margin used is printed and recorded in
 the calibration.
 
 - `1.0` means the threshold is the 99th percentile of empty windows, so about 1% of
@@ -132,10 +132,12 @@ scripts/evaluate.py --margin 1.0 data/<session>
 scripts/evaluate.py --margin 1.5 data/<session>
 ```
 
-Simulator caveat: on simulated data, margin 1.0 is too low. A single-clip p99 is
-crossed by held-out empty clips and by a still person (breathing), while 1.25 and 1.5
-are not (see `tests/test_calibration_margin.py`). Real-room results at 1.0 are what
-set the default; check them with `evaluate.py`.
+Why 1.25: a single empty clip's p99 is crossed by other empty clips (the quiet baseline
+drifts a little between clips). On simulated data a margin of 1.0 read MOTION for about 39% of
+a second empty clip and 68% of a still breathing person, while 1.25 and 1.5 gave 0%. On the real
+single-link `hw5` session walking was 100% MOTION at every margin and empty-room false alarms
+rose from 5% (1.5) to 6% (1.25), 11% (1.1) and 14% (1.0). On the 4-link rig a lower margin caught
+noticeably more walking on the clean links, so 1.25 is the compromise. Re-check with `evaluate.py`.
 
 **Reset the receiver in place after placing the boards, before calibrating.**
 The firmware computes a gain baseline from the first 100 packets after boot, so

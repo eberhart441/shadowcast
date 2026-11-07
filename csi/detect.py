@@ -38,7 +38,7 @@ MOTION = "MOTION"
 STILL_PRESENT = "STILL_PRESENT"
 
 SIM_THRESHOLD = 1.0           # simulator default: simulated empty scores ~0.2, motion ~3-9
-DEFAULT_MARGIN = 1.0          # calibrated threshold = margin x p99 of empty windows; 1.0 = the p99 itself
+DEFAULT_MARGIN = 1.25         # calibrated threshold = margin x p99 of empty windows (1.0 = the p99 itself)
 WINDOW_S = 1.0
 MIN_WINDOW_PACKETS = 5
 DEBOUNCE_S = 0.5
