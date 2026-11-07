@@ -164,7 +164,7 @@ def test_cli_prints_matrix_and_fails_clearly_without_empty(tmp_path):
 
 def test_evaluate_margin_scales_the_session_threshold_and_is_printed(tmp_path):
     folder = record_plan(tmp_path / "room", [("empty", 20), ("walking", 10), ("empty", 20), ("walking", 10)])
-    base = evaluate_sessions([folder]).sessions[0]
+    base = evaluate_sessions([folder], margin=1.0).sessions[0]
     doubled_report = evaluate_sessions([folder], margin=2.0)
     assert doubled_report.sessions[0].calibration.margin == 2.0
     assert doubled_report.sessions[0].calibration.threshold == pytest.approx(2 * base.calibration.threshold, rel=1e-9)

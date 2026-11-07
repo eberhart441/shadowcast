@@ -9,7 +9,7 @@ from functools import lru_cache
 import numpy as np
 
 from csi.dashboard import DashboardState
-from csi.links import LinkId, calibrate_links
+from csi.links import LinkId, calibrate_links_report
 from csi.room import Walk, load_room, stand_at_centre, stand_near_wall
 from csi.simulate import simulate_room_links
 
@@ -29,7 +29,8 @@ def tagged(**kwargs):
 @lru_cache(maxsize=None)
 def calibrated_thresholds():
     """Thresholds from a simulated empty room, the calibration the dashboard would be given."""
-    return calibrate_links(tagged(person=None, duration_s=25, seed=10))
+    # margin 1.5 (not the default 1.0): at 1.0 the held-out empty room crosses the single-clip p99 (see test_calibration_margin.py)
+    return calibrate_links_report(tagged(person=None, duration_s=25, seed=10), margin=1.5).thresholds
 
 
 def feed(state, packets, until=None):
