@@ -141,6 +141,28 @@ scripts/evaluate.py --breathing data/<session>      # score the still_* labels t
 Without `--breathing` the still labels are not scored, and the evaluator
 marks them "breathing disabled" instead of reporting a misleading 0%.
 
+## Multiple links (per receiver and sender)
+
+With two senders (S3, C5) and two receivers, there are up to four links, each
+identified by receiver and sender MAC (labels such as `rx1<-01`). Each link has
+its own signal scale, so each gets its own calibrated threshold:
+
+```bash
+# Simulator: 2 senders x 2 receivers, no hardware
+scripts/links_live.py --simulate-links
+scripts/links_live.py --simulate-links --calibrate 15 --out links.json
+
+# Hardware: name each receiver (unnamed ports become rx1, rx2, ...)
+scripts/links_live.py --port rx1=<PORT_A> --port rx2=<PORT_B> --calibrate 60 --out links.json   # empty room
+scripts/links_live.py --port rx1=<PORT_A> --port rx2=<PORT_B> --thresholds links.json
+```
+
+The table refreshes twice a second: state (EMPTY green, MOTION red, NO_SIGNAL grey
+when a link has been silent for 2 s), score against threshold, packet rate, drops
+and RSSI. A real port needs `--thresholds` (or `--calibrate` first). A link with too
+little or too lossy calibration data is reported and gets no threshold, rather than
+a guessed one. The single-port scripts above are unchanged.
+
 ## Simulator
 
 `--simulate` needs no threshold. It uses a simulator default (1.0) that sits

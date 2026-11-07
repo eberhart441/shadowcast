@@ -47,8 +47,8 @@ def test_file_is_flat_table_with_documented_columns(tmp_path):
     (path,) = (tmp_path / "sess").glob("*.csv")
     df = pd.read_csv(path)
     n_kept = N_SUBCARRIERS - len(NULL_SUBCARRIERS)
-    assert list(df.columns[:4]) == ["host_ts", "device_ts", "rssi", "channel"]
-    assert list(df.columns[4:]) == [f"amp_{i}" for i in range(n_kept)]
+    assert list(df.columns[:5]) == ["host_ts", "device_ts", "rssi", "channel", "mac"]
+    assert list(df.columns[5:]) == [f"amp_{i}" for i in range(n_kept)]
     assert len(df) == 1000 and (df["channel"] == 6).all()
 
 

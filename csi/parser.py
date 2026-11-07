@@ -55,6 +55,7 @@ class CSIPacket:
     rssi: int
     channel: int
     amplitude: np.ndarray   # float32, one value per kept (non-null) subcarrier
+    mac: str = ""           # sender MAC, lowercase; "" when the header has no mac column
 
 
 @dataclass
@@ -86,6 +87,7 @@ class _Draft:
     channel: int
     raw_len: int            # raw int count (I and Q values), the layout key
     amp: np.ndarray         # every raw subcarrier, float32
+    mac: str = ""
 
 
 @dataclass
@@ -165,6 +167,7 @@ class CSIParser:
             channel=int(fields[c["channel"]]),
             raw_len=raw.size,
             amp=np.hypot(iq[:, 0], iq[:, 1]),
+            mac=fields[c["mac"]].strip('"').lower() if "mac" in c else "",
         )
 
     def _infer_layout(self, n_fields: int) -> None:
@@ -238,7 +241,7 @@ class CSIParser:
     def _emit(self, d: _Draft) -> CSIPacket:
         self.stats.parsed += 1
         return CSIPacket(host_ts=d.host_ts, device_ts=d.device_ts, rssi=d.rssi,
-                         channel=d.channel, amplitude=d.amp[self._keep])
+                         channel=d.channel, amplitude=d.amp[self._keep], mac=d.mac)
 
 
 def _known_keep(n: int) -> np.ndarray:
