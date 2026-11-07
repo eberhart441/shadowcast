@@ -6,11 +6,13 @@ declared above a threshold, with a short debounce so the state does not flicker.
 
 Public API (reused by the viewer and evaluator):
     MotionScorer      push(packet) -> score | None, one packet at a time
-    detect            (host_ts, line) stream -> Reading(host_ts, score, state)
+    detect            (host_ts, line) stream -> Reading(host_ts, score, state, bpm, confidence, enough_data)
     calibrate         empty stream -> Calibration (threshold), raises CalibrationError
     Calibration.save / load_threshold   small JSON threshold file
 
-The breathing detector (STILL_PRESENT) extends ``detect`` later.
+Breathing (STILL_PRESENT) comes from ``csi.breathing.estimate_breathing``, which
+the evaluator can also call directly on an amplitude window.
+MOTION overrides breathing; breathing needs a 15 s window and enough confidence.
 """
 from __future__ import annotations
 
@@ -22,6 +24,7 @@ from typing import Iterable, Iterator, Optional
 
 import numpy as np
 
+from .breathing import NOT_ENOUGH, WINDOW_S as BREATH_WINDOW_S, BreathingEstimate, estimate_breathing
 from .parser import CSIPacket, CSIParser, Stream, parse_stream
 
 EMPTY = "EMPTY"
@@ -31,6 +34,7 @@ STILL_PRESENT = "STILL_PRESENT"
 WINDOW_S = 1.0
 MIN_WINDOW_PACKETS = 5
 DEBOUNCE_S = 0.5
+BREATH_UPDATE_S = 1.0         # recompute breathing at most this often (device time)
 
 
 @dataclass(frozen=True)
@@ -38,6 +42,9 @@ class Reading:
     host_ts: float
     score: float
     state: str  # debounced
+    bpm: Optional[float] = None
+    confidence: float = 0.0
+    enough_data: bool = False  # False until a full breathing window exists
 
 
 class CalibrationError(ValueError):
@@ -88,7 +95,11 @@ class MotionScorer:
 
 
 class _Debouncer:
-    """Switch state only after a candidate has persisted for ``hold_s``."""
+    """Switch state only after a candidate has persisted for ``hold_s``.
+
+    MOTION takes effect immediately (it overrides breathing); leaving MOTION, and
+    switching between EMPTY and STILL_PRESENT, are debounced.
+    """
 
     def __init__(self, hold_s: float) -> None:
         self._hold_s = hold_s
@@ -97,6 +108,9 @@ class _Debouncer:
         self._since = 0.0
 
     def update(self, raw: str, ts: float) -> str:
+        if raw == MOTION:
+            self.state, self._candidate = MOTION, None
+            return self.state
         if self.state is None or raw == self.state:
             self.state, self._candidate = self.state or raw, None
         elif raw != self._candidate:
@@ -106,15 +120,54 @@ class _Debouncer:
         return self.state
 
 
+class _BreathingTracker:
+    """Keeps the latest breathing window (device time) and re-estimates it periodically."""
+
+    def __init__(self, update_s: float = BREATH_UPDATE_S) -> None:
+        self._update_s = update_s
+        self._buf: deque[tuple[float, np.ndarray]] = deque()
+        self._last_update: Optional[float] = None
+        self._estimate: BreathingEstimate = NOT_ENOUGH
+
+    def reset(self) -> None:
+        """Forget the window: motion contaminates it, so breathing rebuilds from quiet data."""
+        self._buf.clear()
+        self._last_update = None
+        self._estimate = NOT_ENOUGH
+
+    def push(self, pkt: CSIPacket) -> BreathingEstimate:
+        t = pkt.device_ts / 1e6
+        self._buf.append((t, pkt.amplitude))
+        while t - self._buf[0][0] > BREATH_WINDOW_S + 1.0:
+            self._buf.popleft()
+        if self._last_update is None or t - self._last_update >= self._update_s:
+            self._last_update = t
+            window = [(ts, a) for ts, a in self._buf if t - ts <= BREATH_WINDOW_S]
+            ts = np.array([w[0] for w in window])
+            self._estimate = estimate_breathing(np.stack([w[1] for w in window]), ts)
+        return self._estimate
+
+
+def classify(score: float, bpm: Optional[float], threshold: float) -> str:
+    """Raw (undebounced) state: MOTION overrides breathing, breathing overrides EMPTY."""
+    if score > threshold:
+        return MOTION
+    return STILL_PRESENT if bpm is not None else EMPTY
+
+
 def detect(stream: Stream, threshold: float, parser: Optional[CSIParser] = None,
            debounce_s: float = DEBOUNCE_S) -> Iterator[Reading]:
-    """Yield a debounced Reading per packet once a full window is available."""
-    scorer, debounce = MotionScorer(), _Debouncer(debounce_s)
+    """Yield a debounced Reading per packet once a full motion window is available."""
+    scorer, breath, debounce = MotionScorer(), _BreathingTracker(), _Debouncer(debounce_s)
     for pkt in parse_stream(stream, parser):
         score = scorer.push(pkt)
+        if score is not None and score > threshold:
+            breath.reset()
+        est = breath.push(pkt)
         if score is not None:
-            raw = MOTION if score > threshold else EMPTY
-            yield Reading(pkt.host_ts, score, debounce.update(raw, pkt.host_ts))
+            raw = classify(score, est.bpm, threshold)
+            yield Reading(pkt.host_ts, score, debounce.update(raw, pkt.host_ts),
+                          est.bpm, est.confidence, est.enough_data)
 
 
 MIN_CALIBRATION_S = 10.0
