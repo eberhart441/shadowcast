@@ -1,5 +1,6 @@
 """scripts/dashboard.py: the CLI contract. Only --simulate-room is run; no port is ever opened."""
 import json
+import math
 import signal
 import socket
 import subprocess
@@ -9,6 +10,8 @@ import urllib.request
 from pathlib import Path
 
 import pytest
+
+from tests.test_evaluate import record_plan
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -63,6 +66,103 @@ def test_serves_the_simulated_room_over_http_and_stops_cleanly_on_ctrl_c():
             raise
     assert proc.returncode == 0, err
     assert "Traceback" not in err
+
+
+def parse(*argv: str):
+    return cli.build_parser().parse_args(list(argv))
+
+
+def test_speed_is_a_positive_factor_or_max():
+    assert parse("--replay", "run.jsonl", "--speed", "8").speed == 8.0
+    assert parse("--replay", "run.jsonl", "--speed", "max").speed == math.inf
+    with pytest.raises(SystemExit):
+        parse("--replay", "run.jsonl", "--speed", "0")
+    with pytest.raises(SystemExit):
+        parse("--replay", "run.jsonl", "--speed", "fast")
+
+
+def test_replay_session_log_and_margin_options_parse():
+    args = parse("--replay-session", "data/hw5", "--margin", "1.5", "--log", "run.jsonl")
+    assert args.replay_session == Path("data/hw5") and args.margin == 1.5
+    assert args.log == Path("run.jsonl") and args.replay is None
+
+
+def test_replay_sources_are_exclusive_and_their_options_fit_them():
+    cli.check_source(parse("--replay", "run.jsonl", "--speed", "max"))
+    cli.check_source(parse("--replay-session", "data/hw5", "--speed", "8"))
+    with pytest.raises(SystemExit):
+        cli.check_source(parse("--replay", "run.jsonl", "--simulate-room"))
+    with pytest.raises(SystemExit):
+        cli.check_source(parse("--replay", "run.jsonl", "--replay-session", "data/hw5"))
+    with pytest.raises(SystemExit):
+        cli.check_source(parse("--replay", "run.jsonl", "--log", "again.jsonl"))
+    with pytest.raises(SystemExit):
+        cli.check_source(parse("--replay", "run.jsonl", "--thresholds", "links.json"))
+    with pytest.raises(SystemExit):
+        cli.check_source(parse("--simulate-room", "--speed", "8"))
+    with pytest.raises(SystemExit):
+        cli.check_source(parse("--simulate-room", "--margin", "1.5"))
+
+
+def run_cli(*argv: str, timeout: float = 120.0) -> subprocess.CompletedProcess:
+    return subprocess.run([sys.executable, str(ROOT / "scripts" / "dashboard.py"), *argv], cwd=ROOT,
+                          capture_output=True, text=True, timeout=timeout)
+
+
+def test_replay_of_a_missing_log_exits_with_a_clear_error(tmp_path):
+    result = run_cli("--replay", str(tmp_path / "missing.jsonl"))
+    assert result.returncode != 0
+    assert "cannot read replay log" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+def test_replay_of_a_corrupt_log_names_the_bad_line(tmp_path):
+    bad = tmp_path / "bad.jsonl"
+    bad.write_text('{"format": "csi-dashboard-log", "version": 1}\n{"links": [\n')
+    result = run_cli("--replay", str(bad))
+    assert result.returncode != 0
+    assert "line 2" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+def test_replay_session_serves_the_recorded_walk_and_logs_it_with_its_thresholds_source(tmp_path):
+    folder = record_plan(tmp_path / "room", [("empty", 20), ("walking", 10)])
+    log, port = tmp_path / "session.jsonl", free_port()
+    proc = subprocess.Popen([sys.executable, str(ROOT / "scripts" / "dashboard.py"), "--replay-session", str(folder),
+                             "--speed", "max", "--margin", "1.5", "--log", str(log), "--http-port", str(port)],
+                            cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        payload = _wait_for_finished(port, timeout=120)
+        assert payload["status"]["receivers"] == {"rx1": "finished"}
+        assert any("single link" in m for m in payload["status"]["messages"])
+        lines = log.read_text().splitlines()
+        header = json.loads(lines[0])
+        assert header["thresholds_source"].startswith("calibrated on empty_")
+        motion = [json.loads(line)["links"] for line in lines[1:]]
+        assert any(row["state"] == "MOTION" and row["id"] == "rx1<-00" for links in motion for row in links)
+    finally:
+        proc.send_signal(signal.SIGINT)
+        try:
+            _, err = proc.communicate(timeout=20)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            raise
+    assert proc.returncode == 0, err
+    assert "Traceback" not in err
+
+
+def _wait_for_finished(port: int, timeout: float) -> dict:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/state", timeout=2) as resp:
+                payload = json.loads(resp.read())
+            if payload["status"]["finished"]:
+                return payload
+        except OSError:
+            pass
+        time.sleep(0.2)
+    raise AssertionError(f"replay on port {port} did not finish")
 
 
 def _wait_for_hot_room(port: int, timeout: float) -> dict:
