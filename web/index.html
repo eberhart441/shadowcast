@@ -312,6 +312,7 @@
   var ctx = els.map.getContext("2d");
   var heatCanvas = document.createElement("canvas");
   var heatCtx = heatCanvas.getContext("2d");
+  var view = null;              // the map layout of the frame on screen (sizeMap), for clamping labels
 
   var shown = null;             // payload on screen
   var latest = null;            // newest payload received; kept while paused, shown on resume
@@ -424,20 +425,59 @@
     return [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f];
   }
 
-  function sizeMap(roomW, roomH) {
+  // ---- geometry: pure (tested with node) begin
+  // The map frame in metres: the room rectangle and every node, plus a margin. A node may sit outside the
+  // room (x or y below 0 or beyond the room size), so the frame follows the nodes.
+  var MAP_MARGIN_M = 0.3;
+  function mapBounds(room, nodes) {
+    var x0 = 0, y0 = 0, x1 = room.width_m, y1 = room.depth_m;
+    (nodes || []).forEach(function (n) {
+      x0 = Math.min(x0, n.x); y0 = Math.min(y0, n.y);
+      x1 = Math.max(x1, n.x); y1 = Math.max(y1, n.y);
+    });
+    return { x0: x0 - MAP_MARGIN_M, y0: y0 - MAP_MARGIN_M, x1: x1 + MAP_MARGIN_M, y1: y1 + MAP_MARGIN_M };
+  }
+  function isOutsideRoom(n, room) {
+    return n.x < 0 || n.y < 0 || n.x > room.width_m || n.y > room.depth_m;
+  }
+  // the room point nearest a node: where a node outside the room gets its dashed leader
+  function leaderEnd(n, room) {
+    return { x: Math.min(room.width_m, Math.max(0, n.x)), y: Math.min(room.depth_m, Math.max(0, n.y)) };
+  }
+  // a node's label goes toward the middle of the frame, so it stays on the canvas
+  function labelSide(n, b) {
+    var cx = (b.x0 + b.x1) / 2, cy = (b.y0 + b.y1) / 2;
+    var towardRight = n.x < cx, towardDown = n.y < cy;
+    return {
+      dx: towardRight ? 14 : -14, dy: towardDown ? 14 : -14,
+      hAlign: towardRight ? "left" : "right", vAlign: towardDown ? "top" : "bottom"
+    };
+  }
+  // ---- geometry: pure (tested with node) end
+
+  // room x, y in metres -> css px; the frame b sets the scale and the offset, the room sits inside it
+  function sizeMap(room, b) {
+    var spanW = b.x1 - b.x0, spanH = b.y1 - b.y0;
     var cssW = els.map.clientWidth || 300;
     var dpr = window.devicePixelRatio || 1;
     var availW = cssW - MAP_PAD.left - MAP_PAD.right;
-    var maxW = (MAP_MAX_H - MAP_PAD.top - MAP_PAD.bottom) * roomW / roomH;
-    var rw = Math.max(50, Math.min(availW, maxW));
-    var rh = rw * roomH / roomW;
-    var cssH = Math.round(rh + MAP_PAD.top + MAP_PAD.bottom);
+    var maxW = (MAP_MAX_H - MAP_PAD.top - MAP_PAD.bottom) * spanW / spanH;
+    var fw = Math.max(50, Math.min(availW, maxW));
+    var fh = fw * spanH / spanW;
+    var cssH = Math.round(fh + MAP_PAD.top + MAP_PAD.bottom);
     var cssWFinal = Math.round(cssW);
     els.map.style.height = cssH + "px";
     els.map.width = Math.round(cssWFinal * dpr);
     els.map.height = Math.round(cssH * dpr);
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    return { W: cssWFinal, H: cssH, x0: MAP_PAD.left, y0: MAP_PAD.top, rw: rw, rh: rh, s: rw / roomW };
+    var s = fw / spanW;
+    return {
+      W: cssWFinal, H: cssH, s: s, b: b,
+      rx0: MAP_PAD.left + (0 - b.x0) * s, ry0: MAP_PAD.top + (0 - b.y0) * s,   // room rectangle, in css px
+      rw: room.width_m * s, rh: room.depth_m * s,
+      X: function (x) { return MAP_PAD.left + (x - b.x0) * s; },
+      Y: function (y) { return MAP_PAD.top + (y - b.y0) * s; }
+    };
   }
 
   function drawHeat(hm, g) {
@@ -457,7 +497,7 @@
     ctx.save();
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = "high";
-    ctx.drawImage(heatCanvas, g.x0, g.y0, g.rw, g.rh);   // row 0 is y = 0, the top edge
+    ctx.drawImage(heatCanvas, g.rx0, g.ry0, g.rw, g.rh);   // row 0 is y = 0, the top edge; heat is room-only
     ctx.restore();
   }
 
@@ -471,6 +511,10 @@
     var h = lines.length * lineH + pad * 2 - 2;
     var bx = hAlign === "left" ? x : hAlign === "right" ? x - w - pad * 2 : x - (w + pad * 2) / 2;
     var by = vAlign === "top" ? y : vAlign === "bottom" ? y - h : y - h / 2;
+    if (view) {   // keep the label on the canvas, whatever side it was put on
+      bx = clamp(bx, 2, Math.max(2, view.W - w - pad * 2 - 2));
+      by = clamp(by, 2, Math.max(2, view.H - h - 2));
+    }
     ctx.fillStyle = "rgba(7, 10, 15, 0.82)";
     ctx.fillRect(bx, by, w + pad * 2, h);
     lines.forEach(function (line, i) {
@@ -483,14 +527,15 @@
 
   function drawMap(p) {
     var room = p.room;
-    var g = sizeMap(room.width_m, room.depth_m);
-    var X = function (x) { return g.x0 + x * g.s; };
-    var Y = function (y) { return g.y0 + y * g.s; };
+    var frame = mapBounds(room, p.nodes);
+    var g = sizeMap(room, frame);
+    view = g;
+    var X = g.X, Y = g.Y;
     ctx.clearRect(0, 0, g.W, g.H);
 
-    // room floor, then the heat, then a faint metre grid
+    // room floor, then the heat (room rectangle only), then a faint metre grid over the room
     ctx.fillStyle = "#070a0f";
-    ctx.fillRect(g.x0, g.y0, g.rw, g.rh);
+    ctx.fillRect(g.rx0, g.ry0, g.rw, g.rh);
     drawHeat(p.heatmap, g);
     ctx.save();
     ctx.strokeStyle = "rgba(154, 167, 180, 0.14)";
@@ -501,11 +546,12 @@
     ctx.stroke();
     ctx.restore();
 
-    // room outline and metre ticks (x along the bottom edge, y down the left edge)
+    // room outline and metre ticks (x along the bottom edge, y down the left edge); the room's own
+    // coordinates, 0 to width and 0 to depth, and nothing beyond the room rectangle
     ctx.save();
     ctx.strokeStyle = "#8b949e";
     ctx.lineWidth = 2;
-    ctx.strokeRect(g.x0, g.y0, g.rw, g.rh);
+    ctx.strokeRect(g.rx0, g.ry0, g.rw, g.rh);
     ctx.strokeStyle = "#9aa7b4";
     ctx.lineWidth = 1;
     ctx.fillStyle = "#9aa7b4";
@@ -530,7 +576,7 @@
     }
     ctx.textAlign = "center";
     ctx.textBaseline = "top";
-    ctx.fillText("metres: x across, y down", g.x0 + g.rw / 2, Y(room.depth_m) + 26);
+    ctx.fillText("metres: x across, y down", g.rx0 + g.rw / 2, Y(room.depth_m) + 26);
     ctx.restore();
 
     // links: colour by state, width and opacity by normalised score
@@ -558,9 +604,23 @@
       labelBlock([{ text: row.id, font: FONT }], x1 + (x2 - x1) * t, y1 + (y2 - y1) * t, "center", "middle", "#e8edf3");
     });
 
-    // nodes: receivers are squares, senders are circles; the label sits inside the room at each corner
+    // nodes: receivers are squares, senders are circles. A node outside the room (rx3 beyond the top wall)
+    // gets a dashed leader to the nearest room edge and an "outside room" line in its label.
     p.nodes.forEach(function (n) {
       var x = X(n.x), y = Y(n.y);
+      var outside = isOutsideRoom(n, room);
+      if (outside) {
+        var edge = leaderEnd(n, room);
+        ctx.save();
+        ctx.strokeStyle = "#9aa7b4";
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([4, 4]);
+        ctx.beginPath();
+        ctx.moveTo(x, y);
+        ctx.lineTo(X(edge.x), Y(edge.y));
+        ctx.stroke();
+        ctx.restore();
+      }
       ctx.save();
       ctx.lineWidth = 2;
       ctx.strokeStyle = "#070a0f";
@@ -576,24 +636,28 @@
         ctx.stroke();
       }
       ctx.restore();
-      var left = n.x < room.width_m / 2, up = n.y < room.depth_m / 2;
-      labelBlock([
+      var side = labelSide(n, frame);
+      var lines = [
         { text: n.name + " " + n.role, font: FONT },
         { text: n.chip, font: TICK_FONT, colour: "#9aa7b4" }
-      ], x + (left ? 14 : -14), y + (up ? 14 : -14), left ? "left" : "right", up ? "top" : "bottom");
+      ];
+      if (outside) lines.push({ text: "outside room", font: TICK_FONT, colour: "#e3a008" });
+      labelBlock(lines, x + side.dx, y + side.dy, side.hAlign, side.vAlign);
     });
   }
 
   function drawWaiting() {
-    var g = sizeMap(2.77, 1.84);
+    var room = { width_m: 2.77, depth_m: 1.84 };
+    var g = sizeMap(room, mapBounds(room, []));
+    view = g;
     ctx.clearRect(0, 0, g.W, g.H);
     ctx.fillStyle = "#070a0f";
-    ctx.fillRect(g.x0, g.y0, g.rw, g.rh);
+    ctx.fillRect(g.rx0, g.ry0, g.rw, g.rh);
     ctx.fillStyle = "#9aa7b4";
     ctx.font = FONT;
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
-    ctx.fillText("waiting for data", g.x0 + g.rw / 2, g.y0 + g.rh / 2);
+    ctx.fillText("waiting for data", g.rx0 + g.rw / 2, g.ry0 + g.rh / 2);
   }
 
   // ------------------------------------------------------------------ links panel
