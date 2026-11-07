@@ -33,7 +33,6 @@ from csi.parser import CSIPacket, Stream, serial_stream  # noqa: E402
 from csi.simulate import DEFAULT_RECEIVERS, SENDER_MACS, Segment, simulate_link_streams  # noqa: E402
 
 SIM_DEMO_SCENARIO = (Segment("empty", 20), Segment("motion", 10), Segment("still", 30))  # loops
-CALIBRATION_RATE_HZ = 40.0  # 4-node rig sender rate: nominal rate for calibration loss on real ports
 CLIP_PAUSE_S = 3.0          # pause between --clips, to let the room settle (and the operator step out)
 CLEAR = "\033[H\033[2J"
 RESET = "\033[0m"
@@ -53,7 +52,8 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--baud", type=int, default=921600)
     g.add_argument("--rate", type=float, default=None,
                    help="sender's nominal send rate in Hz (simulator default 100). For --calibrate on real ports, "
-                        f"the loss estimate uses this, else {CALIBRATION_RATE_HZ:.0f} Hz (the 4-node rig).")
+                        "the loss estimate uses this; left out, the rate is estimated from device timestamps "
+                        "(as the dashboard's live calibration does).")
     g.add_argument("--seed", type=int, default=0, help="simulator seed")
     t = ap.add_argument_group("thresholds")
     t.add_argument("--thresholds", metavar="links.json", help="per-link thresholds from --calibrate")
@@ -108,11 +108,12 @@ def resolve_thresholds(args: argparse.Namespace) -> tuple[dict[str, float], str]
 
 # ------------------------------------------------------------------ run loops
 
-def calibration_rate(args: argparse.Namespace) -> float:
-    """Nominal sender rate for calibration loss: --rate, else the simulator or the 4-node rig default."""
+def calibration_rate(args: argparse.Namespace) -> Optional[float]:
+    """Nominal sender rate for calibration loss: --rate if given, the simulator's rate under --simulate-links,
+    else None: a real port's rate is estimated from its device timestamps (never assumed)."""
     if args.rate is not None:
         return args.rate
-    return simulated_rate_hz(args) if args.simulate_links else CALIBRATION_RATE_HZ
+    return simulated_rate_hz(args) if args.simulate_links else None
 
 
 def clip_events(clip_s: float, n: int) -> list[tuple[float, str]]:

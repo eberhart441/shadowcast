@@ -65,6 +65,7 @@ KEEPALIVE_S = 15.0         # SSE comment sent when idle, so dead clients are not
 WAIT_TICK_S = 0.2          # how often idle handlers re-check for shutdown
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 SIM_WALK_SPEED_MPS = 0.5
+SIM_T0 = 1_700_000_000.0  # synthetic host time of a simulated stream's first sample (as in csi.simulate)
 SIM_CALIBRATION_S = 25.0
 SIM_CALIBRATION_SEED = 10
 LOG_FORMAT = "csi-dashboard-log"  # first line of a --log file; replay.py refuses other files
@@ -82,6 +83,9 @@ PARAM_RANGES = {
     "falloff": ("falloff_m", (0.05, 2.0)),
 }
 LOOPBACK_NAMES = frozenset({"localhost", "ip6-localhost"})
+LOOPBACK_HOST_NAMES = frozenset({"localhost", "127.0.0.1", "::1"})  # Host/Origin names always trusted
+WILDCARD_HOSTS = frozenset({"", "0.0.0.0", "::"})
+JSON_MEDIA_TYPE = "application/json"
 CONTROL_OFF = ("control is disabled: the server is not bound to localhost; restart with --allow-control "
                "to enable calibration and tuning commands (no authentication)")
 REPLAY_OFF = "not available in replay: this run replays a recording"
@@ -102,6 +106,33 @@ def is_loopback(host: str) -> bool:
 def controls_allowed(host: str, allow_control: bool = False) -> bool:
     """Commands (calibrate, thresholds, parameters) run only on a loopback bind, unless explicitly allowed."""
     return allow_control or is_loopback(host)
+
+
+def _split_host_port(value: str) -> tuple[str, Optional[int]]:
+    """``host:port``, ``[v6]:port`` or a bare host, as a Host or Origin authority; port None when absent."""
+    value = value.strip()
+    if value.startswith("["):
+        end = value.find("]")
+        if end < 0:
+            return value, None
+        host, rest = value[1:end], value[end + 1:]
+        port_text = rest[1:] if rest.startswith(":") else ""
+    elif value.count(":") == 1:
+        host, port_text = value.split(":")
+    else:
+        return value, None  # no port, or an unbracketed IPv6 literal
+    try:
+        return host, int(port_text)
+    except ValueError:
+        return host, None
+
+
+def _is_ip_literal(name: str) -> bool:
+    try:
+        ipaddress.ip_address(name)
+    except ValueError:
+        return False
+    return True
 
 
 def _finite_positive(value) -> bool:
@@ -218,9 +249,9 @@ class _Handler(BaseHTTPRequestHandler):
         if path not in COMMAND_PATHS:
             self._send(404, "text/plain; charset=utf-8", b"not found\n")
             return
-        if "application/json" not in (self.headers.get("Content-Type") or ""):
-            # a cross-site page cannot send this without a CORS preflight, which this server never grants
-            self._json(415, {"error": "commands take a JSON body: send Content-Type: application/json"})
+        refusal = dash.refusal(self.headers)
+        if refusal is not None:
+            self._json(*refusal)
             return
         try:
             length = int(self.headers.get("Content-Length") or 0)
@@ -267,8 +298,11 @@ class FrameServer:
     """The HTTP side shared by the live server and replay: rendered JSON payloads in a FrameLog, served
     over /api/state (``state_json``), /api/events (``stream_events``) and /. Subclasses produce the frames."""
 
-    def __init__(self, host: str, port: int, web_index: Optional[Path] = None) -> None:
+    def __init__(self, host: str, port: int, web_index: Optional[Path] = None,
+                 trusted_host: Optional[str] = None) -> None:
+        """``trusted_host``: the --host value when network control was allowed; its name is accepted in Host."""
         self._lock = threading.Lock()
+        self._trusted_host = trusted_host
         self._frames = FrameLog()
         self._run_done = False       # set under the lock, just before the final frame
         self._sources_done = threading.Event()
@@ -291,6 +325,42 @@ class FrameServer:
     def url(self) -> str:
         host, port = self.address
         return f"http://{'127.0.0.1' if host in ('', '0.0.0.0') else host}:{port}"
+
+    def refusal(self, headers) -> Optional[tuple[int, dict]]:
+        """Why a POST command must not run, as (HTTP status, body), or None when it may.
+
+        A cross-site page can only send a simple request (no preflight, which this server never grants), so the
+        media type must equal application/json (parameters after ';' ignored). The Host must name this server
+        (loopback names, or the --host value with network control), so DNS rebinding is refused; an Origin, when
+        sent, must be an http origin of this server.
+        """
+        ctype = (headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+        if ctype != JSON_MEDIA_TYPE:
+            return 415, {"error": "commands take a JSON body: send Content-Type: application/json"}
+        host = headers.get("Host") or ""
+        if not self._authority_allowed(host):
+            return 403, {"error": f"command refused: Host {host!r} is not this dashboard; use localhost, "
+                                  f"127.0.0.1 or [::1] with port {self.address[1]}"}
+        origin = headers.get("Origin")
+        if origin is not None:
+            parts = urlsplit(origin)
+            if parts.scheme != "http" or not self._authority_allowed(parts.netloc):
+                return 403, {"error": f"command refused: Origin {origin!r} is not allowed for this dashboard"}
+        return None
+
+    def _authority_allowed(self, authority: str) -> bool:
+        """True for ``host:port`` naming this server's bound port on a trusted host name."""
+        host, port = _split_host_port(authority)
+        if port is None or port != self._httpd.server_address[1]:
+            return False
+        name = host.lower()
+        if name in LOOPBACK_HOST_NAMES:
+            return True
+        if self._trusted_host is None:
+            return False
+        if self._trusted_host in WILDCARD_HOSTS:
+            return _is_ip_literal(name)  # a DNS name cannot be rebound onto an address, so IP literals are the trusted network form
+        return name == self._trusted_host.lower()
 
     def _start_http(self) -> None:
         thread = threading.Thread(target=self._httpd.serve_forever, kwargs={"poll_interval": 0.1},
@@ -388,7 +458,8 @@ class DashboardServer(FrameServer):
                  notes: Sequence[str] = (), allow_control: bool = False,
                  thresholds_path: Optional[Union[str, Path]] = None, replay: bool = False,
                  **heatmap_params) -> None:
-        super().__init__(host, port, web_index)
+        network_control = allow_control and not is_loopback(host)
+        super().__init__(host, port, web_index, trusted_host=host if network_control else None)
         self._room = room
         self._state = DashboardState(room, dict(thresholds or {}), **heatmap_params)
         self._expected = [LinkId(rx.name, tx.mac) for rx, tx in room.links()]
@@ -410,6 +481,7 @@ class DashboardServer(FrameServer):
         self._last_host: Optional[float] = None
         self._last_mono: Optional[float] = None
         self._pump_thread: Optional[threading.Thread] = None
+        self._pipeline_errors: dict[str, str] = {}
 
     # ------------------------------------------------------------------ lifecycle
 
@@ -453,13 +525,44 @@ class DashboardServer(FrameServer):
                     break
             if not self._stop.is_set():
                 self._feed(reorder.pop_ready(self._connected_receivers(), flush=True))
-                with self._lock:
-                    if self._calib is not None and self._calib.active:
-                        self._calib.abort("the sources ended before the calibration recording finished")
-                    self._run_done = True
-                    self._emit(self._last_host or 0.0, final=True)
+                self._finish_run()
+        except _PipelineError as e:
+            self._fail_run(e.receiver, e.__cause__ or e)
+        except Exception as e:  # not from one packet: the pump itself failed
+            self._fail_run(None, e)
         finally:
             self._sources_done.set()
+
+    def _finish_run(self) -> None:
+        with self._lock:
+            if self._calib is not None and self._calib.active:
+                self._calib.abort("the sources ended before the calibration recording finished")
+            self._run_done = True
+            self._emit(self._last_host or 0.0, final=True)
+
+    def _fail_run(self, receiver: Optional[str], error: BaseException) -> None:
+        """The pipeline raised: name the receiver (or 'pipeline'), stop the readers, and end the run with a final frame.
+
+        Nothing drains the sources after this, so they are closed; a client sees the error and the end of the run
+        instead of a stale picture that looks live.
+        """
+        message = str(error) or type(error).__name__
+        if receiver is not None:
+            self._ms.mark_failed(receiver, message)
+        else:
+            self._pipeline_errors["pipeline"] = message
+        self._ms.close()
+        with self._lock:
+            if self._calib is not None and self._calib.active:
+                self._calib.abort(f"the pipeline failed: {message}")
+            self._run_done = True
+            try:
+                self._emit(self._last_host or 0.0, final=True)
+            except Exception:  # the state itself is broken: a minimal final frame still ends the run
+                fallback = {"links": [], "heatmap": {}, "status": {
+                    "time_s": self._last_host or 0.0, "finished": True, "errors": self._errors(),
+                    "messages": [f"run ended: the pipeline failed: {message}"]}}
+                self._frames.append(json.dumps(fallback), final=True)
 
     def _connected_receivers(self) -> set[str]:
         return {name for name, s in self._ms.status().items() if _receiver_state(s) == "connected"}
@@ -469,17 +572,27 @@ class DashboardServer(FrameServer):
             return
         with self._lock:
             for receiver, pkt in batch:
-                self._state.push(receiver, pkt)
-                if self._calib is not None and self._calib.active:
-                    self._calib.observe(receiver, pkt, time.monotonic())
-                if self._last_host is None or pkt.host_ts > self._last_host:
-                    self._last_host = pkt.host_ts
-                if self._next_frame_at is None:
-                    self._next_frame_at = pkt.host_ts + self._frame_s
-                elif pkt.host_ts >= self._next_frame_at:
-                    self._emit(pkt.host_ts)
-                    self._next_frame_at = pkt.host_ts + self._frame_s
+                try:
+                    self._push_packet(receiver, pkt)
+                except Exception as e:
+                    raise _PipelineError(receiver) from e
             self._last_mono = time.monotonic()
+
+    def _push_packet(self, receiver: str, pkt: CSIPacket) -> None:
+        """Caller holds the lock."""
+        self._state.push(receiver, pkt)
+        if self._calib is not None and self._calib.active:
+            self._calib.observe(receiver, pkt, time.monotonic())
+        if self._last_host is None or pkt.host_ts > self._last_host:
+            self._last_host = pkt.host_ts
+        if self._next_frame_at is None:
+            self._next_frame_at = pkt.host_ts + self._frame_s
+        elif pkt.host_ts >= self._next_frame_at:
+            self._emit(pkt.host_ts)
+            self._next_frame_at = pkt.host_ts + self._frame_s
+
+    def _errors(self) -> dict[str, str]:
+        return {**self._ms.errors(), **self._pipeline_errors}
 
     def _idle_frame(self) -> None:
         """With no packets arriving, keep frames coming on the clock so silent links turn NO_SIGNAL."""
@@ -515,22 +628,27 @@ class DashboardServer(FrameServer):
     def _payload(self, now: float) -> dict:
         """Caller holds the lock: DashboardState advances its smoothing to ``now``."""
         payload = self._state.snapshot(now)
-        payload["status"].update(self._status_extension(now))
+        payload["status"].update(self._status_extension(now, payload["links"]))
         return payload
 
-    def _status_extension(self, now: float) -> dict:
+    def _status_extension(self, now: float, links: Sequence[Mapping]) -> dict:
         receivers = {name: _receiver_state(s) for name, s in self._ms.status().items()}
-        errors = self._ms.errors()
+        errors = self._errors()
         calibrated = sorted(self._state.thresholds)
         uncalibrated = sorted(self._labels - set(calibrated))
+        silent = sorted(row["id"] for row in links if row["id"] in uncalibrated and row["age_s"] is None)
+        heard = [label for label in uncalibrated if label not in silent]
         messages = list(self._notes)
-        if uncalibrated:
-            messages.append(f"{len(uncalibrated)} link(s) UNCALIBRATED ({', '.join(uncalibrated)}): no threshold. "
+        if heard:
+            messages.append(f"{len(heard)} link(s) UNCALIBRATED ({', '.join(heard)}): no threshold. "
                             "Pass --thresholds links.json, or calibrate on an empty room first.")
-        messages.extend(f"receiver {name} failed: {msg}" for name, msg in sorted(errors.items()))
+        if silent:  # a link that never sent a packet has nothing to calibrate: say so, not UNCALIBRATED
+            where = "in this recording" if self._replay else "yet"
+            messages.append(f"{len(silent)} link(s) have no data {where} ({', '.join(silent)}).")
+        messages.extend(f"{'pipeline' if name == 'pipeline' else f'receiver {name}'} failed: {msg}"
+                        for name, msg in sorted(errors.items()))
         calibration = self._calib_status(now)
         if self._calib is not None:
-            messages.extend(f"calibration warning: {w}" for w in self._calib.warnings_kept)
             messages.extend(f"calibration skipped {label}: {why}" for label, why in self._calib.skipped.items())
         messages.extend(f"command: {line}" for line in self._commands)
         return {
@@ -587,6 +705,8 @@ class DashboardServer(FrameServer):
                 return handlers[path](body)
             except RequestError as e:
                 return 400, {"error": str(e)}
+            except Exception as e:  # a bad request must never kill the handler thread
+                return 500, {"error": f"internal error: {type(e).__name__}: {e}"}
 
     def _cmd_calibrate(self, body: Mapping) -> tuple[int, dict]:
         if self._calib is not None and self._calib.active:
@@ -609,7 +729,7 @@ class DashboardServer(FrameServer):
         if unknown:
             raise RequestError(f"unknown field(s): {', '.join(unknown)}; expected link and value")
         link = body.get("link")
-        if link not in self._labels:
+        if not isinstance(link, str) or link not in self._labels:
             raise RequestError(f"unknown link {link!r}; links are {', '.join(sorted(self._labels))}")
         value = body.get("value")
         if not _finite_positive(value):
@@ -655,6 +775,14 @@ class DashboardServer(FrameServer):
 
 
 
+class _PipelineError(Exception):
+    """A packet from ``receiver`` made the pipeline raise; the cause is chained."""
+
+    def __init__(self, receiver: str) -> None:
+        super().__init__(receiver)
+        self.receiver = receiver
+
+
 def _receiver_state(status: str) -> str:
     if status.startswith("error"):
         return "failed"
@@ -684,16 +812,29 @@ def walk_period_s(walk: Walk) -> float:
     return length / walk.speed_mps
 
 
-def looping_room_streams(room: Room, person: Walk, *, seed: int = 0) -> dict[str, Stream]:
-    """Endless real-time streams, one per receiver, of a person repeating ``person``'s loop.
+def looping_room_streams(room: Room, person: Walk, *, seed: int = 0, quiet_first_s: float = 0.0,
+                         realtime: bool = True) -> dict[str, Stream]:
+    """Endless streams, one per receiver, of a person repeating ``person``'s loop.
 
-    Each cycle is ``simulate_room`` over one loop period with the same seed, so the cycles join smoothly.
+    ``quiet_first_s`` seconds of an empty room come first, so a calibration can run before anyone walks.
+    The timeline is one continuous run: cycle k starts where cycle k-1 ended, on both the host clock and
+    the device counter, so the receivers never look rebooted at a loop boundary.
     """
     period = walk_period_s(person)
-    return {rx.name: _looping(rx.name, room, person, period, seed) for rx in room.receivers}
+    return {rx.name: _looping(rx.name, room, person, period, seed, quiet_first_s, realtime)
+            for rx in room.receivers}
 
 
-def _looping(name: str, room: Room, person: Walk, period: float, seed: int) -> Iterator[tuple[float, str]]:
+def _looping(name: str, room: Room, person: Walk, period: float, seed: int, quiet_first_s: float,
+             realtime: bool) -> Iterator[tuple[float, str]]:
+    start_s = 0.0
     for cycle in itertools.count():
-        lines = simulate_room(person, room=room, duration_s=period, seed=seed, realtime=True)[name]
+        if cycle == 0 and quiet_first_s > 0:
+            cycle_person, duration_s = None, quiet_first_s
+        else:
+            cycle_person, duration_s = person, period
+        streams = simulate_room(cycle_person, room=room, duration_s=duration_s, seed=seed, realtime=realtime,
+                                t0=SIM_T0 + start_s, device_offset_us=round(start_s * 1e6))
+        lines = streams[name]
         yield from (lines if cycle == 0 else itertools.islice(lines, 1, None))  # one header is enough
+        start_s += duration_s

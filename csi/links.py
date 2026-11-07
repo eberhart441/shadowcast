@@ -24,8 +24,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Mapping, Optional, Sequence
 
-from .detect import (DEBOUNCE_S, DEFAULT_MARGIN, Calibration, CalibrationError, MotionScorer, _Debouncer,
-                     calibrate_clips, classify, validate_margin)
+from .detect import (DEBOUNCE_S, DEFAULT_MARGIN, MIN_CLEAN_FRACTION, Calibration, CalibrationError, MotionScorer,
+                     _Debouncer, calibrate_clips, classify, validate_margin)
 from .health import LinkHealth
 from .parser import CSIPacket
 
@@ -165,7 +165,8 @@ class LinkCalibration:
 def calibrate_links_report(tagged: Optional[Iterable[tuple[str, CSIPacket]]] = None,
                            expected: Iterable[LinkId] = (), send_rate_hz: Optional[float] = None,
                            *, clips: Optional[Sequence[Iterable[tuple[str, CSIPacket]]]] = None,
-                           margin: float = DEFAULT_MARGIN) -> LinkCalibration:
+                           margin: float = DEFAULT_MARGIN,
+                           min_clean_fraction: float = MIN_CLEAN_FRACTION) -> LinkCalibration:
     """Calibrate each link from its own empty-room packets (see ``calibrate_clips``).
 
     ``tagged`` is one clip; ``clips`` is several clips, each scored separately and pooled per link. A
@@ -192,7 +193,7 @@ def calibrate_links_report(tagged: Optional[Iterable[tuple[str, CSIPacket]]] = N
             skipped[label] = "no packets"
             continue
         try:
-            calibrations[label] = calibrate_clips(link_clips, send_rate_hz, margin)
+            calibrations[label] = calibrate_clips(link_clips, send_rate_hz, margin, min_clean_fraction)
         except CalibrationError as e:
             skipped[label] = str(e)
     return LinkCalibration(calibrations, skipped, margin)

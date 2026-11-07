@@ -82,6 +82,8 @@ class MultiSource:
             for host_ts, line in stream:
                 if self._stop.is_set():
                     break
+                if line is None:  # heartbeat from a quiet port: only the stop check above matters
+                    continue
                 # a replayed recording yields parsed packets, which need no parsing
                 packets = [line] if isinstance(line, CSIPacket) else self._parsers[name].feed(line, host_ts)
                 for pkt in packets:
@@ -124,6 +126,12 @@ class MultiSource:
     def errors(self) -> dict[str, str]:
         with self._lock:
             return dict(self._errors)
+
+    def mark_failed(self, name: str, message: str) -> None:
+        """Record a receiver as failed from outside its reader (its packets were rejected downstream)."""
+        with self._lock:
+            self._errors[name] = message
+            self._status[name] = f"error: {message}"
 
     def parser_stats(self, name: str) -> ParserStats:
         return self._parsers[name].stats

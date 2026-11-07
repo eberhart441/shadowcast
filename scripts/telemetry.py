@@ -22,7 +22,8 @@ from typing import Iterator
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from csi.common import add_source_args, add_threshold_args, link_send_rate, open_source, resolve_threshold  # noqa: E402
+from csi.common import (SenderWatch, add_source_args, add_threshold_args, link_send_rate, open_source,  # noqa: E402
+                        resolve_threshold)
 from csi.detect import SIM_THRESHOLD, detect_packets  # noqa: E402
 from csi.health import LinkHealth  # noqa: E402
 from csi.parser import CSIPacket, CSIParser  # noqa: E402
@@ -60,7 +61,8 @@ def main() -> None:
     threshold = resolve_threshold(args, SIM_THRESHOLD)
 
     parser, health, last = CSIParser(), LinkHealth(send_rate_hz=link_send_rate(args)), {"rssi": 0}
-    packets = observed(open_source(args, parser), health, last)
+    watch = SenderWatch(lambda message: print(message, file=sys.stderr, flush=True))
+    packets = watch.observe_all(observed(open_source(args, parser), health, last))
     next_print = 0.0
     try:
         for r in detect_packets(packets, threshold, breathing=args.breathing):

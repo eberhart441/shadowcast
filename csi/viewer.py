@@ -46,7 +46,9 @@ class LiveView:
         self._threshold *= THRESHOLD_STEP ** steps
 
     def ingest(self, host_ts: float, line: str) -> None:
-        """Parse one line; malformed or non-CSI lines are counted by the parser."""
+        """Parse one line; malformed or non-CSI lines are counted by the parser. A heartbeat (None) is skipped."""
+        if line is None:
+            return
         for pkt in self.parser.feed(line, host_ts):
             self.health.observe(pkt)
             self._latest = pkt.host_ts

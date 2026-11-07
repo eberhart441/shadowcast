@@ -163,7 +163,7 @@ def test_a_link_with_no_packets_is_skipped_with_its_reason_and_the_others_are_ke
     assert any(DIAG_B in m and "no packets" in m for m in payload["status"]["messages"])
 
 
-def test_a_clip_with_movement_warns_and_keeps_the_previous_threshold(serve):
+def test_a_clip_that_is_mostly_movement_is_skipped_with_the_reason_and_keeps_the_previous_threshold(serve):
     go = serve.gate()
     # rx1 has someone walking for the first 27 s (clips 1 and 2 of 12 s each, with a 3 s pause), then an empty
     # room; rx2 is empty throughout. Only rx1's links see the walk, and only DIAG_B has most of its data rejected.
@@ -181,13 +181,11 @@ def test_a_clip_with_movement_warns_and_keeps_the_previous_threshold(serve):
     calibration = payload["status"]["calibration"]
 
     assert calibration["state"] == "done", calibration["message"]
-    warned = calibration["result"][DIAG_B]
-    assert warned["warning"].startswith("threshold may be unreliable: only ")
-    assert warned["applied"] is False
-    assert warned["rejected_s"] > warned["clean_s"]
+    assert DIAG_B not in calibration["result"]
+    assert calibration["skipped"][DIAG_B].startswith("only ") and "record again" in calibration["skipped"][DIAG_B]
     assert calibration["result"][RIGHT]["applied"] is True
     assert links_by_id(payload)[DIAG_B]["threshold"] == pytest.approx(0.6)   # the previous value stays
-    assert any(DIAG_B in m and "previous threshold" in m for m in payload["status"]["messages"])
+    assert any(DIAG_B in m and "was quiet" in m for m in payload["status"]["messages"])
 
 
 def test_a_source_that_ends_before_the_clips_finish_fails_the_job_and_keeps_the_thresholds(serve):
@@ -272,6 +270,21 @@ def test_threshold_command_rejects_bad_input_with_400(serve):
         status, reply = post(server.url, "/api/threshold", body)
         assert status == 400, body
         assert "error" in reply
+    assert get_json(server)["status"]["calibrated_links"] == []
+
+
+def test_commands_reject_non_string_and_non_number_json_values_with_400_not_a_crash(serve):
+    server = serve(empty_room(duration_s=5), thresholds=None)
+    odd = [None, True, 1.5, [1], {"a": 1}, ["rx2<-00"]]
+    for value in odd:
+        assert post(server.url, "/api/threshold", {"link": value, "value": 1.0})[0] == 400, value
+    for value in [None, [0.5], {"v": 1}, "1", True]:
+        assert post(server.url, "/api/threshold", {"link": "rx2<-00", "value": value})[0] == 400, value
+    for body in [{"seconds": [1]}, {"clips": {"n": 1}}, {"margin": [1.0]}, {"margin": True},
+                 {"lead_s": None}, {"seconds": "10"}]:
+        assert post(server.url, "/api/calibrate", body)[0] == 400, body
+    for body in [{"sensitivity": [1]}, {"decay": {"x": 1}}, {"rise": None}, {"falloff": True}]:
+        assert post(server.url, "/api/params", body)[0] == 400, body
     assert get_json(server)["status"]["calibrated_links"] == []
 
 

@@ -24,7 +24,7 @@ from .links import LinkId, calibrate_links_report
 from .parser import CSIPacket
 from .recording import META_NAME, Session, load_session
 from .room import Room
-from .server import DEFAULT_HOST, FRAME_INTERVAL_S, LOG_FORMAT, DashboardServer, FrameServer
+from .server import DEFAULT_HOST, FRAME_INTERVAL_S, LOG_FORMAT, REPLAY_OFF, DashboardServer, FrameServer
 from .simulate import DEFAULT_MAC
 
 Pathlike = Union[str, Path]
@@ -80,6 +80,12 @@ def _payload(path: Path, n: int, line: str) -> dict:
     return obj
 
 
+def _replay_commands(payload: dict) -> dict:
+    """A logged payload as served by a replay: the live run's commands are not available here."""
+    status = {**payload["status"], "commands": {"available": False, "reason": REPLAY_OFF}}
+    return {**payload, "status": status}
+
+
 def validate_speed(speed: float) -> float:
     """A replay speed: a positive factor, or math.inf for as fast as possible."""
     if not speed > 0:
@@ -93,7 +99,7 @@ class ReplayServer(FrameServer):
     def __init__(self, log: ReplayLog, *, speed: float = 1.0, host: str = DEFAULT_HOST, port: int = 0,
                  web_index: Union[Path, str, None] = None) -> None:
         super().__init__(host, port, web_index)
-        self._payloads: Sequence[dict] = log.payloads
+        self._payloads: Sequence[dict] = [_replay_commands(p) for p in log.payloads]
         self._speed = validate_speed(speed)
         self._latest = json.dumps(self._payloads[0])
         self._feeder: threading.Thread | None = None

@@ -122,8 +122,10 @@ class MotionScorer:
         self._stages = stages
         self._buf: deque[tuple[int, np.ndarray]] = deque()
         self._slow: Optional[np.ndarray] = None  # (stages, subcarriers) running means
-        self._last_t = 0
+        self._last_t: Optional[int] = None       # device time (us) of the last accepted packet
+        self._score: Optional[float] = None
         self._clock = DeviceClock()  # unwraps the 32-bit counter; a reboot restarts the window
+        self.dropped = 0                         # out-of-order or repeated packets, not applied
 
     def _highpass(self, x: np.ndarray, t: int) -> np.ndarray:
         x = x.astype(np.float64)
@@ -134,7 +136,7 @@ class MotionScorer:
             self._slow[0] = x
             self._last_t = t
             return np.zeros_like(x)
-        dt_s = max(0, t - self._last_t) / 1e6  # gaps (drops) advance the mean
+        dt_s = max(0, t - self._last_t) / 1e6  # gaps (drops) advance the mean; accepted times only move forward
         self._last_t = t
         alpha = 1.0 - np.exp(-dt_s / self._tau_s)
         for k in range(self._stages):
@@ -143,19 +145,27 @@ class MotionScorer:
         return x
 
     def push(self, pkt: CSIPacket) -> Optional[float]:
+        """Score after this packet. A packet not later than the last accepted one (out of order, or repeated) is
+        dropped and counted: it would move the timeline backwards. Its call returns the unchanged score."""
         t, event = self._clock.advance(pkt.device_ts, pkt.host_ts)
         if event == RESET:
             # Receiver rebooted: the old window and filter state belong to another timeline.
             self._buf.clear()
             self._slow = None
+            self._last_t = None
+        if self._last_t is not None and t <= self._last_t:
+            self.dropped += 1
+            return self._score
         self._buf.append((t, self._highpass(pkt.amplitude, t)))
         while t - self._buf[0][0] > self._window_us:
             self._buf.popleft()
         full = t - self._buf[0][0] >= 0.9 * self._window_us
         if len(self._buf) < MIN_WINDOW_PACKETS or not full:
-            return None
-        window = np.stack([r for _, r in self._buf])
-        return float(window.var(axis=0).mean())
+            self._score = None
+        else:
+            window = np.stack([r for _, r in self._buf])
+            self._score = float(window.var(axis=0).mean())
+        return self._score
 
 
 class _Debouncer:
@@ -193,18 +203,25 @@ class _BreathingTracker:
         self._last_update: Optional[float] = None
         self._estimate: BreathingEstimate = NOT_ENOUGH
         self._clock = DeviceClock()
+        self._last_t: Optional[float] = None  # seconds, last accepted packet
+        self.dropped = 0                      # out-of-order or repeated packets, not applied
 
     def reset(self) -> None:
         """Forget the window: motion contaminates it, so breathing rebuilds from quiet data."""
         self._buf.clear()
         self._last_update = None
         self._estimate = NOT_ENOUGH
+        self._last_t = None
 
     def push(self, pkt: CSIPacket) -> BreathingEstimate:
         t_us, event = self._clock.advance(pkt.device_ts, pkt.host_ts)
         if event == RESET:
             self.reset()
         t = t_us / 1e6
+        if self._last_t is not None and t <= self._last_t:
+            self.dropped += 1  # late or repeated: keep the window in time order
+            return self._estimate
+        self._last_t = t
         self._buf.append((t, pkt.amplitude))
         while t - self._buf[0][0] > BREATH_WINDOW_S + 1.0:
             self._buf.popleft()
@@ -251,6 +268,7 @@ def detect_packets(packets: Iterable[CSIPacket], threshold: float,
 
 
 MIN_CLEAN_S = 8.0                 # clean (kept) empty-room data needed before a threshold is trusted
+MIN_CLEAN_FRACTION = 0.5          # and at least this fraction of the clip time must be quiet (else: bursty/busy)
 MAX_CALIBRATION_LOSS = 0.6        # refuse only when most packets are missing
 MIN_CALIBRATION_PKT_RATE_HZ = 15.0  # below this the window scores are too thin to be stable
 CHUNK_S = 1.0                     # contamination is judged per 1 s chunk (see calibrate_clips)
@@ -302,7 +320,7 @@ def calibrate_packets(packets: list[CSIPacket], send_rate_hz: Optional[float] = 
 
 
 def calibrate_clips(clips: Sequence[Sequence[CSIPacket]], send_rate_hz: Optional[float] = None,
-                    margin: float = DEFAULT_MARGIN) -> Calibration:
+                    margin: float = DEFAULT_MARGIN, min_clean_fraction: float = MIN_CLEAN_FRACTION) -> Calibration:
     """Learn one threshold from one or more empty-room clips.
 
     Each clip is scored on its own (fresh MotionScorer, so no window spans two clips). Scores are
@@ -310,10 +328,13 @@ def calibrate_clips(clips: Sequence[Sequence[CSIPacket]], send_rate_hz: Optional
     the quiet baseline (the median of the lowest-half chunk medians, pooled over all clips), or when
     its p90 is more than BURST_RATIO times its own median (a passer-by in part of the chunk). The
     threshold is ``margin`` x the THRESHOLD_PERCENTILE of the windows in the kept chunks only.
-    Raises CalibrationError if fewer than MIN_CLEAN_S seconds are kept, and ValueError if ``margin``
-    is not positive.
+    Raises CalibrationError if fewer than MIN_CLEAN_S seconds are kept, or if less than
+    ``min_clean_fraction`` of the clip time is kept (a bursty or busy link: its quiet leftovers would make a
+    threshold that alarms all the time), and ValueError if ``margin`` is not positive.
     """
     margin = validate_margin(margin)
+    if not 0 < min_clean_fraction <= 1:
+        raise ValueError(f"min_clean_fraction must be in (0, 1], got {min_clean_fraction!r}")
     clips = [list(c) for c in clips]
     if not clips:
         raise CalibrationError("no calibration input")
@@ -373,6 +394,10 @@ def calibrate_clips(clips: Sequence[Sequence[CSIPacket]], send_rate_hz: Optional
             f"input too short: {clean_s:.1f} s of clean data < {MIN_CLEAN_S:.0f} s "
             f"(rejected {rejected_s:.1f} s of {total_s:.1f} s as contaminated by movement). "
             "Record the empty room again, with nobody walking through.")
+    if clean_s < min_clean_fraction * total_s:
+        raise CalibrationError(
+            f"only {clean_s:.1f} s of {total_s:.1f} s was quiet; the link is bursty or someone was moving: "
+            "record again")
     pooled = np.concatenate(kept)
     threshold = float(np.percentile(pooled, THRESHOLD_PERCENTILE)) * margin
     loss = max(0.0, 1.0 - packets_n / expected_n)

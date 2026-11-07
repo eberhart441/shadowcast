@@ -21,13 +21,14 @@ from __future__ import annotations
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Sequence
+from typing import Iterable, Optional, Sequence
 
 import pandas as pd
 
 from .breathing import WINDOW_S as BREATH_WINDOW_S
 from .detect import (DEFAULT_MARGIN, EMPTY, MOTION, STILL_PRESENT, Calibration, CalibrationError, calibrate_packets,
                      detect_packets, validate_margin)
+from .parser import CSIPacket
 from .recording import LABELS, META_NAME, Recording, Session, load_session
 
 LABEL_STATE: dict[str, str] = {
@@ -46,12 +47,14 @@ class EvaluationError(ValueError):
 @dataclass
 class SessionResult:
     name: str
-    calibration: Calibration
+    calibration: Optional[Calibration]          # one session threshold; None when the session has several senders
     calibration_file: str                       # the empty recording used for calibration
     scored_files: list[str]
     confusion: pd.DataFrame                     # rows: LABELS, columns: STATES, counts
     no_breathing_window: int = 0                # decisions made before a full 15 s breathing window
     notes: list[str] = field(default_factory=list)
+    links: dict[str, Calibration] = field(default_factory=dict)      # several senders: sender MAC -> calibration
+    skipped_links: dict[str, str] = field(default_factory=dict)      # several senders: sender MAC -> why not
 
 
 @dataclass
@@ -84,12 +87,37 @@ def _missing_empty_message(name: str) -> str:
             f"first with: scripts/record.py --session {name} --label empty")
 
 
+def _recording_macs(rec: Recording) -> set[str]:
+    """Sender MACs in one recording, from the mac column (empty for recordings made before it existed)."""
+    if "mac" not in rec.table.columns:
+        return set()
+    return {str(m) for m in rec.table["mac"].fillna("") if str(m)}
+
+
+def _by_mac(packets: Iterable[CSIPacket]) -> dict[str, list[CSIPacket]]:
+    groups: dict[str, list[CSIPacket]] = {}
+    for p in packets:
+        groups.setdefault(p.mac, []).append(p)
+    return groups
+
+
+def _combine(states: Iterable[str]) -> str:
+    """One room decision from the links' states at a moment: MOTION if any link says so, else STILL, else EMPTY."""
+    states = set(states)
+    if MOTION in states:
+        return MOTION
+    return STILL_PRESENT if STILL_PRESENT in states else EMPTY
+
+
 def _evaluate_session(session: Session, breathing: bool, margin: float) -> SessionResult:
     name = session.path.name
     empties = [r for r in session.recordings if r.label == "empty"]
     if not empties:
         raise EvaluationError(_missing_empty_message(name))
     calib_rec = empties[0]
+    scored: list[Recording] = [r for r in session.recordings if r is not calib_rec]
+    if len(set().union(*(_recording_macs(r) for r in session.recordings))) > 1:
+        return _evaluate_links(session, calib_rec, scored, breathing, margin)
     try:
         calibration = calibrate_packets(calib_rec.packets(), margin=margin)
     except CalibrationError as e:
@@ -97,7 +125,6 @@ def _evaluate_session(session: Session, breathing: bool, margin: float) -> Sessi
 
     pairs: list[tuple[str, str]] = []
     no_breathing = 0
-    scored: list[Recording] = [r for r in session.recordings if r is not calib_rec]
     for rec in scored:
         for reading in detect_packets(rec.packets(), calibration.threshold, breathing=breathing):
             pairs.append((rec.label, reading.state))
@@ -116,6 +143,50 @@ def _evaluate_session(session: Session, breathing: bool, margin: float) -> Sessi
         no_breathing_window=no_breathing,
         notes=notes,
     )
+
+
+def _evaluate_links(session: Session, calib_rec: Recording, scored: list[Recording], breathing: bool,
+                    margin: float) -> SessionResult:
+    """A session whose recordings hold several senders: each sender is a link, calibrated on its own packets of
+    the first empty recording and detected on its own. At each link reading the room state is the combination
+    of every link's latest state (MOTION if any link says MOTION), and that is one decision in the matrix."""
+    name = session.path.name
+    links: dict[str, Calibration] = {}
+    skipped: dict[str, str] = {}
+    calib_by_mac = _by_mac(calib_rec.packets())
+    macs = sorted(set().union(*(_recording_macs(r) for r in session.recordings)))
+    for mac in macs:
+        try:
+            links[mac] = calibrate_packets(calib_by_mac.get(mac, []), margin=margin)
+        except CalibrationError as e:
+            skipped[mac] = str(e)
+    if not links:
+        reasons = "; ".join(f"{mac}: {why}" for mac, why in skipped.items())
+        raise EvaluationError(f"session {name!r}: no sender link can be calibrated on {calib_rec.path.name}: {reasons}")
+
+    pairs: list[tuple[str, str]] = []
+    no_breathing = 0
+    for rec in scored:
+        by_mac = _by_mac(rec.packets())
+        events = [(reading.host_ts, mac, reading)
+                  for mac, cal in links.items()
+                  for reading in detect_packets(by_mac.get(mac, []), cal.threshold, breathing=breathing)]
+        events.sort(key=lambda e: e[0])
+        latest: dict[str, str] = {}
+        for _, mac, reading in events:
+            latest[mac] = reading.state
+            pairs.append((rec.label, _combine(latest.values())))
+            no_breathing += not reading.enough_data
+
+    notes = [f"{len(macs)} sender links on one session: each is calibrated and detected on its own; a window is "
+             "MOTION when any link says MOTION, and each link's reading is one decision"]
+    notes.extend(f"sender {mac} not calibrated ({why}); its packets are not scored" for mac, why in skipped.items())
+    if sum(r.label == "empty" for r in session.recordings) == 1:
+        notes.append("only one empty recording: it calibrated the thresholds, so no empty windows were scored "
+                     "from this session; record a second empty recording to score empty")
+    return SessionResult(name=name, calibration=None, calibration_file=calib_rec.path.name,
+                         scored_files=[r.path.name for r in scored], confusion=_confusion(pairs),
+                         no_breathing_window=no_breathing, notes=notes, links=links, skipped_links=skipped)
 
 
 def evaluate_sessions(folders: Sequence[Path | str], breathing: bool = False,
@@ -170,9 +241,16 @@ def format_report(report: EvaluationReport) -> str:
                    "Pass --breathing to score the still_* labels.")
         out.append("")
     for s in report.sessions:
-        c = s.calibration
-        out.append(f"session {s.name}: threshold {c.threshold:.3f} (margin {c.margin:.2f} x p99; "
-                   f"calibrated on {s.calibration_file}, {c.duration_s:.0f}s, loss {c.loss:.1%})")
+        if s.links:
+            out.append(f"session {s.name}: {len(s.links)} sender links, each with its own threshold "
+                       f"(calibrated on {s.calibration_file})")
+            for mac, c in s.links.items():
+                out.append(f"  link {mac}: threshold {c.threshold:.3f} (margin {c.margin:.2f} x p99; "
+                           f"{c.duration_s:.0f}s, loss {c.loss:.1%})")
+        else:
+            c = s.calibration
+            out.append(f"session {s.name}: threshold {c.threshold:.3f} (margin {c.margin:.2f} x p99; "
+                       f"calibrated on {s.calibration_file}, {c.duration_s:.0f}s, loss {c.loss:.1%})")
         out.append(f"scored: {', '.join(s.scored_files) or 'nothing'}")
         out.append(_format_matrix(s.confusion, report.breathing))
         if report.breathing:
