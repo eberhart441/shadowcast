@@ -158,8 +158,14 @@ def classify(score: float, bpm: Optional[float], threshold: float) -> str:
 def detect(stream: Stream, threshold: float, parser: Optional[CSIParser] = None,
            debounce_s: float = DEBOUNCE_S) -> Iterator[Reading]:
     """Yield a debounced Reading per packet once a full motion window is available."""
+    return detect_packets(parse_stream(stream, parser), threshold, debounce_s)
+
+
+def detect_packets(packets: Iterable[CSIPacket], threshold: float,
+                   debounce_s: float = DEBOUNCE_S) -> Iterator[Reading]:
+    """``detect`` for packets already parsed (e.g. loaded from a recording)."""
     scorer, breath, debounce = MotionScorer(), _BreathingTracker(), _Debouncer(debounce_s)
-    for pkt in parse_stream(stream, parser):
+    for pkt in packets:
         score = scorer.push(pkt)
         if score is not None and score > threshold:
             breath.reset()
@@ -188,7 +194,11 @@ def calibrate(stream: Stream, parser: Optional[CSIParser] = None) -> Calibration
 
     Raises CalibrationError if the input is too short or loses too many packets.
     """
-    packets = list(parse_stream(stream, parser))
+    return calibrate_packets(list(parse_stream(stream, parser)))
+
+
+def calibrate_packets(packets: list[CSIPacket]) -> Calibration:
+    """``calibrate`` for packets already parsed (e.g. loaded from a recording)."""
     if len(packets) < 2:
         raise CalibrationError("input too short: fewer than two packets")
     device_ts = [p.device_ts for p in packets]
