@@ -21,11 +21,11 @@
     },
     "rx3": {
       "role": "receiver",
-      "chip": "ESP32-S3",
+      "chip": "ESP32-C5",
       "x": 1.385,
       "y": -1.5,
       "port_hint": "/dev/cu.usbmodem1101",
-      "enabled": false
+      "enabled": true
     },
     "tx0": {
       "role": "sender",
