@@ -27,7 +27,7 @@ from .parser import CSIPacket, CSIParser, Stream
 
 LABELS = ("empty", "walking", "still_standing", "still_sitting_or_lying")
 META_NAME = "session.json"
-BASE_COLUMNS = ("host_ts", "device_ts", "rssi", "channel")
+BASE_COLUMNS = ("host_ts", "device_ts", "rssi", "channel", "mac")
 _NAME_RE = re.compile(r"^(?P<label>[a-z_]+)_\d{8}T\d{6}Z(-\d+)?$")
 # Session metadata that an earlier run wrote and a resumed run keeps (see _Session._resume_existing).
 _KEPT_FROM_EARLIER_RUN = ("date", "channel", "subcarrier_layout", "send_rate_hz", "files", "drops_estimated")
@@ -75,7 +75,7 @@ class _LabelFile:
         self._fh.flush()
 
     def write(self, pkt: CSIPacket) -> None:
-        self._w.writerow([f"{pkt.host_ts:.6f}", pkt.device_ts, pkt.rssi, pkt.channel,
+        self._w.writerow([f"{pkt.host_ts:.6f}", pkt.device_ts, pkt.rssi, pkt.channel, pkt.mac,
                           *(f"{a:.3f}" for a in pkt.amplitude)])
         self.packets += 1
 
@@ -286,11 +286,13 @@ class Recording:
         return self.table[cols].to_numpy(dtype=np.float32)
 
     def packets(self) -> list[CSIPacket]:
+        """Packets with their recorded sender MAC. Files from before the mac column load with ''."""
         t, amp = self.table, self.amplitude
+        macs = t["mac"].fillna("").astype(str) if "mac" in t.columns else [""] * len(t)
         return [CSIPacket(host_ts=float(h), device_ts=int(d), rssi=int(r), channel=int(c),
-                          amplitude=amp[i])
-                for i, (h, d, r, c) in enumerate(zip(t["host_ts"], t["device_ts"],
-                                                     t["rssi"], t["channel"]))]
+                          amplitude=amp[i], mac=str(m))
+                for i, (h, d, r, c, m) in enumerate(zip(t["host_ts"], t["device_ts"],
+                                                        t["rssi"], t["channel"], macs))]
 
 
 @dataclass
