@@ -46,7 +46,7 @@ from .room import Room, point_segment_distance
 COLS = 28
 ROWS = 18
 FALLOFF_M = 0.35          # Gaussian width of a link's footprint, metres (1 sigma)
-SENSITIVITY = 0.8         # gain before the soft saturation; higher lights up weaker evidence more
+SENSITIVITY = 1.3         # gain before the soft saturation; higher lights up weaker evidence more
 AGREEMENT = 0.5           # share of the cell value taken from agreement between the two largest links
 R_FLOOR = 1.2             # score / baseline at or below which a link's evidence is zero (dead zone)
 R_FULL = 3.0              # score / baseline at which a link's evidence reaches 1
@@ -54,7 +54,7 @@ BASELINE_WINDOW_S = 60.0  # host-time span of the quiet baseline
 BASELINE_PERCENTILE = 50.0
 BASELINE_WARMUP_S = 10.0  # history needed before a link's baseline is trusted
 RISE_TAU_S = 0.3          # time constant of a cell heating up
-DECAY_TAU_S = 1.5         # time constant of a cell cooling down
+DECAY_TAU_S = 0.3         # time constant of a cell cooling down
 STEP_S = 0.1              # host-time step between smoothing updates while packets arrive
 CONTRIBUTING_STATES = frozenset({"EMPTY", "MOTION"})
 BASELINE_STATES = frozenset({"EMPTY", "MOTION"})
