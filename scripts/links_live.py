@@ -1,7 +1,8 @@
 #!/usr/bin/env python
 """Live per-link table: one row per (receiver, sender) link, state, score vs threshold, rate, drops, RSSI.
 
-    links_live.py --simulate-links                             # 2 senders x 2 receivers, no hardware
+    links_live.py --simulate-links                             # the room's receivers x senders, no hardware
+    links_live.py --simulate-links --room tests/fixtures/room_5node.json   # another room layout
     links_live.py --simulate-links --calibrate 15 --out links.json
     links_live.py --port rx1=/dev/cu.usbmodem2101 --port rx2=/dev/cu.usbserial-0001 --thresholds links.json
     links_live.py --port rx1=/dev/cu.usbmodem2101 --calibrate 60 --out links.json   # empty room, reset receivers first
@@ -30,7 +31,8 @@ from csi.links import (NO_SIGNAL, UNCALIBRATED, WARMUP, LinkId, LinkMonitor, cal
                        load_thresholds, save_thresholds)
 from csi.multisource import MultiSource, parse_port_specs  # noqa: E402
 from csi.parser import CSIPacket, Stream, serial_stream  # noqa: E402
-from csi.simulate import DEFAULT_RECEIVERS, SENDER_MACS, Segment, simulate_link_streams  # noqa: E402
+from csi.room import DEFAULT_ROOM_PATH, Room, load_room  # noqa: E402
+from csi.simulate import Segment, simulate_link_streams  # noqa: E402
 
 SIM_DEMO_SCENARIO = (Segment("empty", 20), Segment("motion", 10), Segment("still", 30))  # loops
 CLIP_PAUSE_S = 3.0          # pause between --clips, to let the room settle (and the operator step out)
@@ -46,7 +48,10 @@ def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
     g = ap.add_argument_group("packet source")
     g.add_argument("--simulate-links", action="store_true",
-                   help="2 simulated senders x 2 simulated receivers (rx1, rx2)")
+                   help="simulated senders x receivers of the room (see --room)")
+    g.add_argument("--room", type=Path, default=DEFAULT_ROOM_PATH, metavar="room.json",
+                   help="room configuration for --simulate-links and for ignoring disabled nodes "
+                        "(default config/room.json)")
     g.add_argument("--port", action="append", metavar="[NAME=]PATH",
                    help="serial port of a csi_recv node; repeat for each receiver. Unnamed ports get rx1, rx2...")
     g.add_argument("--baud", type=int, default=921600)
@@ -80,17 +85,25 @@ def check_source(args: argparse.Namespace) -> None:
         raise SystemExit("error: pass --port [NAME=]PATH (repeat for each receiver) or --simulate-links")
 
 
-def simulated_links() -> list[LinkId]:
-    return [LinkId(r, m) for r in DEFAULT_RECEIVERS for m in SENDER_MACS]
+def simulated_links(room: Room) -> list[LinkId]:
+    return [LinkId(rx.name, tx.mac) for rx, tx in room.links()]
 
 
 def open_sources(args: argparse.Namespace, calibrating: bool, seconds: Optional[float] = None) -> dict[str, Stream]:
-    """Line streams per receiver. Serial streams open their port only when first read (on a reader thread)."""
+    """Line streams per receiver. Serial streams open their port only when first read (on a reader thread).
+    A port named after a disabled node in the room config is not opened."""
+    room = load_room(args.room)
     if args.simulate_links:
         scenario = (Segment("empty", seconds),) if calibrating else SIM_DEMO_SCENARIO
-        return simulate_link_streams(SENDER_MACS, DEFAULT_RECEIVERS, scenario, rate_hz=simulated_rate_hz(args),
-                                     seed=args.seed, realtime=not calibrating, loop=not calibrating)
-    return {name: serial_stream(path, args.baud) for name, path in parse_port_specs(args.port)}
+        return simulate_link_streams(scenario=scenario, rate_hz=simulated_rate_hz(args), seed=args.seed,
+                                     realtime=not calibrating, loop=not calibrating, room=room)
+    streams: dict[str, Stream] = {}
+    for name, path in parse_port_specs(args.port):
+        if name in room.disabled:
+            print(f"ignoring port {path}: node {name} is disabled in {args.room}", file=sys.stderr)
+            continue
+        streams[name] = serial_stream(path, args.baud)
+    return streams
 
 
 def resolve_thresholds(args: argparse.Namespace) -> tuple[dict[str, float], str]:
@@ -101,7 +114,7 @@ def resolve_thresholds(args: argparse.Namespace) -> tuple[dict[str, float], str]
         except (OSError, ValueError) as e:
             raise SystemExit(f"error: cannot read thresholds {args.thresholds}: {e}")
     if args.simulate_links:
-        return {lid.label: SIM_THRESHOLD for lid in simulated_links()}, "simulator default"
+        return {lid.label: SIM_THRESHOLD for lid in simulated_links(load_room(args.room))}, "simulator default"
     raise SystemExit("error: real ports need per-link thresholds: pass --thresholds links.json, or calibrate "
                      "first on an empty room with: links_live.py --port <PORT> --calibrate 60 --out links.json")
 
@@ -170,7 +183,7 @@ def record_clips(ms: MultiSource, clip_s: float, n: int) -> list[list[tuple[str,
 
 
 def run_calibration(args: argparse.Namespace) -> int:
-    expected = simulated_links() if args.simulate_links else []
+    expected = simulated_links(load_room(args.room)) if args.simulate_links else []
     n = max(1, args.clips)
     total = n * args.calibrate + (n - 1) * CLIP_PAUSE_S
     ms = MultiSource(open_sources(args, calibrating=True, seconds=total))
@@ -197,7 +210,7 @@ def run_calibration(args: argparse.Namespace) -> int:
 
 
 def run_live(args: argparse.Namespace) -> int:
-    expected = simulated_links() if args.simulate_links else []
+    expected = simulated_links(load_room(args.room)) if args.simulate_links else []
     thresholds, source_desc = resolve_thresholds(args)
     send_rate = (args.rate or SIM_RATE_HZ) if args.simulate_links else args.rate
     monitor = LinkMonitor(thresholds, expected=expected, send_rate_hz=send_rate)

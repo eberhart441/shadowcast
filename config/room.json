@@ -19,6 +19,14 @@
       "y": 0.0,
       "port_hint": "/dev/cu.usbmodem2101"
     },
+    "rx3": {
+      "role": "receiver",
+      "chip": "ESP32-S3",
+      "x": 1.385,
+      "y": 0.0,
+      "port_hint": "",
+      "enabled": false
+    },
     "tx0": {
       "role": "sender",
       "chip": "ESP32-S3",
