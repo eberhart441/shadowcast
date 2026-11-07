@@ -457,11 +457,11 @@ class DashboardServer(FrameServer):
                  log: Optional[Union[str, Path]] = None, log_meta: Optional[Mapping] = None,
                  notes: Sequence[str] = (), allow_control: bool = False,
                  thresholds_path: Optional[Union[str, Path]] = None, replay: bool = False,
-                 **heatmap_params) -> None:
+                 mode: str = "fixed", **heatmap_params) -> None:
         network_control = allow_control and not is_loopback(host)
         super().__init__(host, port, web_index, trusted_host=host if network_control else None)
         self._room = room
-        self._state = DashboardState(room, dict(thresholds or {}), **heatmap_params)
+        self._state = DashboardState(room, dict(thresholds or {}), mode=mode, **heatmap_params)
         self._expected = [LinkId(rx.name, tx.mac) for rx, tx in room.links()]
         self._labels = {link.label for link in self._expected}
         self._controls_on = controls_allowed(host, allow_control)
@@ -475,7 +475,7 @@ class DashboardServer(FrameServer):
         self._log_path = None if log is None else Path(log)
         self._log_file: Optional[TextIO] = None
         self._log_header = {"format": LOG_FORMAT, "version": LOG_VERSION, "room": asdict(room),
-                            "thresholds": dict(thresholds or {}), "frame_interval_s": frame_interval_s,
+                            "thresholds": dict(thresholds or {}), "mode": mode, "frame_interval_s": frame_interval_s,
                             "heatmap": dict(heatmap_params), "notes": list(notes), **dict(log_meta or {})}
         self._frame_s = frame_interval_s
         self._next_frame_at: Optional[float] = None
@@ -636,7 +636,8 @@ class DashboardServer(FrameServer):
         receivers = {name: _receiver_state(s) for name, s in self._ms.status().items()}
         errors = self._errors()
         calibrated = sorted(self._state.thresholds)
-        uncalibrated = sorted(self._labels - set(calibrated))
+        adaptive = sorted(row["id"] for row in links if row.get("mode") == "auto")  # no threshold needed
+        uncalibrated = sorted(self._labels - set(calibrated) - set(adaptive))
         silent = sorted(row["id"] for row in links if row["id"] in uncalibrated and row["age_s"] is None)
         heard = [label for label in uncalibrated if label not in silent]
         messages = list(self._notes)
@@ -657,6 +658,7 @@ class DashboardServer(FrameServer):
             "errors": errors,
             "finished": self._run_done,
             "calibrated_links": calibrated,
+            "adaptive_links": adaptive,
             "uncalibrated_links": uncalibrated,
             "messages": messages,
             "calibration": calibration,
@@ -716,7 +718,8 @@ class DashboardServer(FrameServer):
         self._calib = CalibrationJob(request, self._expected, now_mono=time.monotonic(),
                                      current=lambda: self._state.thresholds, apply=self._apply_threshold)
         self._commands.append(f"calibrate: {request['clips']} clip(s) of {request['seconds']:g} s, margin "
-                              f"{request['margin']:g}, lead-in {request['lead_s']:g} s")
+                              f"{request['margin']:g}, lead-in {request['lead_s']:g} s, "
+                              f"{'noisy room' if request['noisy'] else 'quiet room'}")
         return 202, {"calibration": self._calib_status(self._clock())}
 
     def _cmd_cancel(self, body: Mapping) -> tuple[int, dict]:
@@ -732,9 +735,13 @@ class DashboardServer(FrameServer):
         link = body.get("link")
         if not isinstance(link, str) or link not in self._labels:
             raise RequestError(f"unknown link {link!r}; links are {', '.join(sorted(self._labels))}")
+        if "value" in body and body["value"] is None:  # explicit null: back to the adaptive baseline (auto mode)
+            self._state.set_threshold(link, None)
+            self._commands.append(f"threshold {link} = auto")
+            return 200, {"link": link, "threshold": None}
         value = body.get("value")
         if not _finite_positive(value):
-            raise RequestError(f"value must be a positive number, got {value!r}")
+            raise RequestError(f"value must be a positive number, or null for auto, got {value!r}")
         self._state.set_threshold(link, float(value))
         self._commands.append(f"threshold {link} = {float(value):.4g}")
         return 200, {"link": link, "threshold": float(value)}

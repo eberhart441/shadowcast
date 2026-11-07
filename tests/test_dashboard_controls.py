@@ -174,7 +174,7 @@ def test_a_clip_that_is_mostly_movement_is_skipped_with_the_reason_and_keeps_the
     server = serve({"rx1": gated(rx1, go), "rx2": gated(rx2, go)}, thresholds=None)
     status, _ = post(server.url, "/api/threshold", {"link": DIAG_B, "value": 0.6})
     assert status == 200
-    post(server.url, "/api/calibrate", {"clips": 3, "seconds": 12, "lead_s": 0})
+    post(server.url, "/api/calibrate", {"clips": 3, "seconds": 12, "lead_s": 0, "noisy": False})  # quiet-room rules
     go.set()
 
     payload = wait_calibration(server)
@@ -265,7 +265,7 @@ def test_threshold_command_rejects_bad_input_with_400(serve):
     server = serve(empty_room(duration_s=5), thresholds=None)
     bad = [{"link": "rx9<-99", "value": 1.0}, {"link": "rx2<-00", "value": 0}, {"link": "rx2<-00", "value": -2},
            {"link": "rx2<-00", "value": "high"}, {"link": "rx2<-00", "value": True},
-           {"link": "rx2<-00"}, {"link": "rx2<-00", "value": 1.0, "extra": 1}]
+           {"link": "rx2<-00"}, {"link": "rx2<-00", "value": 1.0, "extra": 1}]  # a missing value is a 400; only an explicit null is auto
     for body in bad:
         status, reply = post(server.url, "/api/threshold", body)
         assert status == 400, body
@@ -278,8 +278,9 @@ def test_commands_reject_non_string_and_non_number_json_values_with_400_not_a_cr
     odd = [None, True, 1.5, [1], {"a": 1}, ["rx2<-00"]]
     for value in odd:
         assert post(server.url, "/api/threshold", {"link": value, "value": 1.0})[0] == 400, value
-    for value in [None, [0.5], {"v": 1}, "1", True]:
+    for value in [[0.5], {"v": 1}, "1", True]:
         assert post(server.url, "/api/threshold", {"link": "rx2<-00", "value": value})[0] == 400, value
+    assert post(server.url, "/api/threshold", {"link": "rx2<-00", "value": None})[0] == 200  # null: back to auto
     for body in [{"seconds": [1]}, {"clips": {"n": 1}}, {"margin": [1.0]}, {"margin": True},
                  {"lead_s": None}, {"seconds": "10"}]:
         assert post(server.url, "/api/calibrate", body)[0] == 400, body

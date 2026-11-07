@@ -12,6 +12,10 @@ The dashboard already owns the serial ports, so the job never opens any. The ser
 A link whose clips are less than MIN_CLEAN_FRACTION quiet is skipped with the reason (as in
 calibrate_links_report: "record again"), and keeps its previous threshold. Refusal and the message are the
 same as scripts/links_live.py --calibrate.
+
+``noisy`` (default true, the dashboard's default): movement is never a refusal. The threshold is p97 x margin
+over every window, and each result carries a warning with how much of the clip looked like movement. With
+``noisy`` false the quiet-room rules apply (a busy clip is refused).
 """
 from __future__ import annotations
 
@@ -25,7 +29,7 @@ PAUSE_S = 3.0
 MAX_CLIPS = 10
 MAX_SECONDS = 120.0
 MAX_LEAD_S = 60.0
-REQUEST_KEYS = frozenset({"clips", "seconds", "margin", "lead_s"})
+REQUEST_KEYS = frozenset({"clips", "seconds", "margin", "lead_s", "noisy"})
 ACTIVE_STATES = frozenset({"countdown", "recording", "processing"})
 
 
@@ -57,11 +61,15 @@ def parse_request(body: Mapping) -> dict:
         margin = validate_margin(body.get("margin", DEFAULT_MARGIN))
     except (TypeError, ValueError) as e:
         raise RequestError(str(e)) from e
+    noisy = body.get("noisy", True)
+    if not isinstance(noisy, bool):
+        raise RequestError(f"noisy must be true or false, got {noisy!r}")
     return {
         "clips": int(clips),
         "seconds": _number(body, "seconds", 10, 1, MAX_SECONDS),
         "margin": margin,
         "lead_s": _number(body, "lead_s", 5, 0, MAX_LEAD_S),
+        "noisy": noisy,
     }
 
 
@@ -168,7 +176,7 @@ class CalibrationJob:
         self.state = "processing"
         try:
             report = calibrate_links_report(clips=self._clips, expected=self._expected,
-                                            margin=self.request["margin"])
+                                            margin=self.request["margin"], noisy=self.request["noisy"])
         except Exception as e:  # any failure keeps the old thresholds and says why
             self._fail(f"calibration failed: {e}")
             return
@@ -178,7 +186,9 @@ class CalibrationJob:
             applied[label] = cal.threshold
             self.result[label] = {"threshold": cal.threshold, "clean_s": cal.clean_s, "rejected_s": cal.rejected_s,
                                   "pkt_rate_hz": cal.pkt_rate_hz, "loss": cal.loss, "margin": cal.margin,
-                                  "applied": True}
+                                  "noisy": cal.noisy, "applied": True}
+            if cal.warning:  # noisy clip with movement in it: say how much
+                self.result[label]["warning"] = cal.warning
         for label, value in applied.items():
             self._apply(label, value)
         if applied:

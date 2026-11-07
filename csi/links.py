@@ -24,8 +24,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Mapping, Optional, Sequence
 
-from .detect import (DEBOUNCE_S, DEFAULT_MARGIN, MIN_CLEAN_FRACTION, Calibration, CalibrationError, MotionScorer,
-                     _Debouncer, calibrate_clips, classify, validate_margin)
+from .adaptive import AdaptiveDetector, Reading, RoomDecision
+from .detect import (DEBOUNCE_S, DEFAULT_MARGIN, MIN_CLEAN_FRACTION, MOTION, Calibration, CalibrationError,
+                     MotionScorer, _Debouncer, calibrate_clips, classify, validate_margin)
 from .health import LinkHealth
 from .parser import CSIPacket
 
@@ -33,6 +34,8 @@ NO_SIGNAL = "NO_SIGNAL"
 WARMUP = "WARMUP"
 UNCALIBRATED = "UNCALIBRATED"
 NO_SIGNAL_S = 2.0
+FIXED = "fixed"        # a link judged against a threshold
+AUTO = "auto"          # a link judged against its own adaptive baseline (csi/adaptive.py)
 
 
 @dataclass(frozen=True)
@@ -47,93 +50,173 @@ class LinkId:
 
 
 class _Link:
-    """Everything one link needs: scorer, debouncer, health, last RSSI and threshold."""
+    """Everything one link needs: scorer, debouncer, health, last RSSI, and either a fixed threshold or an
+    adaptive detector (``mode``: "fixed" or "auto"; see csi/adaptive.py). ``auto_allowed`` is the monitor's
+    mode: a link set back to no threshold returns to auto only when the monitor is in auto mode."""
 
     def __init__(self, link_id: LinkId, threshold: Optional[float], debounce_s: float,
-                 send_rate_hz: Optional[float]) -> None:
+                 send_rate_hz: Optional[float], auto: bool = False) -> None:
         self.id, self.threshold = link_id, threshold
+        self.auto_allowed = auto
+        self.mode = FIXED
+        self.detector: Optional[AdaptiveDetector] = None
         self.scorer = MotionScorer()
         self.debounce = _Debouncer(debounce_s)
         self.health = LinkHealth(send_rate_hz=send_rate_hz)
         self.score: Optional[float] = None
         self.rssi: Optional[int] = None
         self.last_host: Optional[float] = None
-        self.state = UNCALIBRATED if threshold is None else WARMUP
+        self.reading: Optional[Reading] = None  # the link's latest reading, for the room decision
+        self.level: Optional[float] = None
+        self.elevated = False
+        if threshold is None and auto:
+            self._enter_auto()
+            self.state = WARMUP
+        else:
+            self.state = UNCALIBRATED if threshold is None else WARMUP
+
+    def _enter_auto(self) -> None:
+        self.mode, self.threshold, self.detector = AUTO, None, AdaptiveDetector()
 
     def set_threshold(self, threshold: Optional[float]) -> None:
-        """Change the threshold at runtime; the state follows at once, from the last score."""
+        """Change the threshold at runtime. A number makes the link fixed; None returns it to auto when the
+        monitor is in auto mode (else to UNCALIBRATED). The state follows at once, from the last score."""
+        if threshold is None and self.auto_allowed:
+            self._enter_auto()
+            self.state = WARMUP
+            return
+        was_auto = self.mode == AUTO
+        self.mode, self.detector = FIXED, None
         self.threshold = threshold
         if threshold is None:
             self.state = UNCALIBRATED
-        elif self.state == UNCALIBRATED:
+        elif was_auto or self.state == UNCALIBRATED:
             self.state = WARMUP if self.score is None else classify(self.score, None, threshold)
 
     def push(self, pkt: CSIPacket) -> str:
         self.health.observe(pkt)
         self.rssi, self.last_host = pkt.rssi, pkt.host_ts
         self.score = self.scorer.push(pkt)
+        if self.mode == AUTO:
+            self.reading = self.detector.push(pkt.host_ts, self.score)
+            self.state = self.reading.state
+            self.level = self.reading.level
+            self.elevated = self.reading.elevated
+            return self.state
         if self.threshold is None:
             self.state = UNCALIBRATED
         elif self.score is None:
             self.state = WARMUP
         else:
             self.state = self.debounce.update(classify(self.score, None, self.threshold), pkt.host_ts)
+        self.level = None if self.score is None or not self.threshold else self.score / self.threshold
+        self.elevated = self.state == MOTION
+        self.reading = Reading(pkt.host_ts, self.state, self.score, elevated=self.elevated,
+                               warm=self.state not in (WARMUP, UNCALIBRATED))
         return self.state
+
+    @property
+    def shown_threshold(self) -> Optional[float]:
+        """The threshold this link is judged against: fixed, or the adaptive enter level in auto mode."""
+        if self.mode == AUTO:
+            return self.reading.enter if self.reading is not None else None
+        return self.threshold
 
 
 class LinkMonitor:
-    """Demultiplexes tagged packets into per-link detectors.
+    """Demultiplexes tagged packets into per-link detectors, and the links into one room decision.
 
-    ``thresholds`` maps link label to threshold. ``expected`` lists links to show from the start, so a
-    link that never transmits appears as NO_SIGNAL instead of being absent.
+    ``mode="fixed"`` (default): each link is judged against its threshold from ``thresholds``.
+    ``mode="auto"``: each link is judged by its own AdaptiveDetector (csi/adaptive.py); ``thresholds`` is
+    not used for state, and a link given a number by ``set_threshold`` becomes fixed.
+    ``expected`` lists links to show from the start, so a link that never transmits appears as NO_SIGNAL
+    instead of being absent. The room decision (``room_state``) is updated on every packet, at its time.
     """
 
-    def __init__(self, thresholds: Optional[Mapping[str, float]] = None, *,
+    def __init__(self, thresholds: Optional[Mapping[str, float]] = None, *, mode: str = FIXED,
                  expected: Iterable[LinkId] = (), debounce_s: float = DEBOUNCE_S,
                  send_rate_hz: Optional[float] = None, no_signal_s: float = NO_SIGNAL_S) -> None:
-        self._thresholds = dict(thresholds or {})
+        if mode not in (FIXED, AUTO):
+            raise ValueError(f"mode must be 'fixed' or 'auto', got {mode!r}")
+        self._mode = mode
+        self._thresholds = {} if mode == AUTO else dict(thresholds or {})
         self._debounce_s, self._send_rate_hz, self._no_signal_s = debounce_s, send_rate_hz, no_signal_s
         self._links: dict[LinkId, _Link] = {}
+        self._room = RoomDecision()
+        self.room_state = WARMUP
+        self.room_elevated: list[str] = []
         for link_id in expected:
             self._get(link_id)
+
+    @property
+    def mode(self) -> str:
+        return self._mode
 
     def _get(self, link_id: LinkId) -> _Link:
         if link_id not in self._links:
             self._links[link_id] = _Link(link_id, self._thresholds.get(link_id.label),
-                                         self._debounce_s, self._send_rate_hz)
+                                         self._debounce_s, self._send_rate_hz, auto=self._mode == AUTO)
         return self._links[link_id]
 
     @property
     def thresholds(self) -> dict[str, float]:
-        """Current threshold of every calibrated link, by label."""
-        return {lid.label: link.threshold for lid, link in self._links.items() if link.threshold is not None}
+        """Current fixed threshold of every link that has one, by label (auto links have none)."""
+        return {lid.label: link.threshold for lid, link in self._links.items() if link.mode == FIXED and link.threshold is not None}
 
-    def set_threshold(self, label: str, threshold: float) -> None:
-        """Set one link's threshold (by label) on the live monitor, for every link with that label."""
-        self._thresholds[label] = threshold
+    def set_threshold(self, label: str, threshold: Optional[float]) -> None:
+        """Set one link's threshold (by label) on the live monitor, for every link with that label.
+
+        A number makes those links fixed. None returns them to auto (in auto mode) or to UNCALIBRATED.
+        """
+        if threshold is None:
+            self._thresholds.pop(label, None)
+        else:
+            self._thresholds[label] = threshold
         for link_id, link in self._links.items():
             if link_id.label == label:
                 link.set_threshold(threshold)
 
     def push(self, receiver: str, pkt: CSIPacket) -> str:
         """Feed one packet from ``receiver``. Returns that link's state after the packet."""
-        return self._get(LinkId(receiver, pkt.mac)).push(pkt)
+        state = self._get(LinkId(receiver, pkt.mac)).push(pkt)
+        self._update_room(pkt.host_ts)
+        return state
+
+    def _update_room(self, now: float) -> None:
+        """Room decision at packet time ``now``, from the links heard within the NO_SIGNAL window."""
+        readings = {lid.label: link.reading for lid, link in self._links.items()
+                    if link.reading is not None and link.last_host is not None
+                    and now - link.last_host <= self._no_signal_s}
+        self.room_state = self._room.update(now, readings)
+        self.room_elevated = list(self._room.elevated)
 
     def snapshot(self, now: Optional[float] = None) -> list[dict]:
-        """One dict per link, sorted by label. ``now`` is host time (default: the wall clock)."""
+        """One dict per link, sorted by label. ``now`` is host time (default: the wall clock).
+
+        ``threshold`` is the fixed threshold, or in auto mode the adaptive enter level (None while warming up).
+        ``level`` is score relative to that threshold (>= 1 at or above it); ``elevated`` is True in MOTION.
+        """
         now = time.time() if now is None else now
         rows = []
         for link_id in sorted(self._links, key=lambda lid: lid.label):
             link = self._links[link_id]
             age = None if link.last_host is None else max(0.0, now - link.last_host)
             silent = age is None or age > self._no_signal_s
+            threshold = link.shown_threshold
+            if link.mode == AUTO:
+                level = link.level
+            else:
+                level = None if link.score is None or not threshold else link.score / threshold
             rows.append({
                 "id": link_id.label,
                 "receiver": link_id.receiver,
                 "mac": link_id.mac,
                 "state": NO_SIGNAL if silent else link.state,
+                "mode": link.mode,
                 "score": link.score,
-                "threshold": link.threshold,
+                "threshold": threshold,
+                "level": None if silent else level,
+                "elevated": (not silent) and link.elevated,
                 "pkt_rate": 0.0 if silent else link.health.packet_rate(),
                 "drops": link.health.drops,
                 "rssi": link.rssi,
@@ -166,7 +249,7 @@ def calibrate_links_report(tagged: Optional[Iterable[tuple[str, CSIPacket]]] = N
                            expected: Iterable[LinkId] = (), send_rate_hz: Optional[float] = None,
                            *, clips: Optional[Sequence[Iterable[tuple[str, CSIPacket]]]] = None,
                            margin: float = DEFAULT_MARGIN,
-                           min_clean_fraction: float = MIN_CLEAN_FRACTION) -> LinkCalibration:
+                           min_clean_fraction: float = MIN_CLEAN_FRACTION, noisy: bool = False) -> LinkCalibration:
     """Calibrate each link from its own empty-room packets (see ``calibrate_clips``).
 
     ``tagged`` is one clip; ``clips`` is several clips, each scored separately and pooled per link. A
@@ -193,7 +276,7 @@ def calibrate_links_report(tagged: Optional[Iterable[tuple[str, CSIPacket]]] = N
             skipped[label] = "no packets"
             continue
         try:
-            calibrations[label] = calibrate_clips(link_clips, send_rate_hz, margin, min_clean_fraction)
+            calibrations[label] = calibrate_clips(link_clips, send_rate_hz, margin, min_clean_fraction, noisy=noisy)
         except CalibrationError as e:
             skipped[label] = str(e)
     return LinkCalibration(calibrations, skipped, margin)
