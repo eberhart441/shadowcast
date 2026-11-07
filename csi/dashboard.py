@@ -5,8 +5,10 @@ returns one JSON-serialisable dict:
 
     room      {width_m, depth_m}
     nodes     [{name, role, chip, x, y}]              receivers then senders
-    links     [{id, receiver, sender, mac, state, score, threshold, normalised, pkt_rate, drops,
-                rssi, age_s, weight, contributes}]     sender is the node name, None if the MAC is unknown
+    links     [{id, receiver, sender, mac, state, score, threshold, normalised, baseline, evidence,
+                pkt_rate, drops, rssi, age_s, weight, contributes}]
+                baseline: the link's quiet baseline (None in warm-up); evidence: 0..1 above it.
+                sender is the node name, None if the MAC is unknown
     heatmap   {cols, rows, extents, cells, max, contributing}
                 cells: flat row-major floats in 0..1 (row 0 is the top edge, y = 0)
     status    {time_s, links_by_state, parameters}
@@ -61,7 +63,12 @@ class DashboardState:
             "rows": self._heat.rows,
             "falloff_m": self._heat.falloff_m,
             "sensitivity": self._heat.sensitivity,
-            "reference_ratio": self._heat.reference_ratio,
+            "agreement": self._heat.agreement,
+            "r_floor": self._heat.r_floor,
+            "r_full": self._heat.r_full,
+            "baseline_window_s": self._heat.baseline_window_s,
+            "baseline_percentile": self._heat.baseline_percentile,
+            "baseline_warmup_s": self._heat.baseline_warmup_s,
             "rise_tau_s": self._heat.rise_tau,
             "decay_tau_s": self._heat.decay_tau,
             "step_s": self._heat.step,
@@ -97,6 +104,8 @@ class DashboardState:
             "drops": row["drops"],
             "rssi": row["rssi"],
             "age_s": _round(row["age_s"]),
+            "baseline": _round(self._heat.baselines.get(row["id"])),
+            "evidence": _round(self._heat.evidence.get(row["id"], 0.0)),
             "weight": self._room.link_weights.get(row["id"], 1.0),
             "contributes": row["id"] in self._heat.contributing,
         }
