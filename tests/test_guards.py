@@ -26,3 +26,14 @@ def test_no_test_file_refers_to_the_live_rig_config():
         if needle in path.read_text(encoding="utf-8", errors="ignore"):
             offenders.append(str(path.relative_to(ROOT)))
     assert not offenders, f"these files refer to {needle}; use tests/fixtures/room_rig4.json instead: {offenders}"
+
+
+def test_check_script_reports_usage_and_rejects_unknown_flags():
+    # scripts/check.sh runs under macOS bash 3.2 (set -u), where an empty array expansion once crashed it.
+    import subprocess
+
+    script = ROOT / "scripts" / "check.sh"
+    help_run = subprocess.run(["bash", str(script), "--help"], capture_output=True, text=True)
+    assert help_run.returncode == 0 and "check.sh" in help_run.stdout
+    bad_run = subprocess.run(["bash", str(script), "--nope"], capture_output=True, text=True)
+    assert bad_run.returncode == 2 and "usage" in bad_run.stderr

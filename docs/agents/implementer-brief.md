@@ -30,6 +30,19 @@ Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
 
 Merge `csi-sensing` into the work branch before reporting.
 
+## Landing (merger)
+
+Done means all of:
+
+1. `csi-sensing` is merged into the work branch and `scripts/check.sh --full` passes there.
+2. `csi-sensing` is fast-forwarded onto the work branch: `git -C <main checkout> merge --ff-only <work branch>`. This updates the branch without a `git switch`.
+3. The ticket's issue is closed with a comment naming the branch and the merge commit. Issues do not auto-close, because GitHub only does that for the default branch (`main`).
+4. The work branch and its worktree are removed once they are merged and clean.
+
+## Handoff
+
+Leave unfinished work findable: a comment on the ticket's issue saying what is left and which branch holds it. A "WIP" commit message alone is not a handoff.
+
 ## Report
 
 Send one final report: branch, what changed, test results (counts), and what you could not verify. Send it when all background work has ended.
