@@ -42,6 +42,8 @@
 
 #if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(6, 0, 0)
 #define ESP_IF_WIFI_STA ESP_MAC_WIFI_STA
+#define WIFI_BW_HT20 WIFI_BW20   /* enums renamed in IDF 6.0 */
+#define WIFI_BW_HT40 WIFI_BW40
 #endif
 
 /* Unique per sender; receivers accept 1a:00:00:00:00:xx. Set at build time: idf.py -DSENDER_ID=0x01 (see CMakeLists.txt). */
