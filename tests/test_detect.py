@@ -6,6 +6,11 @@ from csi.parser import CSIParser, parse_stream
 from csi.simulate import Segment, simulate_stream
 
 THRESHOLD = 2.0  # manual threshold: between simulated empty/still (~0.2) and motion (~7+)
+# These tests check that an empty room, a still person and walking separate once calibrated on a different
+# empty clip. They pin a 1.5 margin on purpose: at the default 1.0 the simulator's held-out empty clips and
+# still person cross a single-clip p99 (measured in tests/test_calibration_margin.py), which is not what
+# they test.
+TEST_MARGIN = 1.5
 
 
 def final_state(state: str, seconds: float = 10, threshold: float = THRESHOLD, seed: int = 1) -> str:
@@ -28,7 +33,7 @@ def empty_stream(seconds: float = 20, **kwargs):
 
 
 def test_calibrated_threshold_separates_empty_and_motion(tmp_path):
-    cal = calibrate(empty_stream())
+    cal = calibrate(empty_stream(), margin=TEST_MARGIN)
     cal.save(tmp_path / "t.json")
     threshold = load_threshold(tmp_path / "t.json")
     assert threshold == cal.threshold
@@ -69,7 +74,7 @@ def test_malformed_lines_counted_and_do_not_stop_detection():
 # --- calibrated threshold on the stream seam: breathing must not read as motion ---
 
 def calibrated_threshold() -> float:
-    return calibrate(empty_stream()).threshold
+    return calibrate(empty_stream(), margin=TEST_MARGIN).threshold
 
 
 def still_stream(seconds: float = 30, seed: int = 6):

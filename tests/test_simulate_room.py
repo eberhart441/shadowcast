@@ -5,7 +5,7 @@ import time
 import pytest
 
 from csi.detect import EMPTY, MOTION
-from csi.links import NO_SIGNAL, LinkId, LinkMonitor, calibrate_links
+from csi.links import NO_SIGNAL, LinkId, LinkMonitor, calibrate_links_report
 from csi.room import DEFAULT_ROOM_PATH, Walk, load_room, stand_at_centre, stand_near_wall
 from csi.simulate import simulate_room, simulate_room_links
 
@@ -38,7 +38,8 @@ def run(tagged_packets, thresholds):
 
 def calibrated(config=None):
     """Thresholds per link from an empty room, the calibration the monitor would be given."""
-    return calibrate_links(tagged(person=None, duration_s=25, seed=10, room=config))
+    # margin 1.5 (not the default 1.0): at 1.0 the held-out empty room crosses the single-clip p99 (see test_calibration_margin.py)
+    return calibrate_links_report(tagged(person=None, duration_s=25, seed=10, room=config), margin=1.5).thresholds
 
 
 def motion_fraction(states, label, start_s=1.5, end_s=float("inf")):

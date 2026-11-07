@@ -24,7 +24,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Mapping, Optional, Sequence
 
-from .detect import DEBOUNCE_S, Calibration, CalibrationError, MotionScorer, _Debouncer, calibrate_clips, classify
+from .detect import (DEBOUNCE_S, DEFAULT_MARGIN, Calibration, CalibrationError, MotionScorer, _Debouncer,
+                     calibrate_clips, classify, validate_margin)
 from .health import LinkHealth
 from .parser import CSIPacket
 
@@ -126,6 +127,7 @@ class LinkMonitor:
 class LinkCalibration:
     calibrations: dict[str, Calibration]   # calibrated links: label -> full calibration report
     skipped: dict[str, str]                # link label -> why it was refused
+    margin: float = DEFAULT_MARGIN         # the margin every link was calibrated with
 
     @property
     def thresholds(self) -> dict[str, float]:
@@ -142,13 +144,16 @@ class LinkCalibration:
 
 def calibrate_links_report(tagged: Optional[Iterable[tuple[str, CSIPacket]]] = None,
                            expected: Iterable[LinkId] = (), send_rate_hz: Optional[float] = None,
-                           *, clips: Optional[Sequence[Iterable[tuple[str, CSIPacket]]]] = None) -> LinkCalibration:
+                           *, clips: Optional[Sequence[Iterable[tuple[str, CSIPacket]]]] = None,
+                           margin: float = DEFAULT_MARGIN) -> LinkCalibration:
     """Calibrate each link from its own empty-room packets (see ``calibrate_clips``).
 
     ``tagged`` is one clip; ``clips`` is several clips, each scored separately and pooled per link. A
     link with too few packets, too sparse, too lossy or too contaminated is skipped and the reason is
-    kept. ``expected`` links with no packets at all are skipped as "no packets".
+    kept. ``expected`` links with no packets at all are skipped as "no packets". ``margin`` applies to
+    every link; a non-positive margin raises ValueError before any link is looked at.
     """
+    margin = validate_margin(margin)
     if clips is None:
         clips = [tagged if tagged is not None else []]
     expected = list(expected)
@@ -167,10 +172,10 @@ def calibrate_links_report(tagged: Optional[Iterable[tuple[str, CSIPacket]]] = N
             skipped[label] = "no packets"
             continue
         try:
-            calibrations[label] = calibrate_clips(link_clips, send_rate_hz)
+            calibrations[label] = calibrate_clips(link_clips, send_rate_hz, margin)
         except CalibrationError as e:
             skipped[label] = str(e)
-    return LinkCalibration(calibrations, skipped)
+    return LinkCalibration(calibrations, skipped, margin)
 
 
 def calibrate_links(tagged: Iterable[tuple[str, CSIPacket]]) -> dict[str, float]:

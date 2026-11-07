@@ -38,6 +38,7 @@ MOTION = "MOTION"
 STILL_PRESENT = "STILL_PRESENT"
 
 SIM_THRESHOLD = 1.0           # simulator default: simulated empty scores ~0.2, motion ~3-9
+DEFAULT_MARGIN = 1.0          # calibrated threshold = margin x p99 of empty windows; 1.0 = the p99 itself
 WINDOW_S = 1.0
 MIN_WINDOW_PACKETS = 5
 DEBOUNCE_S = 0.5
@@ -54,6 +55,13 @@ class Reading:
     enough_data: bool = False  # False until a full breathing window exists
 
 
+def validate_margin(margin: float) -> float:
+    """Return ``margin`` if it is a usable calibration margin (a finite number above zero), else raise."""
+    if not margin > 0 or margin == float("inf"):  # also rejects NaN
+        raise ValueError(f"calibration margin must be a positive number, got {margin!r}")
+    return float(margin)
+
+
 class CalibrationError(ValueError):
     """Calibration input was unusable (too short, too sparse, too lossy or too contaminated)."""
 
@@ -68,6 +76,7 @@ class Calibration:
     rejected_s: float = 0.0   # seconds rejected as movement
     pkt_rate_hz: float = 0.0  # effective received packet rate
     clips: int = 1
+    margin: float = DEFAULT_MARGIN  # threshold = margin * p99 of the kept windows
 
     def save(self, path: str | Path) -> None:
         Path(path).write_text(json.dumps(asdict(self), indent=2) + "\n")
@@ -248,7 +257,6 @@ CHUNK_S = 1.0                     # contamination is judged per 1 s chunk (see c
 REJECT_RATIO = 3.0                # chunk median > 3x the quiet baseline -> someone is moving
 BURST_RATIO = 2.5                 # chunk p90 > 2.5x its own median -> a passer-by inside the chunk
 THRESHOLD_PERCENTILE = 99.0
-THRESHOLD_MARGIN = 1.5  # threshold = percentile * margin
 
 
 def packet_loss(device_ts_us: list[int], send_rate_hz: Optional[float] = None) -> float:
@@ -263,12 +271,13 @@ def packet_loss(device_ts_us: list[int], send_rate_hz: Optional[float] = None) -
 
 
 def calibrate(stream: Stream, parser: Optional[CSIParser] = None,
-              send_rate_hz: Optional[float] = None) -> Calibration:
+              send_rate_hz: Optional[float] = None, margin: float = DEFAULT_MARGIN) -> Calibration:
     """Learn the motion threshold from an empty-room stream.
 
-    Raises CalibrationError if the input is too short, too sparse, too lossy or too contaminated.
+    Raises CalibrationError if the input is too short, too sparse, too lossy or too contaminated, and
+    ValueError if ``margin`` is not positive.
     """
-    return calibrate_packets(list(parse_stream(stream, parser)), send_rate_hz)
+    return calibrate_packets(list(parse_stream(stream, parser)), send_rate_hz, margin)
 
 
 def _since_last_reboot(packets: list[CSIPacket]) -> tuple[list[CSIPacket], list[int]]:
@@ -286,21 +295,25 @@ def _since_last_reboot(packets: list[CSIPacket]) -> tuple[list[CSIPacket], list[
     return packets[start:], times[start:]
 
 
-def calibrate_packets(packets: list[CSIPacket], send_rate_hz: Optional[float] = None) -> Calibration:
+def calibrate_packets(packets: list[CSIPacket], send_rate_hz: Optional[float] = None,
+                      margin: float = DEFAULT_MARGIN) -> Calibration:
     """``calibrate`` for packets already parsed (e.g. loaded from a recording)."""
-    return calibrate_clips([packets], send_rate_hz)
+    return calibrate_clips([packets], send_rate_hz, margin)
 
 
-def calibrate_clips(clips: Sequence[Sequence[CSIPacket]], send_rate_hz: Optional[float] = None) -> Calibration:
+def calibrate_clips(clips: Sequence[Sequence[CSIPacket]], send_rate_hz: Optional[float] = None,
+                    margin: float = DEFAULT_MARGIN) -> Calibration:
     """Learn one threshold from one or more empty-room clips.
 
     Each clip is scored on its own (fresh MotionScorer, so no window spans two clips). Scores are
     judged in 1 s chunks: a chunk is contaminated when its median is more than REJECT_RATIO times
     the quiet baseline (the median of the lowest-half chunk medians, pooled over all clips), or when
     its p90 is more than BURST_RATIO times its own median (a passer-by in part of the chunk). The
-    threshold is THRESHOLD_MARGIN x the THRESHOLD_PERCENTILE of the windows in the kept chunks only.
-    Raises CalibrationError if fewer than MIN_CLEAN_S seconds are kept.
+    threshold is ``margin`` x the THRESHOLD_PERCENTILE of the windows in the kept chunks only.
+    Raises CalibrationError if fewer than MIN_CLEAN_S seconds are kept, and ValueError if ``margin``
+    is not positive.
     """
+    margin = validate_margin(margin)
     clips = [list(c) for c in clips]
     if not clips:
         raise CalibrationError("no calibration input")
@@ -361,9 +374,9 @@ def calibrate_clips(clips: Sequence[Sequence[CSIPacket]], send_rate_hz: Optional
             f"(rejected {rejected_s:.1f} s of {total_s:.1f} s as contaminated by movement). "
             "Record the empty room again, with nobody walking through.")
     pooled = np.concatenate(kept)
-    threshold = float(np.percentile(pooled, THRESHOLD_PERCENTILE)) * THRESHOLD_MARGIN
+    threshold = float(np.percentile(pooled, THRESHOLD_PERCENTILE)) * margin
     loss = max(0.0, 1.0 - packets_n / expected_n)
     return Calibration(threshold=threshold,
                        rate_hz=float(send_rate_hz) if send_rate_hz is not None else float(np.median(rates)),
                        duration_s=total_s, loss=loss, clean_s=clean_s, rejected_s=rejected_s,
-                       pkt_rate_hz=packets_n / total_s, clips=len(clips))
+                       pkt_rate_hz=packets_n / total_s, clips=len(clips), margin=margin)

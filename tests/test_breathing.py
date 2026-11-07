@@ -66,7 +66,8 @@ def test_motion_after_still_overrides_breathing():
 
 def test_still_reaches_still_present_at_18bpm_with_threshold_calibrated_on_empty():
     empty = simulate_stream(scenario=[Segment("empty", 20)], seed=5)
-    threshold = calibrate(empty).threshold
+    # margin 1.5, not the default 1.0: at 1.0 the simulated still person reads MOTION (see test_calibration_margin.py)
+    threshold = calibrate(empty, margin=1.5).threshold
     last = list(detect(simulate_stream(scenario=[Segment("still", 30)], seed=6), threshold, breathing=True))[-1]
     assert last.state == STILL_PRESENT
     assert last.bpm == pytest.approx(BPM_TRUE, abs=BPM_TOL)

@@ -24,7 +24,7 @@ from typing import Iterable, Mapping, Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from csi.common import SIM_RATE_HZ, simulated_rate_hz  # noqa: E402
+from csi.common import SIM_RATE_HZ, add_margin_arg, simulated_rate_hz  # noqa: E402
 from csi.detect import SIM_THRESHOLD  # noqa: E402
 from csi.links import (NO_SIGNAL, UNCALIBRATED, WARMUP, LinkId, LinkMonitor, calibrate_links_report,  # noqa: E402
                        load_thresholds, save_thresholds)
@@ -64,6 +64,7 @@ def build_parser() -> argparse.ArgumentParser:
                    help="with --calibrate: record N clips of SECONDS each, with a 3 s pause between them, "
                         "scored separately and pooled (default 1). Use it when one empty clip is too short "
                         "or someone walked through it.")
+    add_margin_arg(c, "with --calibrate, each link's threshold")
     c.add_argument("--out", type=Path, default=Path("links.json"), help="where --calibrate writes the file")
     ap.add_argument("--duration", type=float, help="stop after this many seconds (default: until Ctrl+C)")
     ap.add_argument("--every", type=float, default=0.5, help="seconds between redraws (default 0.5 = 2 Hz)")
@@ -172,19 +173,21 @@ def run_calibration(args: argparse.Namespace) -> int:
     n = max(1, args.clips)
     total = n * args.calibrate + (n - 1) * CLIP_PAUSE_S
     ms = MultiSource(open_sources(args, calibrating=True, seconds=total))
-    print(f"calibrating: {n} clip(s) of {args.calibrate:.0f}s, keep the room empty...", flush=True)
+    print(f"calibrating: {n} clip(s) of {args.calibrate:.0f}s, keep the room empty... "
+          f"margin {args.margin:.2f} (threshold = margin x p99)", flush=True)
     clips = record_clips(ms, args.calibrate, n)
-    report = calibrate_links_report(clips=clips, expected=expected, send_rate_hz=calibration_rate(args))
+    report = calibrate_links_report(clips=clips, expected=expected, send_rate_hz=calibration_rate(args),
+                                    margin=args.margin)
     for label, c in sorted(report.calibrations.items()):
-        print(f"  {label}  threshold {c.threshold:.2f}  clean {c.clean_s:.1f} s, rejected {c.rejected_s:.1f} s "
-              f"(movement), {c.pkt_rate_hz:.1f} pkt/s, loss {c.loss:.0%}")
+        print(f"  {label}  threshold {c.threshold:.2f}  margin {c.margin:.2f}  clean {c.clean_s:.1f} s, "
+              f"rejected {c.rejected_s:.1f} s (movement), {c.pkt_rate_hz:.1f} pkt/s, loss {c.loss:.0%}")
     for label, why in sorted(report.skipped.items()):
         print(f"  {label}  NOT CALIBRATED: {why}")
     if not report.calibrations:
         print("calibration failed: no link has enough data, nothing written", file=sys.stderr)
         return 1
     save_thresholds(args.out, report.thresholds)
-    print(f"wrote {len(report.calibrations)} link threshold(s) -> {args.out}")
+    print(f"wrote {len(report.calibrations)} link threshold(s) at margin {report.margin:.2f} -> {args.out}")
     if report.skipped:
         print(f"{len(report.skipped)} link(s) have no threshold and will show UNCALIBRATED; "
               "record a longer empty room to calibrate them.", file=sys.stderr)
