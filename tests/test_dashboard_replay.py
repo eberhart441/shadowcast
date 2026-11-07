@@ -14,7 +14,7 @@ from csi.room import Walk
 from csi.server import DashboardServer
 from tests.test_evaluate import record_plan
 from tests.test_dashboard_server import (LABELS, RIGHT, ROOM, calibrated_thresholds, get_json, grid,
-                                         links_by_id, read_events, room_streams)
+                                         links_by_id, quiet_then_streams, read_events, room_streams)
 
 
 @pytest.fixture
@@ -34,7 +34,7 @@ def run_server():
 
 def walk_left_to_right(seconds: float = 3.0):
     walk = Walk((ROOM.wall_point("left"), ROOM.wall_point("right")), speed_mps=0.5)
-    return room_streams(walk, duration_s=seconds, seed=4)
+    return quiet_then_streams(walk, duration_s=seconds, seed=4)  # empty lead-in: quiet baseline first
 
 
 @pytest.fixture(scope="module")
@@ -197,7 +197,9 @@ def test_session_replay_can_take_thresholds_given_instead_of_calibrating(walking
     events = read_events(server)
 
     assert {links_by_id(e)[RIGHT]["state"] for e in events} <= {"WARMUP", "EMPTY"}
-    assert all(RIGHT not in e["heatmap"]["contributing"] for e in events)
+    assert all(links_by_id(e)[RIGHT]["threshold"] == 1e9 for e in events)   # the given threshold is reported
+    # heat no longer depends on crossing the threshold: the walk still lights the link
+    assert any(RIGHT in e["heatmap"]["contributing"] for e in events)
 
 
 def test_session_replay_log_header_records_that_thresholds_were_calibrated_from_the_session(
