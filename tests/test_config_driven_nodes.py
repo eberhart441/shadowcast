@@ -130,7 +130,7 @@ def test_fixture_has_three_receivers_and_two_senders_at_the_stated_positions():
     assert {link.label for link in (LinkId(rx.name, tx.mac) for rx, tx in ROOM5.links())} == LABELS5
 
 
-def test_committed_config_keeps_rx3_defined_but_disabled_so_the_rig_stays_four_nodes():
+def test_frozen_rig_fixture_keeps_rx3_defined_but_disabled_so_the_default_room_stays_four_nodes():
     config = json.loads(DEFAULT_ROOM_PATH.read_text())
     assert config["nodes"]["rx3"] == {"role": "receiver", "chip": "ESP32-S3", "x": 1.385, "y": 0.0,
                                       "port_hint": "", "enabled": False}
@@ -275,3 +275,10 @@ def test_committed_four_node_payload_is_identical_with_the_rx3_entry_present_or_
     assert {n["name"] for n in payloads[0]["nodes"]} == {"rx1", "rx2", "tx0", "tx1"}
     assert len(payloads[0]["links"]) == 4
 
+
+
+def test_the_real_rig_config_loads_and_has_receivers_and_senders():
+    real = Path(__file__).resolve().parent.parent / "config" / "room.json"
+    room = load_room(real)
+    assert len(room.receivers) >= 2 and len(room.senders) >= 2
+    assert {rx.name for rx, _ in room.links()} == {rx.name for rx in room.receivers}

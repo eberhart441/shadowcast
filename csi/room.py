@@ -22,13 +22,16 @@ Public API:
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Mapping, Optional, Sequence, Union
 
 import numpy as np
 
-DEFAULT_ROOM_PATH = Path(__file__).resolve().parent.parent / "config" / "room.json"
+# CSI_ROOM overrides the room config (tests pin it to a frozen layout so reconfiguring the real rig
+# in config/room.json never changes test outcomes).
+DEFAULT_ROOM_PATH = Path(os.environ.get("CSI_ROOM") or Path(__file__).resolve().parent.parent / "config" / "room.json")
 FALLOFF_SIGMA_M = 0.25  # response is exp(-1/2) (about 60 %) at this distance from the segment
 WALL_INSET_M = 0.25     # how far inside the wall a person stands for "near a wall"
 WALLS = ("left", "right", "top", "bottom")
