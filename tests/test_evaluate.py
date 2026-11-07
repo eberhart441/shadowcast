@@ -51,6 +51,20 @@ def test_still_labels_are_reported_on_separate_rows(tmp_path):
     assert cm.loc["still_sitting_or_lying"].sum() > 0
 
 
+def test_still_rows_are_still_present_not_motion_on_a_simulated_session(tmp_path):
+    folder = record_plan(tmp_path / "room", [
+        ("empty", 20), ("still_standing", 40), ("empty", 20), ("still_sitting_or_lying", 40)])
+    result = evaluate_sessions([folder]).sessions[0]
+    recordings = load_session(folder).recordings
+    for label, rec in [("still_standing", recordings[1]), ("still_sitting_or_lying", recordings[3])]:
+        assert rec.label == label
+        readings = list(detect_packets(rec.packets(), result.calibration.threshold))
+        with_breathing = sum(r.enough_data for r in readings)
+        cm = result.confusion
+        assert cm.loc[label, "MOTION"] == 0
+        assert cm.loc[label, "STILL_PRESENT"] >= 0.9 * with_breathing > 0
+
+
 def test_calibration_recording_is_excluded_from_scoring(tmp_path):
     folder = record_plan(tmp_path / "room", [
         ("empty", 20), ("walking", 10), ("empty", 20), ("walking", 10)])

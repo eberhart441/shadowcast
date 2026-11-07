@@ -1,6 +1,6 @@
 import pytest
 
-from csi.detect import EMPTY, MOTION, STILL_PRESENT, detect
+from csi.detect import EMPTY, MOTION, STILL_PRESENT, calibrate, detect
 from csi.simulate import Segment, simulate_stream
 
 THRESHOLD = 2.0  # same manual threshold as test_detect.py
@@ -62,6 +62,14 @@ def test_breathing_reported_after_motion_is_not_contaminated_by_it():
 def test_motion_after_still_overrides_breathing():
     r = readings([Segment("still", 30), Segment("motion", 15)], seed=4)[-1]
     assert r.state == MOTION
+
+
+def test_still_reaches_still_present_at_18bpm_with_threshold_calibrated_on_empty():
+    empty = simulate_stream(scenario=[Segment("empty", 20)], seed=5)
+    threshold = calibrate(empty).threshold
+    last = list(detect(simulate_stream(scenario=[Segment("still", 30)], seed=6), threshold))[-1]
+    assert last.state == STILL_PRESENT
+    assert last.bpm == pytest.approx(BPM_TRUE, abs=BPM_TOL)
 
 
 def test_still_state_stable_without_flicker():

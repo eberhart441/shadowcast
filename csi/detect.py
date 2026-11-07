@@ -1,8 +1,11 @@
 """Plain signal-processing detectors on the (host_ts, line) stream.
 
-Motion score: variance over time within a 1 s window (windowed by device
-timestamps, so drops do not stretch it), averaged across subcarriers. Motion is
-declared above a threshold, with a short debounce so the state does not flicker.
+Motion score: per subcarrier, the slow component (below about 1 Hz, which covers
+breathing) is removed with a cascade of device-time high-pass stages; the score is
+the variance of that residual over a 1 s window (windowed by device timestamps, so
+drops do not stretch it), averaged across subcarriers. So chest movement does not
+read as motion, and motion means gross movement. Motion is declared above a
+threshold, with a short debounce so the state does not flicker.
 
 Public API (reused by the viewer and evaluator):
     MotionScorer      push(packet) -> score | None, one packet at a time
@@ -76,21 +79,53 @@ def estimate_rate_hz(device_ts_us: Iterable[int]) -> float:
     return 1e6 / float(np.median(diffs))
 
 
-class MotionScorer:
-    """Rolling motion score over the last ``window_s`` of device time."""
+HIGHPASS_TAU_S = 0.16   # time constant of each slow-component stage (device time)
+HIGHPASS_STAGES = 3     # cascade: breathing is attenuated ~21 dB at 0.5 Hz, ~32 dB at 0.3 Hz
 
-    def __init__(self, window_s: float = WINDOW_S) -> None:
+
+class MotionScorer:
+    """Rolling motion score over the last ``window_s`` of device time.
+
+    Each packet's amplitude vector is high-passed per subcarrier first: subtract a
+    running mean (exponential, time constant ``tau_s`` in device time), and repeat
+    ``stages`` times. The slow component (breathing and slow drift) is removed, so
+    only faster variation, i.e. gross movement, contributes to the variance.
+    """
+
+    def __init__(self, window_s: float = WINDOW_S, tau_s: float = HIGHPASS_TAU_S,
+                 stages: int = HIGHPASS_STAGES) -> None:
         self._window_us = window_s * 1e6
+        self._tau_s = tau_s
+        self._stages = stages
         self._buf: deque[tuple[int, np.ndarray]] = deque()
+        self._slow: Optional[np.ndarray] = None  # (stages, subcarriers) running means
+        self._last_ts = 0
+
+    def _highpass(self, pkt: CSIPacket) -> np.ndarray:
+        x = pkt.amplitude.astype(np.float64)
+        if self._slow is None:
+            # Start the first mean at the first sample and the rest at zero, since
+            # each later stage filters a residual that begins at zero. No transient.
+            self._slow = np.zeros((self._stages, x.size))
+            self._slow[0] = x
+            self._last_ts = pkt.device_ts
+            return np.zeros_like(x)
+        dt_s = max(0, pkt.device_ts - self._last_ts) / 1e6  # gaps (drops) advance the mean
+        self._last_ts = pkt.device_ts
+        alpha = 1.0 - np.exp(-dt_s / self._tau_s)
+        for k in range(self._stages):
+            self._slow[k] += alpha * (x - self._slow[k])
+            x = x - self._slow[k]
+        return x
 
     def push(self, pkt: CSIPacket) -> Optional[float]:
-        self._buf.append((pkt.device_ts, pkt.amplitude))
+        self._buf.append((pkt.device_ts, self._highpass(pkt)))
         while pkt.device_ts - self._buf[0][0] > self._window_us:
             self._buf.popleft()
         full = pkt.device_ts - self._buf[0][0] >= 0.9 * self._window_us
         if len(self._buf) < MIN_WINDOW_PACKETS or not full:
             return None
-        window = np.stack([a for _, a in self._buf])
+        window = np.stack([r for _, r in self._buf])
         return float(window.var(axis=0).mean())
 
 
