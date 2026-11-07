@@ -29,6 +29,8 @@ LABELS = ("empty", "walking", "still_standing", "still_sitting_or_lying")
 META_NAME = "session.json"
 BASE_COLUMNS = ("host_ts", "device_ts", "rssi", "channel")
 _NAME_RE = re.compile(r"^(?P<label>[a-z_]+)_\d{8}T\d{6}Z(-\d+)?$")
+# Session metadata that an earlier run wrote and a resumed run keeps (see _Session._resume_existing).
+_KEPT_FROM_EARLIER_RUN = ("date", "channel", "subcarrier_layout", "send_rate_hz", "files", "drops_estimated")
 
 
 def validate_label(label: str) -> str:
@@ -87,9 +89,10 @@ class _LabelFile:
 class _Session:
     """Owns the session folder: current file, metadata, flush cadence."""
 
-    def __init__(self, folder: Path, send_rate_hz: float, notes: str, countdown_s: float,
-                 flush_interval_s: float) -> None:
+    def __init__(self, folder: Path, send_rate_hz: Optional[float], notes: str, countdown_s: float,
+                 flush_interval_s: float, rate_now: Callable[[], Optional[float]]) -> None:
         self.folder, self.flush_interval_s = folder, flush_interval_s
+        self._rate_now = rate_now  # configured or estimated send rate, as of now
         self.meta: dict = {"session": folder.name, "placement_notes": notes,
                            "send_rate_hz": send_rate_hz, "countdown_s": countdown_s,
                            "files": []}
@@ -98,7 +101,12 @@ class _Session:
         self._resume_existing(notes)
 
     def _resume_existing(self, notes: str) -> None:
-        """Re-opening a session folder appends to its metadata instead of replacing it."""
+        """Re-opening a session folder appends to it instead of replacing it.
+
+        Kept from the earlier run: the files, accumulated drops, the session date, channel and
+        subcarrier layout (every file must share one layout), and the session send rate. The new
+        run's session/countdown fields apply, and per-file settings are recorded in ``files``.
+        """
         path = self.folder / META_NAME
         if not path.exists():
             return
@@ -106,18 +114,31 @@ class _Session:
         prev_notes = prev.get("placement_notes", "")
         if notes and notes not in prev_notes:
             prev["placement_notes"] = f"{prev_notes}; {notes}" if prev_notes else notes
-        self.meta.update(prev)
+        for key in _KEPT_FROM_EARLIER_RUN:
+            if prev.get(key) is not None:
+                self.meta[key] = prev[key]
+        self.meta["placement_notes"] = prev.get("placement_notes", self.meta["placement_notes"])
 
     def open_file(self, label: str, pkt: CSIPacket, kept: Optional[list[int]]) -> None:
         self.close_file()
+        n = len(pkt.amplitude)
+        layout = self.meta.get("subcarrier_layout")
+        if layout is not None and layout["n_subcarriers"] != n:
+            raise ValueError(
+                f"session {self.folder.name!r} was recorded with {layout['n_subcarriers']} subcarriers "
+                f"per packet but this run produced {n}; the widths cannot be loaded together. "
+                f"Record into a new session folder.")
         self.folder.mkdir(parents=True, exist_ok=True)
-        if "date" not in self.meta:
+        if layout is None:
             self.meta.update(date=_utc(pkt.host_ts).isoformat(), channel=pkt.channel,
-                             subcarrier_layout={"n_subcarriers": len(pkt.amplitude),
-                                                "kept_subcarriers": kept,
-                                                "amplitude_columns": amp_columns(len(pkt.amplitude))})
-        self.current = _LabelFile(self.folder, label, pkt.host_ts, len(pkt.amplitude))
-        self.meta["files"].append({"name": self.current.path.name, "label": label, "packets": 0})
+                             subcarrier_layout={"n_subcarriers": n, "kept_subcarriers": kept,
+                                                "amplitude_columns": amp_columns(n)})
+        self.current = _LabelFile(self.folder, label, pkt.host_ts, n)
+        self.meta["files"].append({
+            "name": self.current.path.name, "label": label, "packets": 0,
+            "channel": pkt.channel, "send_rate_hz": self._rate_now(),
+            "subcarrier_layout": {"n_subcarriers": n, "kept_subcarriers": kept},
+        })
         self._last_flush = pkt.host_ts
         self.write_meta()
 
@@ -131,7 +152,9 @@ class _Session:
     def close_file(self) -> None:
         if self.current is not None:
             self.current.close()
-            self.meta["files"][-1]["packets"] = self.current.packets
+            entry = self.meta["files"][-1]
+            entry["packets"] = self.current.packets
+            entry["send_rate_hz"] = self._rate_now()
             self.current = None
 
     def write_meta(self) -> None:
@@ -141,6 +164,8 @@ class _Session:
     def finish(self, drops: int) -> None:
         self.close_file()
         self.meta["drops_estimated"] = self.meta.get("drops_estimated", 0) + drops
+        if self.meta.get("send_rate_hz") is None:
+            self.meta["send_rate_hz"] = self._rate_now()  # estimated from device timestamps
         self.write_meta()
 
 
@@ -174,7 +199,7 @@ def record_session(
     session_dir: Path | str,
     label: str,
     *,
-    send_rate_hz: float = 100.0,
+    send_rate_hz: Optional[float] = None,
     countdown_s: float = 3.0,
     placement_notes: str = "",
     duration_s: Optional[float] = None,
@@ -185,6 +210,10 @@ def record_session(
 ) -> RecordingReport:
     """Record a (host_ts, line) stream into ``session_dir``.
 
+    ``send_rate_hz`` is the sender's nominal rate, used for drop estimation. None (the
+    default, right for real hardware) estimates it from device timestamps; the rate used
+    is written to session.json and to each file's entry.
+
     ``poll_label`` is called once per packet and returns a new label to switch
     to (closing the current file and starting a countdown) or None. Time (the
     countdown, ``duration_s``, flushing) is measured on stream host timestamps.
@@ -193,7 +222,8 @@ def record_session(
     label = validate_label(label)
     parser = parser or CSIParser()
     health = LinkHealth(send_rate_hz=send_rate_hz)
-    session = _Session(Path(session_dir), send_rate_hz, placement_notes, countdown_s, flush_interval_s)
+    session = _Session(Path(session_dir), send_rate_hz, placement_notes, countdown_s,
+                       flush_interval_s, rate_now=health.rate_hz)
     countdown = _Countdown(countdown_s, on_countdown)
     report = RecordingReport()
     first_ts: Optional[float] = None
@@ -277,15 +307,27 @@ def label_from_filename(path: Path | str) -> str:
     return validate_label(m["label"])
 
 
+def is_recording_name(path: Path | str) -> bool:
+    """True if ``path`` is named ``<label>_<YYYYmmddTHHMMSSZ>.csv`` with a known label."""
+    try:
+        label_from_filename(path)
+    except ValueError:
+        return False
+    return Path(path).suffix == ".csv"
+
+
 def load_recording(path: Path | str) -> Recording:
     path = Path(path)
     return Recording(path=path, label=label_from_filename(path), table=pd.read_csv(path))
 
 
 def load_session(folder: Path | str) -> Session:
-    """Load session metadata and every recording (ordered by start time)."""
+    """Load session metadata and every recording (ordered by start time).
+
+    CSV files whose names are not ``<label>_<timestamp>.csv`` (notes, exports) are skipped.
+    """
     folder = Path(folder)
     meta = json.loads((folder / META_NAME).read_text())
-    recs = [load_recording(p) for p in sorted(folder.glob("*.csv"))]
+    recs = [load_recording(p) for p in sorted(folder.glob("*.csv")) if is_recording_name(p)]
     recs.sort(key=lambda r: (r.host_ts[0] if len(r.table) else 0.0, r.path.name))
     return Session(path=folder, meta=meta, recordings=recs)

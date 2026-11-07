@@ -3,7 +3,7 @@
     estimate_breathing(amplitude, timestamps_s) -> BreathingEstimate
 
 ``amplitude`` is (n_packets, n_subcarriers); ``timestamps_s`` is (n_packets,)
-device time in seconds. The window is resampled onto a uniform grid at the rate
+device time in seconds (a window that goes backwards keeps only its last monotonic run). The window is resampled onto a uniform grid at the rate
 implied by the timestamps, so dropped packets leave gaps that interpolation
 fills instead of stretching the frequency axis.
 
@@ -110,6 +110,12 @@ def estimate_breathing(amplitude: np.ndarray, timestamps_s: np.ndarray) -> Breat
     """Breaths per minute and confidence for one window of CSI amplitudes."""
     timestamps_s = np.asarray(timestamps_s, dtype=np.float64)
     amplitude = np.asarray(amplitude, dtype=np.float64)
+    # A backwards step (receiver reboot) makes the earlier samples another timeline:
+    # only the trailing strictly increasing run can be resampled.
+    back = np.flatnonzero(np.diff(timestamps_s) <= 0)
+    if back.size:
+        start = back[-1] + 1
+        timestamps_s, amplitude = timestamps_s[start:], amplitude[start:]
     if timestamps_s.size < MIN_PACKETS:
         return NOT_ENOUGH
     span = timestamps_s[-1] - timestamps_s[0]

@@ -26,7 +26,7 @@ class LiveView:
     (the CLI enforces that via ``csi.common.resolve_threshold``).
     """
 
-    def __init__(self, threshold: float = SIM_THRESHOLD, send_rate_hz: float = 100.0,
+    def __init__(self, threshold: float = SIM_THRESHOLD, send_rate_hz: Optional[float] = None,
                  history_s: float = HISTORY_S, parser: Optional[CSIParser] = None) -> None:
         self.parser = parser or CSIParser()
         self.health = LinkHealth(send_rate_hz=send_rate_hz)
@@ -47,16 +47,14 @@ class LiveView:
 
     def ingest(self, host_ts: float, line: str) -> None:
         """Parse one line; malformed or non-CSI lines are counted by the parser."""
-        pkt = self.parser.parse_line(line, host_ts)
-        if pkt is None:
-            return
-        self.health.observe(pkt)
-        self._latest = host_ts
-        self._amps.append((host_ts, pkt.amplitude))
-        score = self._scorer.push(pkt)
-        if score is not None:
-            self._scores.append((host_ts, score))
-        self._prune(host_ts)
+        for pkt in self.parser.feed(line, host_ts):
+            self.health.observe(pkt)
+            self._latest = pkt.host_ts
+            self._amps.append((pkt.host_ts, pkt.amplitude))
+            score = self._scorer.push(pkt)
+            if score is not None:
+                self._scores.append((pkt.host_ts, score))
+            self._prune(pkt.host_ts)
 
     def consume(self, stream: Stream) -> None:
         for host_ts, line in stream:

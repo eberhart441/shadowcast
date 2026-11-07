@@ -29,6 +29,7 @@ from typing import Iterable, Iterator, Optional
 
 import numpy as np
 
+from .clock import RESET, DeviceClock
 from .breathing import NOT_ENOUGH, WINDOW_S as BREATH_WINDOW_S, BreathingEstimate, estimate_breathing
 from .parser import CSIPacket, CSIParser, Stream, parse_stream
 
@@ -102,19 +103,20 @@ class MotionScorer:
         self._stages = stages
         self._buf: deque[tuple[int, np.ndarray]] = deque()
         self._slow: Optional[np.ndarray] = None  # (stages, subcarriers) running means
-        self._last_ts = 0
+        self._last_t = 0
+        self._clock = DeviceClock()  # unwraps the 32-bit counter; a reboot restarts the window
 
-    def _highpass(self, pkt: CSIPacket) -> np.ndarray:
-        x = pkt.amplitude.astype(np.float64)
+    def _highpass(self, x: np.ndarray, t: int) -> np.ndarray:
+        x = x.astype(np.float64)
         if self._slow is None:
             # Start the first mean at the first sample and the rest at zero, since
             # each later stage filters a residual that begins at zero. No transient.
             self._slow = np.zeros((self._stages, x.size))
             self._slow[0] = x
-            self._last_ts = pkt.device_ts
+            self._last_t = t
             return np.zeros_like(x)
-        dt_s = max(0, pkt.device_ts - self._last_ts) / 1e6  # gaps (drops) advance the mean
-        self._last_ts = pkt.device_ts
+        dt_s = max(0, t - self._last_t) / 1e6  # gaps (drops) advance the mean
+        self._last_t = t
         alpha = 1.0 - np.exp(-dt_s / self._tau_s)
         for k in range(self._stages):
             self._slow[k] += alpha * (x - self._slow[k])
@@ -122,10 +124,15 @@ class MotionScorer:
         return x
 
     def push(self, pkt: CSIPacket) -> Optional[float]:
-        self._buf.append((pkt.device_ts, self._highpass(pkt)))
-        while pkt.device_ts - self._buf[0][0] > self._window_us:
+        t, event = self._clock.advance(pkt.device_ts, pkt.host_ts)
+        if event == RESET:
+            # Receiver rebooted: the old window and filter state belong to another timeline.
+            self._buf.clear()
+            self._slow = None
+        self._buf.append((t, self._highpass(pkt.amplitude, t)))
+        while t - self._buf[0][0] > self._window_us:
             self._buf.popleft()
-        full = pkt.device_ts - self._buf[0][0] >= 0.9 * self._window_us
+        full = t - self._buf[0][0] >= 0.9 * self._window_us
         if len(self._buf) < MIN_WINDOW_PACKETS or not full:
             return None
         window = np.stack([r for _, r in self._buf])
@@ -166,6 +173,7 @@ class _BreathingTracker:
         self._buf: deque[tuple[float, np.ndarray]] = deque()
         self._last_update: Optional[float] = None
         self._estimate: BreathingEstimate = NOT_ENOUGH
+        self._clock = DeviceClock()
 
     def reset(self) -> None:
         """Forget the window: motion contaminates it, so breathing rebuilds from quiet data."""
@@ -174,7 +182,10 @@ class _BreathingTracker:
         self._estimate = NOT_ENOUGH
 
     def push(self, pkt: CSIPacket) -> BreathingEstimate:
-        t = pkt.device_ts / 1e6
+        t_us, event = self._clock.advance(pkt.device_ts, pkt.host_ts)
+        if event == RESET:
+            self.reset()
+        t = t_us / 1e6
         self._buf.append((t, pkt.amplitude))
         while t - self._buf[0][0] > BREATH_WINDOW_S + 1.0:
             self._buf.popleft()
@@ -241,11 +252,26 @@ def calibrate(stream: Stream, parser: Optional[CSIParser] = None) -> Calibration
     return calibrate_packets(list(parse_stream(stream, parser)))
 
 
+def _since_last_reboot(packets: list[CSIPacket]) -> tuple[list[CSIPacket], list[int]]:
+    """Packets after the last receiver reboot, with unwrapped device times (us).
+
+    A reboot inside the calibration input restarts the clock, so only the segment
+    after it can be measured. Counter wraps are unwrapped and stay in the segment.
+    """
+    clock, times, start = DeviceClock(), [], 0
+    for i, p in enumerate(packets):
+        t, event = clock.advance(p.device_ts, p.host_ts)
+        if event == RESET:
+            start = i
+        times.append(t)
+    return packets[start:], times[start:]
+
+
 def calibrate_packets(packets: list[CSIPacket]) -> Calibration:
     """``calibrate`` for packets already parsed (e.g. loaded from a recording)."""
+    packets, device_ts = _since_last_reboot(packets)
     if len(packets) < 2:
         raise CalibrationError("input too short: fewer than two packets")
-    device_ts = [p.device_ts for p in packets]
     duration = (device_ts[-1] - device_ts[0]) / 1e6
     if duration < MIN_CALIBRATION_S:
         raise CalibrationError(f"input too short: {duration:.1f}s < {MIN_CALIBRATION_S:.0f}s")

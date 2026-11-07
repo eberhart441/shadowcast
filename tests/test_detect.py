@@ -135,3 +135,63 @@ def test_breathing_does_not_raise_motion_score_above_empty_level():
     empty = p99_scores(simulate_stream(scenario=[Segment("empty", 30)], seed=8))
     still = p99_scores(still_stream())
     assert still < 1.5 * empty
+
+
+# --- device_ts counter events: the ESP32 local_timestamp is 32-bit and restarts on reboot ---
+
+WRAP = 2 ** 32
+
+
+def scenario_stream(clock, seconds=30, seed=9, scenario=None, realtime=False):
+    segs = scenario or [Segment("empty", seconds)]
+    return simulate_stream(scenario=segs, seed=seed, device_clock=clock)
+
+
+def test_device_ts_reset_to_zero_keeps_producing_readings():
+    # receiver reboots at 15 s: local_timestamp goes back to ~0 and counts up again
+    reboot_us = 15_000_000
+    stream = list(scenario_stream(lambda t: t if t < reboot_us else t - reboot_us, seconds=30))
+    threshold = calibrated_threshold()
+    readings = list(detect(stream, threshold))
+    reboot_host = stream[1500][0]  # 15 s at 100 Hz (header line is first)
+    after = [r for r in readings if r.host_ts > reboot_host + 1.5]
+    assert len(after) > 1000
+    assert {r.state for r in after} == {EMPTY}
+
+
+def test_device_ts_reset_during_motion_recovers_to_motion():
+    reboot_us = 10_000_000
+    segs = [Segment("empty", 10), Segment("motion", 10)]
+    stream = list(scenario_stream(lambda t: t if t < reboot_us else t - reboot_us, scenario=segs))
+    readings = list(detect(stream, calibrated_threshold()))
+    assert readings[-1].state == MOTION
+
+
+def test_device_ts_wrap_matches_unwrapped_scores_exactly():
+    # counter wraps past 2**32 three seconds in; the scores must not change at all
+    start = WRAP - 3_000_000
+    wrapped = list(parse_stream(scenario_stream(lambda t: (t + start) % WRAP, seconds=10)))
+    plain = list(parse_stream(scenario_stream(lambda t: t, seconds=10)))
+    assert any(p.device_ts < start for p in wrapped)  # the wrap really happened
+    scorer_w, scorer_p = MotionScorer(), MotionScorer()
+    a = [s for s in (scorer_w.push(p) for p in wrapped) if s is not None]
+    b = [s for s in (scorer_p.push(p) for p in plain) if s is not None]
+    assert len(a) == len(b) > 500
+    np.testing.assert_allclose(a, b, rtol=1e-9)
+
+
+def test_device_ts_wrap_keeps_breathing_readings_going():
+    start = WRAP - 5_000_000
+    stream = list(scenario_stream(lambda t: (t + start) % WRAP, seconds=25,
+                                  scenario=[Segment("still", 25)]))
+    readings = list(detect(stream, calibrated_threshold(), breathing=True))
+    assert readings[-1].enough_data
+    assert MOTION not in {r.state for r in readings}
+
+
+def test_device_ts_reset_restarts_breathing_window():
+    reboot_us = 20_000_000
+    stream = list(scenario_stream(lambda t: t if t < reboot_us else t - reboot_us,
+                                  scenario=[Segment("still", 40)]))
+    readings = list(detect(stream, calibrated_threshold(), breathing=True))
+    assert readings[-1].enough_data  # a full window exists again after the reboot

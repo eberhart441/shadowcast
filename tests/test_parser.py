@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from csi.parser import DEFAULT_HEADER, CSIParser, parse_header, parse_stream
+from csi.parser import DEFAULT_HEADER, WARMUP_PACKETS, CSIParser, parse_header, parse_stream
 from csi.simulate import N_SUBCARRIERS, NULL_SUBCARRIERS, Segment, simulate_packets, simulate_stream
 
 
@@ -14,8 +14,16 @@ def line(rssi=-40, channel=6, ts=1000, values=None, length=None):
     return f'{prefix},"[{",".join(map(str, values))}]"'
 
 
+def warm_up(ps, text=None):
+    """Lock an unknown-length layout: WARMUP_PACKETS packets of one raw length."""
+    for _ in range(WARMUP_PACKETS):
+        ps.parse_line(text or line(), host_ts=0.0)
+
+
 def test_amplitude_and_null_drop():
-    p = CSIParser().parse_line(line(), host_ts=5.0)
+    ps = CSIParser()
+    warm_up(ps)
+    p = ps.parse_line(line(), host_ts=5.0)
     assert p.host_ts == 5.0 and p.device_ts == 1000 and p.rssi == -40 and p.channel == 6
     np.testing.assert_allclose(p.amplitude, [5.0, 10.0])  # middle subcarrier (0,0) dropped
 
@@ -25,7 +33,9 @@ def test_header_maps_columns_not_indices():
     assert parse_header(hdr) is not None
     ps = CSIParser()
     assert ps.parse_line(hdr) is None
-    pkt = ps.parse_line('CSI_DATA,777,11,-55,4,"[3,4,6,8]"')
+    text = 'CSI_DATA,777,11,-55,4,"[3,4,6,8]"'
+    warm_up(ps, text)
+    pkt = ps.parse_line(text)
     assert (pkt.device_ts, pkt.channel, pkt.rssi) == (777, 11, -55)
 
 
@@ -40,6 +50,7 @@ def test_header_maps_columns_not_indices():
 ])
 def test_malformed_skipped_and_counted(bad):
     ps = CSIParser()
+    warm_up(ps)
     assert ps.parse_line(bad) is None
     assert ps.stats.malformed == 1
     assert ps.parse_line(line()) is not None  # parser still works afterwards
@@ -52,8 +63,9 @@ def test_non_csi_lines_ignored():
     assert ps.stats.ignored == 3 and ps.stats.malformed == 0
 
 
-def test_layout_locked_to_first_packet():
+def test_layout_locked_after_warm_up():
     ps = CSIParser()
+    warm_up(ps)
     assert len(ps.parse_line(line()).amplitude) == 2
     assert ps.parse_line(line(values=[1, 1, 2, 2, 3, 3, 4, 4])) is None
     assert ps.stats.layout_skipped == 1
@@ -96,6 +108,7 @@ C5_LINE = ('CSI_DATA,3320,1a:00:00:00:00:00,-5,11,-97,-10,0,6,33253679,47,2,8,0,
 def test_headerless_c5_layout_is_inferred_from_column_count():
     # Real esp32-c5 csi_recv line shape (15 columns); header was missed at boot.
     ps = CSIParser()
+    warm_up(ps, C5_LINE)
     pkt = ps.parse_line(C5_LINE, host_ts=1.0)
     assert (pkt.rssi, pkt.channel, pkt.device_ts) == (-5, 6, 33253679)
     assert len(pkt.amplitude) == 3 and ps.stats.malformed == 0
@@ -110,3 +123,54 @@ def test_c5_mask_is_stable_when_first_packet_is_mostly_zero():
     a = ps.parse_line(line(values=sparse), host_ts=0.0)
     b = ps.parse_line(line(values=busy), host_ts=0.1)
     assert len(a.amplitude) == len(b.amplitude) == 114
+
+
+# --- unknown raw lengths: the null mask comes from a warm-up, and the layout can re-lock ---
+
+def feed_all(ps, lines, host_ts=0.0):
+    out = []
+    for i, ln in enumerate(lines):
+        out.extend(ps.feed(ln, host_ts + i * 0.01))
+    return out
+
+
+def test_mask_is_union_over_warm_up_not_the_first_packet():
+    # subcarrier 1 is zero in the first packet only (low gain); it must still be kept
+    ps = CSIParser()
+    first = line(values=[3, 4, 0, 0, 6, 8])
+    later = [line(values=[3, 4, 1, 1, 6, 8])] * 19
+    out = feed_all(ps, [first, *later])
+    assert len(out) == 20
+    assert ps.kept_subcarriers == [0, 1, 2]
+    assert all(len(p.amplitude) == 3 for p in out)
+
+
+def test_warm_up_packets_are_emitted_in_order_once_locked():
+    ps = CSIParser()
+    lines = [line(ts=1000 + i, values=[3, 4, 1, 1, 6, 8]) for i in range(30)]
+    out = feed_all(ps, lines)
+    assert [p.device_ts for p in out] == [1000 + i for i in range(30)]
+
+
+def test_relock_when_most_packets_switch_to_a_new_length():
+    ps = CSIParser()
+    feed_all(ps, [line(values=[3, 4, 1, 1, 6, 8])] * 20)          # locks 3 subcarriers
+    new = [line(values=[1, 1, 2, 2, 3, 3, 4, 4])] * 80             # now 4 subcarriers
+    out = feed_all(ps, new)
+    assert ps.stats.relocks == 1
+    assert out and all(len(p.amplitude) == 4 for p in out)
+    assert ps.kept_subcarriers == [0, 1, 2, 3]
+
+
+def test_a_single_odd_length_packet_does_not_relock():
+    ps = CSIParser()
+    feed_all(ps, [line(values=[3, 4, 1, 1, 6, 8])] * 20)
+    out = feed_all(ps, [line(values=[1, 1, 2, 2, 3, 3, 4, 4])] + [line(values=[3, 4, 1, 1, 6, 8])] * 5)
+    assert ps.stats.relocks == 0 and ps.stats.layout_skipped == 1
+    assert len(out) == 5 and all(len(p.amplitude) == 3 for p in out)
+
+
+def test_known_c5_length_locks_immediately_without_warm_up():
+    ps = CSIParser()
+    pkt = ps.parse_line(line(values=[1] * 234), host_ts=1.0)  # 117 subcarriers, 3 known nulls
+    assert pkt is not None and len(pkt.amplitude) == 114 and ps.stats.lines == 1
