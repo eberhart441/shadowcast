@@ -122,8 +122,10 @@ class MotionScorer:
         self._stages = stages
         self._buf: deque[tuple[int, np.ndarray]] = deque()
         self._slow: Optional[np.ndarray] = None  # (stages, subcarriers) running means
-        self._last_t = 0
+        self._last_t: Optional[int] = None       # device time (us) of the last accepted packet
+        self._score: Optional[float] = None
         self._clock = DeviceClock()  # unwraps the 32-bit counter; a reboot restarts the window
+        self.dropped = 0                         # out-of-order or repeated packets, not applied
 
     def _highpass(self, x: np.ndarray, t: int) -> np.ndarray:
         x = x.astype(np.float64)
@@ -134,7 +136,7 @@ class MotionScorer:
             self._slow[0] = x
             self._last_t = t
             return np.zeros_like(x)
-        dt_s = max(0, t - self._last_t) / 1e6  # gaps (drops) advance the mean
+        dt_s = max(0, t - self._last_t) / 1e6  # gaps (drops) advance the mean; accepted times only move forward
         self._last_t = t
         alpha = 1.0 - np.exp(-dt_s / self._tau_s)
         for k in range(self._stages):
@@ -143,19 +145,27 @@ class MotionScorer:
         return x
 
     def push(self, pkt: CSIPacket) -> Optional[float]:
+        """Score after this packet. A packet not later than the last accepted one (out of order, or repeated) is
+        dropped and counted: it would move the timeline backwards. Its call returns the unchanged score."""
         t, event = self._clock.advance(pkt.device_ts, pkt.host_ts)
         if event == RESET:
             # Receiver rebooted: the old window and filter state belong to another timeline.
             self._buf.clear()
             self._slow = None
+            self._last_t = None
+        if self._last_t is not None and t <= self._last_t:
+            self.dropped += 1
+            return self._score
         self._buf.append((t, self._highpass(pkt.amplitude, t)))
         while t - self._buf[0][0] > self._window_us:
             self._buf.popleft()
         full = t - self._buf[0][0] >= 0.9 * self._window_us
         if len(self._buf) < MIN_WINDOW_PACKETS or not full:
-            return None
-        window = np.stack([r for _, r in self._buf])
-        return float(window.var(axis=0).mean())
+            self._score = None
+        else:
+            window = np.stack([r for _, r in self._buf])
+            self._score = float(window.var(axis=0).mean())
+        return self._score
 
 
 class _Debouncer:
@@ -193,18 +203,25 @@ class _BreathingTracker:
         self._last_update: Optional[float] = None
         self._estimate: BreathingEstimate = NOT_ENOUGH
         self._clock = DeviceClock()
+        self._last_t: Optional[float] = None  # seconds, last accepted packet
+        self.dropped = 0                      # out-of-order or repeated packets, not applied
 
     def reset(self) -> None:
         """Forget the window: motion contaminates it, so breathing rebuilds from quiet data."""
         self._buf.clear()
         self._last_update = None
         self._estimate = NOT_ENOUGH
+        self._last_t = None
 
     def push(self, pkt: CSIPacket) -> BreathingEstimate:
         t_us, event = self._clock.advance(pkt.device_ts, pkt.host_ts)
         if event == RESET:
             self.reset()
         t = t_us / 1e6
+        if self._last_t is not None and t <= self._last_t:
+            self.dropped += 1  # late or repeated: keep the window in time order
+            return self._estimate
+        self._last_t = t
         self._buf.append((t, pkt.amplitude))
         while t - self._buf[0][0] > BREATH_WINDOW_S + 1.0:
             self._buf.popleft()
