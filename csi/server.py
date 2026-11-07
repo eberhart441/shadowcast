@@ -36,9 +36,10 @@ import json
 import threading
 import time
 from collections import deque
+from dataclasses import asdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import BinaryIO, Iterator, Mapping, Optional
+from typing import BinaryIO, Iterator, Mapping, Optional, Sequence, TextIO, Union
 from urllib.parse import urlsplit
 
 from .dashboard import DashboardState
@@ -63,6 +64,8 @@ WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 SIM_WALK_SPEED_MPS = 0.5
 SIM_CALIBRATION_S = 25.0
 SIM_CALIBRATION_SEED = 10
+LOG_FORMAT = "csi-dashboard-log"  # first line of a --log file; replay.py refuses other files
+LOG_VERSION = 1
 
 
 class FrameLog:
@@ -185,22 +188,13 @@ class _Handler(BaseHTTPRequestHandler):
         self.close_connection = True
 
 
-class DashboardServer:
-    def __init__(self, room: Room, sources: Mapping[str, Stream], thresholds: Optional[Mapping[str, float]] = None,
-                 *, host: str = DEFAULT_HOST, port: int = DEFAULT_PORT,
-                 frame_interval_s: float = FRAME_INTERVAL_S, web_index: Optional[Path] = None,
-                 **heatmap_params) -> None:
-        self._room = room
-        self._state = DashboardState(room, dict(thresholds or {}), **heatmap_params)
-        self._labels = {LinkId(rx.name, tx.mac).label for rx, tx in room.links()}
-        self._calibrated = {label for label in self._labels if thresholds and label in thresholds}
-        self._ms = MultiSource(sources)
+class FrameServer:
+    """The HTTP side shared by the live server and replay: rendered JSON payloads in a FrameLog, served
+    over /api/state (``state_json``), /api/events (``stream_events``) and /. Subclasses produce the frames."""
+
+    def __init__(self, host: str, port: int, web_index: Optional[Path] = None) -> None:
         self._lock = threading.Lock()
         self._frames = FrameLog()
-        self._frame_s = frame_interval_s
-        self._next_frame_at: Optional[float] = None
-        self._last_host: Optional[float] = None
-        self._last_mono: Optional[float] = None
         self._run_done = False       # set under the lock, just before the final frame
         self._sources_done = threading.Event()
         self._stop = threading.Event()
@@ -208,8 +202,8 @@ class DashboardServer:
         self._web_index = WEB_DIR / "index.html" if web_index is None else Path(web_index)
         self._httpd = _Httpd((host, port), _Handler)
         self._httpd.dashboard = self
-        self._pump_thread: Optional[threading.Thread] = None
-        self._http_thread: Optional[threading.Thread] = None
+        self._threads: list[threading.Thread] = []
+        self._http_started = False
 
     # ------------------------------------------------------------------ lifecycle
 
@@ -223,13 +217,12 @@ class DashboardServer:
         host, port = self.address
         return f"http://{'127.0.0.1' if host in ('', '0.0.0.0') else host}:{port}"
 
-    def start(self) -> None:
-        self._ms.start()
-        self._pump_thread = threading.Thread(target=self._pump, name="dashboard-pump", daemon=True)
-        self._pump_thread.start()
-        self._http_thread = threading.Thread(target=self._httpd.serve_forever, kwargs={"poll_interval": 0.1},
-                                             name="dashboard-http", daemon=True)
-        self._http_thread.start()
+    def _start_http(self) -> None:
+        thread = threading.Thread(target=self._httpd.serve_forever, kwargs={"poll_interval": 0.1},
+                                  name="dashboard-http", daemon=True)
+        self._http_started = True
+        self._threads.append(thread)
+        thread.start()
 
     def wait_finished(self, timeout: Optional[float] = None) -> bool:
         """True once every source has ended and the final frame is in the log."""
@@ -240,20 +233,121 @@ class DashboardServer:
             return
         self._stopped = True
         self._stop.set()
-        if self._http_thread is not None:
+        if self._http_started:
             self._httpd.shutdown()
         self._httpd.server_close()
-        self._ms.close()
-        for thread in (self._pump_thread, self._http_thread):
-            if thread is not None:
-                thread.join(timeout=5.0)
+        self._close_sources()
+        for thread in self._threads:
+            thread.join(timeout=5.0)
         self._sources_done.set()
 
-    def __enter__(self) -> "DashboardServer":
+    def _close_sources(self) -> None:
+        """Subclass hook: release the frame producers (ports, timers) before the threads are joined."""
+
+    def state_json(self) -> str:
+        raise NotImplementedError
+
+    def __enter__(self) -> "FrameServer":
         return self
 
     def __exit__(self, *exc) -> None:
         self.stop()
+
+    def index_bytes(self) -> bytes:
+        try:
+            return self._web_index.read_bytes()
+        except OSError:
+            return b"<!doctype html><title>dashboard</title><p>web/index.html is missing</p>"
+
+    # ------------------------------------------------------------------ event stream
+
+    def stream_events(self, wfile: BinaryIO) -> None:
+        """Write SSE events until the final frame, server shutdown, or a client disconnect (OSError)."""
+        with self._lock:
+            run_done = self._run_done
+        cursor = 1 if run_done else max(1, self._frames.newest_seq())
+        last_sent = 0.0
+        while not self._stop.is_set():
+            if not self._run_done:
+                newest = self._frames.newest_seq()
+                if newest - cursor >= LIVE_LAG_FRAMES:
+                    cursor = newest
+            item = self._frames.next_frame(cursor, WAIT_TICK_S)
+            if item is None:
+                if time.monotonic() - last_sent >= KEEPALIVE_S:
+                    wfile.write(b": keepalive\n\n")
+                    wfile.flush()
+                    last_sent = time.monotonic()
+                continue
+            seq, text, final = item
+            gap = MIN_EVENT_GAP_S - (time.monotonic() - last_sent)
+            if gap > 0:
+                self._stop.wait(gap)
+            wfile.write(f"data: {text}\n\n".encode())
+            wfile.flush()
+            last_sent, cursor = time.monotonic(), seq + 1
+            if final:
+                return
+
+
+class DashboardServer(FrameServer):
+    """The live pipeline (sources -> DashboardState -> frames) behind the FrameServer HTTP interface.
+
+    ``log`` appends the frame stream to a file: a header line (room, thresholds, heatmap parameters, start
+    time, ``log_meta``, ``notes``) and then one payload per line, exactly as /api/events sends them.
+    ``notes`` are extra human-readable lines for ``status.messages``.
+    """
+
+    def __init__(self, room: Room, sources: Mapping[str, Stream], thresholds: Optional[Mapping[str, float]] = None,
+                 *, host: str = DEFAULT_HOST, port: int = DEFAULT_PORT,
+                 frame_interval_s: float = FRAME_INTERVAL_S, web_index: Optional[Path] = None,
+                 log: Optional[Union[str, Path]] = None, log_meta: Optional[Mapping] = None,
+                 notes: Sequence[str] = (), **heatmap_params) -> None:
+        super().__init__(host, port, web_index)
+        self._room = room
+        self._state = DashboardState(room, dict(thresholds or {}), **heatmap_params)
+        self._labels = {LinkId(rx.name, tx.mac).label for rx, tx in room.links()}
+        self._calibrated = {label for label in self._labels if thresholds and label in thresholds}
+        self._ms = MultiSource(sources)
+        self._notes = list(notes)
+        self._log_path = None if log is None else Path(log)
+        self._log_file: Optional[TextIO] = None
+        self._log_header = {"format": LOG_FORMAT, "version": LOG_VERSION, "room": asdict(room),
+                            "thresholds": dict(thresholds or {}), "frame_interval_s": frame_interval_s,
+                            "heatmap": dict(heatmap_params), "notes": list(notes), **dict(log_meta or {})}
+        self._frame_s = frame_interval_s
+        self._next_frame_at: Optional[float] = None
+        self._last_host: Optional[float] = None
+        self._last_mono: Optional[float] = None
+        self._pump_thread: Optional[threading.Thread] = None
+
+    # ------------------------------------------------------------------ lifecycle
+
+    def start(self) -> None:
+        if self._log_path is not None:
+            self._open_log()
+        self._ms.start()
+        self._pump_thread = threading.Thread(target=self._pump, name="dashboard-pump", daemon=True)
+        self._threads.append(self._pump_thread)
+        self._pump_thread.start()
+        self._start_http()
+
+    def stop(self) -> None:
+        super().stop()
+        self._close_log()
+
+    def _close_sources(self) -> None:
+        self._ms.close()
+
+    def _open_log(self) -> None:
+        self._log_file = open(self._log_path, "w", encoding="utf-8")
+        self._log_file.write(json.dumps({**self._log_header, "started": time.time()}) + "\n")
+        self._log_file.flush()
+
+    def _close_log(self) -> None:
+        if self._log_file is not None:
+            self._log_file.close()
+            self._log_file = None
 
     # ------------------------------------------------------------------ ingest
 
@@ -314,7 +408,11 @@ class DashboardServer:
 
     def _emit(self, now: float, final: bool = False) -> None:
         """Append a frame at host time ``now``. Caller holds the lock."""
-        self._frames.append(json.dumps(self._payload(now)), final=final)
+        text = json.dumps(self._payload(now))
+        self._frames.append(text, final=final)
+        if self._log_file is not None:
+            self._log_file.write(text + "\n")
+            self._log_file.flush()
 
     # ------------------------------------------------------------------ payload
 
@@ -328,7 +426,7 @@ class DashboardServer:
         receivers = {name: _receiver_state(s) for name, s in self._ms.status().items()}
         errors = self._ms.errors()
         uncalibrated = sorted(self._labels - self._calibrated)
-        messages = []
+        messages = list(self._notes)
         if uncalibrated:
             messages.append(f"{len(uncalibrated)} link(s) UNCALIBRATED ({', '.join(uncalibrated)}): no threshold. "
                             "Pass --thresholds links.json, or calibrate on an empty room first.")
@@ -346,42 +444,6 @@ class DashboardServer:
         with self._lock:
             now = self._clock()
             return json.dumps(self._payload(0.0 if now is None else now))
-
-    def index_bytes(self) -> bytes:
-        try:
-            return self._web_index.read_bytes()
-        except OSError:
-            return b"<!doctype html><title>dashboard</title><p>web/index.html is missing</p>"
-
-    # ------------------------------------------------------------------ event stream
-
-    def stream_events(self, wfile: BinaryIO) -> None:
-        """Write SSE events until the final frame, server shutdown, or a client disconnect (OSError)."""
-        with self._lock:
-            run_done = self._run_done
-        cursor = 1 if run_done else max(1, self._frames.newest_seq())
-        last_sent = 0.0
-        while not self._stop.is_set():
-            if not self._run_done:
-                newest = self._frames.newest_seq()
-                if newest - cursor >= LIVE_LAG_FRAMES:
-                    cursor = newest
-            item = self._frames.next_frame(cursor, WAIT_TICK_S)
-            if item is None:
-                if time.monotonic() - last_sent >= KEEPALIVE_S:
-                    wfile.write(b": keepalive\n\n")
-                    wfile.flush()
-                    last_sent = time.monotonic()
-                continue
-            seq, text, final = item
-            gap = MIN_EVENT_GAP_S - (time.monotonic() - last_sent)
-            if gap > 0:
-                self._stop.wait(gap)
-            wfile.write(f"data: {text}\n\n".encode())
-            wfile.flush()
-            last_sent, cursor = time.monotonic(), seq + 1
-            if final:
-                return
 
 
 def _receiver_state(status: str) -> str:

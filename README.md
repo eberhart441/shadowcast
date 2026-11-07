@@ -258,6 +258,18 @@ Endpoints:
 The library is `csi.server.DashboardServer(room, sources, thresholds)`, where `sources` maps receiver
 names to `(host_ts, line)` streams. `start()`, `stop()` and `wait_finished()` manage it.
 
+Logs and replays (no hardware, no serial ports):
+
+```bash
+scripts/dashboard.py --simulate-room --log run.jsonl                  # header line, then one state payload per line
+scripts/dashboard.py --replay run.jsonl --speed 8                     # the logged states; --speed 1 is original pace, max is fastest
+scripts/dashboard.py --replay-session data/<session> --speed 8        # a recorded session through the live pipeline
+```
+
+- `--replay-session` calibrates on the session's first empty recording (`--margin X`, or `--thresholds links.json`
+  to skip calibration). Single-receiver recordings replay as one link (`rx1<-00`), and `status.messages` says so.
+- A replay sets `status.finished` true at the end and keeps the final state up until Ctrl+C.
+
 ## Simulator
 
 `--simulate` needs no threshold. It uses a simulator default (1.0) that sits
