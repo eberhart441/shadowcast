@@ -628,18 +628,23 @@ class DashboardServer(FrameServer):
     def _payload(self, now: float) -> dict:
         """Caller holds the lock: DashboardState advances its smoothing to ``now``."""
         payload = self._state.snapshot(now)
-        payload["status"].update(self._status_extension(now))
+        payload["status"].update(self._status_extension(now, payload["links"]))
         return payload
 
-    def _status_extension(self, now: float) -> dict:
+    def _status_extension(self, now: float, links: Sequence[Mapping]) -> dict:
         receivers = {name: _receiver_state(s) for name, s in self._ms.status().items()}
         errors = self._errors()
         calibrated = sorted(self._state.thresholds)
         uncalibrated = sorted(self._labels - set(calibrated))
+        silent = sorted(row["id"] for row in links if row["id"] in uncalibrated and row["age_s"] is None)
+        heard = [label for label in uncalibrated if label not in silent]
         messages = list(self._notes)
-        if uncalibrated:
-            messages.append(f"{len(uncalibrated)} link(s) UNCALIBRATED ({', '.join(uncalibrated)}): no threshold. "
+        if heard:
+            messages.append(f"{len(heard)} link(s) UNCALIBRATED ({', '.join(heard)}): no threshold. "
                             "Pass --thresholds links.json, or calibrate on an empty room first.")
+        if silent:  # a link that never sent a packet has nothing to calibrate: say so, not UNCALIBRATED
+            where = "in this recording" if self._replay else "yet"
+            messages.append(f"{len(silent)} link(s) have no data {where} ({', '.join(silent)}).")
         messages.extend(f"{'pipeline' if name == 'pipeline' else f'receiver {name}'} failed: {msg}"
                         for name, msg in sorted(errors.items()))
         calibration = self._calib_status(now)

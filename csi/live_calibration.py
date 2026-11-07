@@ -101,8 +101,10 @@ class CalibrationJob:
         if self.state != "recording":
             return
         rel = pkt.host_ts - self._t0
+        if rel < 0:  # stamped before the recording started: not part of any clip
+            return
         k, offset = divmod(rel, self._period)
-        if k < self.request["clips"] and offset < self.request["seconds"]:
+        if k < self.request["clips"] and offset < self.request["seconds"]:  # else: the pause after a clip
             self._clips[int(k)].append((receiver, pkt))
 
     def tick(self, host_now: Optional[float], now_mono: float) -> None:

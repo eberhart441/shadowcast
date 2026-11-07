@@ -60,6 +60,11 @@ def logged_span_s(path) -> float:
     return times[-1] - times[0]
 
 
+def without_commands(payload: dict) -> dict:
+    """A payload minus status.commands: a replay advertises no commands (see test_replay_status)."""
+    return {**payload, "status": {k: v for k, v in payload["status"].items() if k != "commands"}}
+
+
 def states_of(payload: dict) -> dict:
     return {row["id"]: row["state"] for row in payload["links"]}
 
@@ -105,8 +110,8 @@ def test_replayed_log_serves_the_logged_states_and_hot_cell_track_in_order(walk_
     assert track == [hot_cell(e) for e in logged]
     hot = [cell for cell in track if cell is not None]
     assert hot and hot[-1][1] > hot[0][1]          # the walk moves left to right
-    for i in range(0, len(logged), 3):              # sampled frames match in full
-        assert events[i] == logged[i]
+    for i in range(0, len(logged), 3):              # sampled frames match in full, except the commands a replay drops
+        assert without_commands(events[i]) == without_commands(logged[i])
     assert events[-1]["status"]["finished"] is True
     assert get_json(server)["status"]["finished"] is True
 
