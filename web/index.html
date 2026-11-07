@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CSI dashboard (placeholder)</title>
+  <style>
+    body { font-family: ui-monospace, Menlo, monospace; margin: 16px; background: #fff; color: #111; }
+    pre { white-space: pre-wrap; word-break: break-word; }
+    @media (prefers-color-scheme: dark) {
+      body { background: #111; color: #eee; }
+    }
+  </style>
+</head>
+<body>
+  <h1>CSI dashboard</h1>
+  <p>Placeholder page: the live view arrives in ticket #13. This shows <code>/api/state</code>.</p>
+  <pre id="state">loading...</pre>
+  <script>
+    const out = document.getElementById("state");
+    async function refresh() {
+      try {
+        const res = await fetch("/api/state", { cache: "no-store" });
+        out.textContent = JSON.stringify(await res.json(), null, 2);
+      } catch (err) {
+        out.textContent = "cannot reach /api/state: " + err;
+      }
+    }
+    refresh();
+    setInterval(refresh, 1000);
+  </script>
+</body>
+</html>

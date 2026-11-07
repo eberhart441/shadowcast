@@ -225,6 +225,36 @@ from `link_weights` in `config/room.json` (default 1.0; `rx1<-01` is 0.3 because
 diagonal false-alarms on the real rig). This is a rough motion-likelihood estimate, not
 a position track.
 
+## Dashboard
+
+`scripts/dashboard.py` runs the multi-link pipeline as a small web server (standard library only). It
+serves the heatmap payload over HTTP, so the page (placeholder for now) and any script can read it.
+
+```bash
+# No hardware: a simulated person walks a loop through the room, in real time
+scripts/dashboard.py --simulate-room
+
+# Real hardware: name each receiver and reuse a calibration from links_live.py --calibrate
+scripts/dashboard.py --port rx1=/dev/cu.usbmodem2101 --port rx2=/dev/cu.usbmodem101 --thresholds data/links_cal1_m1.json
+```
+
+- `--http-port` (default 8000), `--host` (default `127.0.0.1`, localhost only; `--host 0.0.0.0` listens on
+  the network, with no authentication, so use it only on a network you trust), `--room`, `--baud`, `--seed`.
+- Real ports without `--thresholds` still run: their links show `UNCALIBRATED` and `status.messages` says why.
+- Ctrl+C stops the server and closes every port.
+
+Endpoints:
+
+- `GET /`: the page (`web/index.html`, a placeholder until the real page lands).
+- `GET /api/state`: the heatmap payload described above, plus a `status` block with `receivers`
+  (`connected`, `finished` or `failed` per receiver), `errors`, `finished`, `calibrated_links`,
+  `uncalibrated_links` and `messages`.
+- `GET /api/events`: the same payload as Server-Sent Events (`data: <json>`), at most about 5 per second.
+  The last event has `status.finished` true when the sources end, and then the stream closes.
+
+The library is `csi.server.DashboardServer(room, sources, thresholds)`, where `sources` maps receiver
+names to `(host_ts, line)` streams. `start()`, `stop()` and `wait_finished()` manage it.
+
 ## Simulator
 
 `--simulate` needs no threshold. It uses a simulator default (1.0) that sits
