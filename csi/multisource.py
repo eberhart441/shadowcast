@@ -82,6 +82,8 @@ class MultiSource:
             for host_ts, line in stream:
                 if self._stop.is_set():
                     break
+                if line is None:  # heartbeat from a quiet port: only the stop check above matters
+                    continue
                 # a replayed recording yields parsed packets, which need no parsing
                 packets = [line] if isinstance(line, CSIPacket) else self._parsers[name].feed(line, host_ts)
                 for pkt in packets:

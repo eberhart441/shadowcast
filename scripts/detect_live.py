@@ -67,6 +67,8 @@ def until(stream: Stream, seconds: float | None) -> Iterator[tuple[float, str]]:
     start = None
     try:
         for host_ts, line in stream:
+            if line is None:  # heartbeat from a quiet port: nothing to pass on
+                continue
             if start is None and line.startswith("CSI_DATA"):
                 start = host_ts
             if seconds is not None and start is not None and host_ts - start > seconds:

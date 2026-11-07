@@ -252,19 +252,24 @@ def _known_keep(n: int) -> np.ndarray:
 
 
 def parse_stream(stream: Stream, parser: Optional[CSIParser] = None) -> Iterator[CSIPacket]:
-    """Turn a (host_ts, line) stream into packets, sharing ``parser`` stats."""
+    """Turn a (host_ts, line) stream into packets, sharing ``parser`` stats. Heartbeats (line None) are skipped."""
     parser = parser or CSIParser()
     for host_ts, line in stream:
-        yield from parser.feed(line, host_ts)
+        if line is not None:
+            yield from parser.feed(line, host_ts)
 
 
-def serial_stream(port: str, baud: int = 921600, timeout: float = 1.0) -> Iterator[tuple[float, str]]:
-    """Yield (time.time(), line) from a serial port until closed/interrupted."""
+def serial_stream(port: str, baud: int = 921600, timeout: float = 1.0) -> Iterator[tuple[float, Optional[str]]]:
+    """Yield (time.time(), line) from a serial port until closed/interrupted.
+
+    A read that times out with no data yields (time.time(), None), a heartbeat: a consumer can then check its
+    stop flag at least every ``timeout`` seconds, and closing the generator closes the port. parse_stream and
+    MultiSource skip heartbeats, so they see only lines.
+    """
     import serial  # imported lazily so --simulate works without a port
 
     with serial.Serial(port, baud, timeout=timeout) as ser:
         ser.reset_input_buffer()
         while True:
             raw = ser.readline()
-            if raw:
-                yield time.time(), raw.decode("utf-8", errors="replace")
+            yield time.time(), (raw.decode("utf-8", errors="replace") if raw else None)
