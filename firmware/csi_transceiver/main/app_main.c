@@ -32,13 +32,10 @@
  * them in its own CSI capture callback, which a pure sender or pure receiver
  * never had to do.
  *
- * SETUP:
- *   1. Set NUM_SENDERS below (or -DNUM_SENDERS=N) to how many transceivers
- *      are in the rotation.
- *   2. Give each one a different SENDER_ID from 0 up to NUM_SENDERS-1:
- *        idf.py -DSENDER_ID=0x00 -DNUM_SENDERS=2 build flash   (first node)
- *        idf.py -DSENDER_ID=0x01 -DNUM_SENDERS=2 build flash   (second node)
- *      Every node must be flashed with this same file.
+ * SETUP: one build per chip, every board gets its ID and the node count at flash
+ * time (written to NVS). From the repo root, in an ESP-IDF shell:
+ *     python firmware/flash_all.py COM6 COM7 COM8:s3 COM9 COM10:s3
+ * The order of the ports is the node ID (0, 1, 2, ...).
  */
 #include <stdio.h>
 #include <string.h>
@@ -82,35 +79,35 @@
 #define CONFIG_GAIN_CONTROL                 1
 #endif
 
-/* Packets per second from EACH node (same cadence as the dedicated-sender rig). */
-#define CONFIG_SEND_FREQUENCY               40
-
-/* How many transceiver boards are in the rotation. Change this when you add one. */
-#ifndef NUM_SENDERS
-#define NUM_SENDERS 2
-#endif
-
-/* Length of one turn, in microseconds. One full round = NUM_SENDERS turns,
- * and each node still sends CONFIG_SEND_FREQUENCY times per second. */
-#define SLOT_US  (1000000LL / ((int64_t)CONFIG_SEND_FREQUENCY * NUM_SENDERS))
-
 #if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(6, 0, 0)
 #define ESP_IF_WIFI_STA ESP_MAC_WIFI_STA
 #define WIFI_BW_HT20 WIFI_BW20   /* enums renamed in IDF 6.0 */
 #define WIFI_BW_HT40 WIFI_BW40
 #endif
 
-/* This node's own address; receivers in the old split-role scheme accepted any
- * 1a:00:00:00:00:xx. Set at build time: idf.py -DSENDER_ID=0x01 (see CMakeLists.txt). */
+/* Node ID and node count are read at boot from NVS (namespace "node", keys "id" and "num"),
+ * written by firmware/flash_all.py, so one build per chip serves every board.
+ * -DSENDER_ID / -DNUM_SENDERS are only the fallback when NVS has no entry. */
+#ifndef NUM_SENDERS
+#define NUM_SENDERS 2
+#endif
 #ifndef SENDER_ID
 #define SENDER_ID 0x00
 #endif
 
-#if SENDER_ID >= NUM_SENDERS
-#error "SENDER_ID must be between 0 and NUM_SENDERS-1. Raise NUM_SENDERS or pick a smaller SENDER_ID."
+/* The bottleneck is each node's UART, not the air: it prints one ~0.85 KB line per frame it
+ * hears, and 921600 baud carries ~110 such lines/s on a C5 (fewer on an S3). So the send rate
+ * is LINE_BUDGET split across the N-1 peers, capped at 40 Hz: 5 nodes -> 15 Hz, 4 -> 20 Hz. */
+#ifndef LINE_BUDGET
+#define LINE_BUDGET 60
 #endif
+#define MAX_SEND_HZ 40
 
-static const uint8_t CONFIG_CSI_SEND_MAC[] = {0x1a, 0x00, 0x00, 0x00, 0x00, SENDER_ID};
+static uint8_t s_id = SENDER_ID, s_num = NUM_SENDERS;
+static int s_rate;          /* Hz per node, set at boot */
+static int64_t s_slot_us;   /* one turn; a full round is s_num turns */
+/* Our own address prefix, so old-rig boards (1a:00:00:00:00:xx) on the same channel are ignored. */
+static uint8_t s_mac[6] = {0x1a, 0x0c, 0x12, 0x00, 0x01, 0x00};  /* [5] = s_id at boot */
 static const uint8_t BROADCAST_MAC[] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
 static const char *TAG = "csi_transceiver";
 
@@ -141,6 +138,7 @@ static volatile uint32_t s_tx_skipped = 0;   /* diagnostic: turns skipped, previ
 static volatile bool s_tx_in_flight = false;
 static volatile int64_t s_tx_sent_at_us = 0;
 static volatile uint32_t s_tx_stale = 0;   /* diagnostic: times we gave up waiting on a lost callback */
+static volatile uint32_t s_csi_dropped = 0; /* diagnostic: CSI lines dropped, print queue full (UART behind) */
 
 static void on_send_done(const esp_now_send_info_t *info, esp_now_send_status_t status)
 {
@@ -207,7 +205,7 @@ static void wifi_init()
     }
 #endif
 
-    ESP_ERROR_CHECK(esp_wifi_set_mac(WIFI_IF_STA, CONFIG_CSI_SEND_MAC));
+    ESP_ERROR_CHECK(esp_wifi_set_mac(WIFI_IF_STA, s_mac));
 }
 
 static void wifi_esp_now_init(esp_now_peer_info_t peer)
@@ -242,12 +240,12 @@ static void schedule_my_turn(int64_t delay_us)
     portEXIT_CRITICAL(&s_turn_timer_mux);
 }
 
-/* How many turns after sender `last_id` it is my turn (1..NUM_SENDERS).
- * 1 = I'm next in line. NUM_SENDERS = that was me, so wait a full round. */
+/* How many turns after sender `last_id` it is my turn (1..s_num).
+ * 1 = I'm next in line. s_num = that was me, so wait a full round. */
 static int turns_until_me(int last_id)
 {
-    int d = (SENDER_ID - last_id + NUM_SENDERS) % NUM_SENDERS;
-    return d == 0 ? NUM_SENDERS : d;
+    int d = (s_id - last_id + s_num) % s_num;
+    return d == 0 ? s_num : d;
 }
 
 /* Fires when it's my turn: send one packet, then wait a full round.
@@ -255,9 +253,11 @@ static int turns_until_me(int last_id)
 static void my_turn_cb(void *arg)
 {
     s_turn_fires++;
-    /* Isolating variables while diagnosing the RX-collapse symptom: strict gating only,
-     * no staleness override, so this test run doesn't also touch the NO_MEM behavior. */
-    bool stale = false;
+    /* A send-done callback can get lost; after a full round, stop waiting for it and send anyway. */
+    bool stale = s_tx_in_flight && (esp_timer_get_time() - s_tx_sent_at_us) > s_num * s_slot_us;
+    if (stale) {
+        s_tx_stale++;
+    }
     if (s_tx_in_flight && !stale) {
         /* Previous send hasn't completed yet (its callback hasn't fired): skip this
          * turn rather than risk the buffer-pool race above. Rare in healthy operation. */
@@ -280,21 +280,21 @@ static void my_turn_cb(void *arg)
      * drift until it lands somewhere it's actually heard again, at which point the precise
      * path above takes back over. Half a slot width either way is enough to shift phase
      * without meaningfully disrupting an already-working schedule. */
-    int64_t jitter_us = (int64_t)(esp_random() % (SLOT_US + 1)) - (SLOT_US / 2);
-    schedule_my_turn(NUM_SENDERS * SLOT_US + jitter_us);
+    int64_t jitter_us = (int64_t)(esp_random() % (s_slot_us + 1)) - (s_slot_us / 2);
+    schedule_my_turn(s_num * s_slot_us + jitter_us);
 }
 
 /* Common to both ways we can hear a peer (see note_peer_heard_from_csi below): reschedule
  * our turn relative to theirs. */
 static void note_peer_heard(int their_id)
 {
-    if (their_id < 0 || their_id >= NUM_SENDERS || their_id == SENDER_ID) {
+    if (their_id < 0 || their_id >= s_num || their_id == s_id) {
         return;
     }
     s_heard_count++;
     /* If I'm next after them: wait 1 slot. If someone between us is missing,
      * wait proportionally longer, so the line keeps moving without them. */
-    schedule_my_turn(turns_until_me(their_id) * SLOT_US);
+    schedule_my_turn(turns_until_me(their_id) * s_slot_us);
 }
 
 /* Called whenever this node hears another node's ESP-NOW packet at the application
@@ -307,7 +307,7 @@ static void note_peer_heard(int their_id)
 static void on_packet_heard(const esp_now_recv_info_t *info, const uint8_t *data, int len)
 {
     const uint8_t *src = info->src_addr;
-    if (src[0] != 0x1a || src[1] || src[2] || src[3] || src[4]) {
+    if (memcmp(src, s_mac, 5)) {  /* not one of ours */
         return;
     }
     note_peer_heard(src[5]);
@@ -315,13 +315,15 @@ static void on_packet_heard(const esp_now_recv_info_t *info, const uint8_t *data
 
 static void diag_timer_cb(void *arg)
 {
-    ESP_LOGW(TAG, "DIAG 1s: my_turn fires=%lu heard=%lu skipped=%lu stale=%lu free_heap=%lu",
+    ESP_LOGW(TAG, "DIAG 1s: my_turn fires=%lu heard=%lu skipped=%lu stale=%lu csi_dropped=%lu free_heap=%lu",
              (unsigned long)s_turn_fires, (unsigned long)s_heard_count,
-             (unsigned long)s_tx_skipped, (unsigned long)s_tx_stale, (unsigned long)esp_get_free_heap_size());
+             (unsigned long)s_tx_skipped, (unsigned long)s_tx_stale, (unsigned long)s_csi_dropped,
+             (unsigned long)esp_get_free_heap_size());
     s_turn_fires = 0;
     s_heard_count = 0;
     s_tx_skipped = 0;
     s_tx_stale = 0;
+    s_csi_dropped = 0;
 }
 
 /* Printing one CSI_DATA line over a 921600-baud UART (ets_printf, blocking) takes on
@@ -360,10 +362,10 @@ static void wifi_csi_rx_cb(void *ctx, wifi_csi_info_t *info)
         return;
     }
 
-    if (memcmp(info->mac, CONFIG_CSI_SEND_MAC, 5)) {  /* not in our group (1a:00:00:00:00:xx) */
+    if (memcmp(info->mac, s_mac, 5)) {  /* not in our group (1a:0c:12:00:01:xx) */
         return;
     }
-    if (info->mac[5] == SENDER_ID) {  /* that's our own transmission; nothing to capture */
+    if (info->mac[5] == s_id) {  /* that's our own transmission; nothing to capture */
         return;
     }
     /* This fires reliably even when on_packet_heard (ESP-NOW app layer) doesn't under
@@ -407,8 +409,9 @@ static void wifi_csi_rx_cb(void *ctx, wifi_csi_info_t *info)
     memcpy(item.mac, info->mac, 6);
     memcpy(item.buf, info->buf, info->len);
 
+    /* Never log from here: the UART is the bottleneck, and blocking on it stalls the WiFi task. */
     if (xQueueSend(s_csi_print_queue, &item, 0) != pdTRUE) {
-        ESP_LOGW(TAG, "CSI print queue full, dropped a sample");
+        s_csi_dropped++;
     }
 }
 
@@ -535,11 +538,30 @@ void app_main()
     }
     ESP_ERROR_CHECK(ret);
 
+    /* Per-board ID and node count from NVS (firmware/flash_all.py); compile-time values otherwise. */
+    nvs_handle_t nvs;
+    if (nvs_open("node", NVS_READONLY, &nvs) == ESP_OK) {
+        nvs_get_u8(nvs, "id", &s_id);
+        nvs_get_u8(nvs, "num", &s_num);
+        nvs_close(nvs);
+    }
+    if (s_num < 2 || s_id >= s_num) {
+        ESP_LOGE(TAG, "bad node config: id %d of %d; using id 0 of 2", s_id, s_num);
+        s_id = 0;
+        s_num = 2;
+    }
+    s_mac[5] = s_id;
+    s_rate = LINE_BUDGET / (s_num - 1);
+    if (s_rate > MAX_SEND_HZ) {
+        s_rate = MAX_SEND_HZ;
+    }
+    s_slot_us = 1000000LL / ((int64_t)s_rate * s_num);
+
     /* Printing is the slow part (UART at 921600 baud); do it on its own low-priority
      * task so the WiFi/ESP-NOW stack is never blocked behind it. */
     s_csi_print_queue = xQueueCreate(CSI_PRINT_QUEUE_LEN, sizeof(csi_print_item_t));
     configASSERT(s_csi_print_queue != NULL);
-    /* 8192, not the original 4096: marginal at higher NUM_SENDERS per a diagnostic agent's
+    /* 8192, not the original 4096: marginal at higher s_num per a diagnostic agent's
      * review (more peers heard -> more frequent csi_print_task wakeups -> more exposure to any
      * rare worst-case stack depth in the ets_printf call chain). Doubled as a cheap precaution;
      * not confirmed as the actual cause of a real crash -- read the reset reason on a misbehaving
@@ -578,12 +600,12 @@ void app_main()
 
     ESP_LOGI(TAG, "================ CSI TRANSCEIVER (turn-taking) ================");
     ESP_LOGI(TAG, "wifi_channel: %d, send_frequency: %d, mac: " MACSTR,
-             CONFIG_LESS_INTERFERENCE_CHANNEL, CONFIG_SEND_FREQUENCY, MAC2STR(CONFIG_CSI_SEND_MAC));
-    ESP_LOGI(TAG, "node %d of %d, slot: %lld us", SENDER_ID, NUM_SENDERS, (long long)SLOT_US);
+             CONFIG_LESS_INTERFERENCE_CHANNEL, s_rate, MAC2STR(s_mac));
+    ESP_LOGI(TAG, "node %d of %d, slot: %lld us", s_id, s_num, (long long)s_slot_us);
 
     /* Start as if the last node in line just spoke; boards sync up once they hear
      * each other for real. */
-    schedule_my_turn(turns_until_me(NUM_SENDERS - 1) * SLOT_US);
+    schedule_my_turn(turns_until_me(s_num - 1) * s_slot_us);
 
     /* Diagnostic: how often are we actually trying to send, and hearing the peer? */
     esp_timer_handle_t diag_timer;

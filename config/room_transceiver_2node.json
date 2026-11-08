@@ -3,8 +3,8 @@
   "room": {"width_m": 2.77, "depth_m": 1.84},
   "nodes": {
     "node0":    {"role": "receiver", "chip": "ESP32-C5", "x": 0.0,  "y": 0.0, "port_hint": "COM6"},
-    "node0_tx": {"role": "sender",   "chip": "ESP32-C5", "x": 0.0,  "y": 0.0, "mac": "1a:00:00:00:00:00"},
+    "node0_tx": {"role": "sender",   "chip": "ESP32-C5", "x": 0.0,  "y": 0.0, "mac": "1a:0c:12:00:01:00"},
     "node1":    {"role": "receiver", "chip": "ESP32-C5", "x": 2.77, "y": 0.0, "port_hint": "COM7"},
-    "node1_tx": {"role": "sender",   "chip": "ESP32-C5", "x": 2.77, "y": 0.0, "mac": "1a:00:00:00:00:01"}
+    "node1_tx": {"role": "sender",   "chip": "ESP32-C5", "x": 2.77, "y": 0.0, "mac": "1a:0c:12:00:01:01"}
   }
 }

@@ -3,18 +3,18 @@
   "room": {"width_m": 2.77, "depth_m": 1.84},
   "nodes": {
     "node0":    {"role": "receiver", "chip": "ESP32-C5", "x": 2.77,  "y": 0.0,  "port_hint": "COM6"},
-    "node0_tx": {"role": "sender",   "chip": "ESP32-C5", "x": 2.77,  "y": 0.0,  "mac": "1a:00:00:00:00:00"},
+    "node0_tx": {"role": "sender",   "chip": "ESP32-C5", "x": 2.77,  "y": 0.0,  "mac": "1a:0c:12:00:01:00"},
 
     "node1":    {"role": "receiver", "chip": "ESP32-C5", "x": 0.0,   "y": 1.84, "port_hint": "COM7"},
-    "node1_tx": {"role": "sender",   "chip": "ESP32-C5", "x": 0.0,   "y": 1.84, "mac": "1a:00:00:00:00:01"},
+    "node1_tx": {"role": "sender",   "chip": "ESP32-C5", "x": 0.0,   "y": 1.84, "mac": "1a:0c:12:00:01:01"},
 
     "node2":    {"role": "receiver", "chip": "ESP32-S3", "x": 2.77,  "y": 1.84, "port_hint": "COM8"},
-    "node2_tx": {"role": "sender",   "chip": "ESP32-S3", "x": 2.77,  "y": 1.84, "mac": "1a:00:00:00:00:02"},
+    "node2_tx": {"role": "sender",   "chip": "ESP32-S3", "x": 2.77,  "y": 1.84, "mac": "1a:0c:12:00:01:02"},
 
     "node3":    {"role": "receiver", "chip": "ESP32-C5", "x": 1.385, "y": -1.5, "port_hint": "COM9", "enabled": false},
-    "node3_tx": {"role": "sender",   "chip": "ESP32-C5", "x": 1.385, "y": -1.5, "mac": "1a:00:00:00:00:03", "enabled": false},
+    "node3_tx": {"role": "sender",   "chip": "ESP32-C5", "x": 1.385, "y": -1.5, "mac": "1a:0c:12:00:01:03", "enabled": false},
 
     "node4":    {"role": "receiver", "chip": "ESP32-S3", "x": 0.0,   "y": 0.0,  "port_hint": "COM10"},
-    "node4_tx": {"role": "sender",   "chip": "ESP32-S3", "x": 0.0,   "y": 0.0,  "mac": "1a:00:00:00:00:04"}
+    "node4_tx": {"role": "sender",   "chip": "ESP32-S3", "x": 0.0,   "y": 0.0,  "mac": "1a:0c:12:00:01:04"}
   }
 }
