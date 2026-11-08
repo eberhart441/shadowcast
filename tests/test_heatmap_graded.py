@@ -10,6 +10,7 @@ a test that feeds one link sees that link alone in the room.
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from csi.heatmap import Heatmap, cell_centres, link_evidence
 from csi.room import load_room, point_segment_distance
@@ -297,6 +298,9 @@ def test_a_level_held_longer_than_the_freeze_cap_is_learned_as_the_new_baseline(
 
 
 # ---------------------------------------------------------------- near-node veto
+# ROOM5 has six links, so once they all report the default estimator (auto) is RTI with robust evidence
+# (csi/rti.py). These step series give the same 0-or-1 evidence under both evidence rules, so the busy-node
+# logic below is unchanged; the starburst test pins each estimator.
 
 
 def node_series(raised, ratio=3.0):
@@ -304,12 +308,17 @@ def node_series(raised, ratio=3.0):
     return {label: [1.0] * 44 + [ratio if label in raised else 1.0] * 12 for label in TX0_LINKS + TX1_LINKS}
 
 
-def test_movement_next_to_a_node_marks_it_busy_and_mutes_its_starburst():
+@pytest.mark.parametrize("estimator", ["backprojection", "rti"])
+def test_movement_next_to_a_node_marks_it_busy_and_mutes_its_starburst(estimator):
     """All three tx0 links rise while the tx1 links stay quiet: someone is right next to tx0. Its links are
-    down-weighted, so the fan of heat they would paint across the room is much fainter."""
-    vetoed, unmuted = Heatmap(ROOM5), Heatmap(ROOM5, busy_link_weight=1.0)
+    down-weighted, so the fan of heat they would paint across the room is much fainter.
+
+    Updated for csi/rti.py: with six reporting links auto would pick RTI, so each estimator is pinned and the
+    veto must mute the starburst in both (RTI scales a busy link's evidence and confidence)."""
+    vetoed, unmuted = Heatmap(ROOM5, estimator=estimator), Heatmap(ROOM5, estimator=estimator, busy_link_weight=1.0)
     for heat in (vetoed, unmuted):
         replay_links(heat, node_series(TX0_LINKS))
+        assert heat.estimator_used == estimator
         assert heat.busy_nodes == ["tx0"]
         assert set(heat.contributing) == set(TX0_LINKS)       # still raised and reported, only muted
     centres = cell_centres(vetoed.cols, vetoed.rows, ROOM5.width_m, ROOM5.depth_m)
