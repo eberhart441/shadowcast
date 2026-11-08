@@ -17,7 +17,7 @@
       "chip": "ESP32-C5",
       "x": 2.77,
       "y": 0.0,
-      "serial": "38:44:BE:A5:18:B0"
+      "serial": "10:BD:A3:CF:67:48"
     },
     "rx3": {
       "role": "receiver",
@@ -32,7 +32,7 @@
       "mac": "1a:00:00:00:00:00",
       "x": 2.77,
       "y": 1.84,
-      "serial": "38:44:BE:A5:41:BC"
+      "serial": "10:BD:A3:CF:7D:CC"
     },
     "tx1": {
       "role": "sender",
