@@ -2,9 +2,10 @@
 
 # Device-free motion sensing from WiFi CSI
 
-**Four ESP32 radios, one room, no cameras, no wearables.**<br>
-We turn the WiFi channel into a motion sensor: every packet that crosses the room is a
-114-subcarrier measurement of how the room scatters radio waves, and a moving body changes it.
+**Every radio link is a motion sensor.**<br>
+Every WiFi packet arrives as a 114-subcarrier measurement of how the space scattered it on the way,
+and a moving body changes that measurement. No cameras, no wearables, no line of sight.<br>
+Today it runs on four boards in one room. The math doesn't care how many boards there are, or where.
 
 [![CI](https://github.com/CodeMetalForge-Hackathon/Team-12/actions/workflows/ci.yml/badge.svg)](https://github.com/CodeMetalForge-Hackathon/Team-12/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/python-3.10%2B-3776AB)
@@ -14,7 +15,7 @@ We turn the WiFi channel into a motion sensor: every packet that crosses the roo
 
 Team 12 · CodeMetalForge Hackathon
 
-[Quick start](#quick-start-no-hardware-needed) · [How it works](#how-it-works) · [The math](#the-math) ·
+[Beyond one room](#beyond-one-room) · [Quick start](#quick-start-no-hardware-needed) · [How it works](#how-it-works) · [The math](#the-math) ·
 [Why it's hard](#why-this-is-hard) · [Engineering](#engineering) · [Results](#results) ·
 [Docs](#documentation)
 
@@ -24,12 +25,14 @@ Team 12 · CodeMetalForge Hackathon
 
 ## The pitch
 
-Firefighters and tactical teams need to know whether anyone is moving in a room **before** they
-open the door. Cameras need light and line of sight, and smoke blinds them; wearables need the
-person to be wearing one. Radio does not care about smoke or darkness.
+To decode a packet, every WiFi receiver already measures the channel the packet crossed: one complex gain
+per subcarrier, called **Channel State Information (CSI)**. That measurement is a sensor that almost
+nobody uses. When a person moves between two radios, their body blocks, reflects and bends the waves,
+and the CSI changes. The person carries nothing. Smoke, darkness, drywall and foliage stop a camera, but
+radio goes through them.
 
-This project reads **Channel State Information (CSI)**: the per-subcarrier complex gain that every
-WiFi receiver already estimates to decode a packet. Fixed ESP32 boards around a room exchange
+Our first target is firefighters and tactical teams, who need to know whether anyone is moving in a room
+**before** they open the door. Fixed ESP32 boards around a room exchange
 packets at 40 Hz. Each sender→receiver **link** becomes a continuous, 114-dimensional probe of the
 space between them. A body moving through that space perturbs the multipath channel. We turn the
 perturbation into a calibrated, debounced **EMPTY / MOTION** decision per link, and fuse the links into
@@ -47,6 +50,45 @@ a live **RF-tomography heatmap** of where in the room the change is.
 > still is not reliably detected, because the motion statistic removes the static channel by
 > construction. A missed person is the costly error in search and rescue, so treat the output as one
 > input to a decision, never as the only check that a room is empty. See [Limits](#limits).
+
+## Beyond one room
+
+The demo is one room. What we built is general: **any set of radios at known positions becomes a
+motion-imaging network**. Nothing in the software assumes a room, a building or a fixed number of nodes.
+
+- **The target carries nothing.** No tag, no phone, no cooperation needed.
+- **It passes through what stops light.** 2.4 GHz radio goes through smoke, darkness, drywall, wood and
+  foliage. Published systems have already sensed people through walls with radio:
+  - variance-based radio tomography tracked a moving person from a ring of nodes outside the walls
+    (Wilson & Patwari, *IEEE TMC* 2011);
+  - MIT's Wi-Vi detected people behind walls using WiFi (Adib & Katabi, *SIGCOMM* 2013).
+- **Nodes are cheap enough to lose.** Each one is a commodity ESP32 on a battery. Every link is scored
+  independently, so a lost node drops only its own links. They read NO_SIGNAL, never a false EMPTY.
+- **Geometry is data.** Nodes are coordinates in [`config/room.json`](config/room.json), and they may sit
+  outside the room. Adding a node is a JSON edit, not a code change.
+- **Sensing grows quadratically.** Every pair of nodes is a link, so coverage grows faster than cost:
+
+```math
+L_{\text{today}} = R\cdot S
+\qquad\text{vs.}\qquad
+L_{\text{transceivers}} = \binom{n}{2} = \frac{n(n-1)}{2}
+```
+
+Here $R$ and $S$ count receivers and senders, and $n$ counts nodes that both send and receive. Ten such
+nodes give 45 links; fifty give 1,225. Each link is one projection through the space, and the heatmap is
+a backprojection of those projections. A CT scanner works the same way, with X-rays where we use radio
+links: more angles give a sharper image.
+
+| Scenario | How it would work | Already in this repo | Still to build |
+|---|---|---|---|
+| **Room clearing** (firefighters, tactical teams): *today's demo* | Boards at the corners of a room give per-link MOTION and a heatmap before anyone opens the door | Everything in this repo | Labelled accuracy data; detecting people who stay still |
+| **Drone swarm around a building** | Drones hover outside the walls as flying nodes, and every pair of drones is a link through the building. Moving the swarm sweeps new angles through the interior, like a CT scanner's rotating gantry | Arbitrary node positions, including outside the room; independent per-link scoring; the backprojection heatmap | Node positions that move (they are static config today), radios and positioning on the drones, calibration through walls |
+| **Scatter-dropped sensor field** (woods, disaster zones, search areas) | Dozens to hundreds of cheap battery nodes, dropped from the air, form a mesh. Each neighbouring pair is an invisible tripwire whose sensitive band has radius $\sqrt{\lambda d/4}$ (≈ 0.8 m for nodes 20 m apart). A person moving through the field lights a chain of links that traces their path | Links generated from config; a source interface that a radio-mesh source plugs into; CSI forwarded over ESP-NOW to a gateway (prototype on `feat/wireless-receivers`) | Nodes that locate themselves after the drop, duty-cycled power, channel scheduling at scale (TDMA: issues #16, #17, #20, #21) |
+| **Camera-free buildings** (elder care, smart buildings) | Ordinary WiFi hardware doubles as a motion sensor, with no camera and nothing to wear | The full pipeline and dashboard | Reading CSI from commodity access points |
+
+**Responsible use.** Sensing people who carry nothing and cannot see the sensor cuts both ways. We built
+this for rescue and safety. Consent, privacy and authorised deployment are requirements for any use
+beyond the bench.
 
 ## Quick start (no hardware needed)
 
@@ -152,8 +194,10 @@ percentile. In noisy-room mode, we use a **one-sided MAD** taken from the lower 
 only, so bursts of movement during calibration cannot inflate the spread:
 
 ```math
-\theta_\ell^{\text{quiet}}=1.25\cdot Q_{0.99}\big(S_i:\ i\in\text{clean chunks}\big),\qquad
-\theta_\ell^{\text{noisy}}=\max\big(m+6\cdot1.4826\,s_-,\ 3m\big),\quad s_-=\operatorname{median}\lbrace m-x : x\le m\rbrace
+\begin{aligned}
+\theta_\ell^{\text{quiet}} &= 1.25\cdot Q_{0.99}\big(S_i : i\in\text{clean chunks}\big)\\[4pt]
+\theta_\ell^{\text{noisy}} &= \max\big(m+6\cdot1.4826\,s_-,\ 3m\big),\qquad s_-=\operatorname{median}\lbrace m-x : x\le m\rbrace
+\end{aligned}
 ```
 
 **Spatial evidence.** For the heatmap, each link is judged against its *own* rolling 60 s median $b_\ell$ rather
@@ -168,13 +212,15 @@ $\ln\frac{g^2 S}{g^2 b}=\ln\frac{S}{b}$.
 
 **Geometric fusion.** Each link spreads its evidence over cells $\mathbf c$ with a Gaussian footprint around
 the sender–receiver segment. $\sigma_F = 0.35$ m is on the scale of the links' first Fresnel-zone radius,
-$\sqrt{\lambda d/4}\approx$ 0.24–0.32 m. Cells blend an "any link" sum with a soft-AND geometric mean of the
+$\sqrt{\lambda d/4}$ ≈ 0.24–0.32 m. Cells blend an "any link" sum with a soft-AND geometric mean of the
 two strongest contributions $p_{(1)}, p_{(2)}$, then saturate:
 
 ```math
-\Phi(\mathbf c)=\tfrac12\sum_\ell w_\ell\,e_\ell\,F_\ell(\mathbf c)+\tfrac12\sqrt{p_{(1)}(\mathbf c)\,p_{(2)}(\mathbf c)},
-\qquad F_\ell(\mathbf c)=e^{-d_\ell(\mathbf c)^2/2\sigma_F^2},
-\qquad T(\mathbf c)=1-e^{-1.3\,\Phi(\mathbf c)}
+\begin{aligned}
+F_\ell(\mathbf c) &= e^{-d_\ell(\mathbf c)^2/2\sigma_F^2}\\[4pt]
+\Phi(\mathbf c) &= \tfrac12\sum_\ell w_\ell\,e_\ell\,F_\ell(\mathbf c)+\tfrac12\sqrt{p_{(1)}(\mathbf c)\,p_{(2)}(\mathbf c)}\\[4pt]
+T(\mathbf c) &= 1-e^{-1.3\,\Phi(\mathbf c)}
+\end{aligned}
 ```
 
 Each cell is then smoothed in time with exponential rise and decay ($\tau = 0.3$ s), so an empty room settles to cold.
