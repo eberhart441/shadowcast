@@ -1,0 +1,20 @@
+{
+  "comment": "5 real ESP32 boards flashed with firmware/csi_transceiver (NUM_SENDERS=5, SENDER_ID 0-4), real deployed layout: top-left (S3, node4) and top-right (C5, node0) are wired to the laptop; bottom-left (C5), bottom-right (S3, node2) and a 5th node 1.5m beyond the top wall's midpoint (C5) are powered but not USB-connected. Which of node1/node3 is physically bottom-left vs top-mid-outside is unconfirmed -- fix if wrong.",
+  "room": {"width_m": 2.77, "depth_m": 1.84},
+  "nodes": {
+    "node0":    {"role": "receiver", "chip": "ESP32-C5", "x": 2.77,  "y": 0.0,  "port_hint": "COM6"},
+    "node0_tx": {"role": "sender",   "chip": "ESP32-C5", "x": 2.77,  "y": 0.0,  "mac": "1a:00:00:00:00:00"},
+
+    "node1":    {"role": "receiver", "chip": "ESP32-C5", "x": 0.0,   "y": 1.84, "port_hint": "COM7"},
+    "node1_tx": {"role": "sender",   "chip": "ESP32-C5", "x": 0.0,   "y": 1.84, "mac": "1a:00:00:00:00:01"},
+
+    "node2":    {"role": "receiver", "chip": "ESP32-S3", "x": 2.77,  "y": 1.84, "port_hint": "COM8"},
+    "node2_tx": {"role": "sender",   "chip": "ESP32-S3", "x": 2.77,  "y": 1.84, "mac": "1a:00:00:00:00:02"},
+
+    "node3":    {"role": "receiver", "chip": "ESP32-C5", "x": 1.385, "y": -1.5, "port_hint": "COM9"},
+    "node3_tx": {"role": "sender",   "chip": "ESP32-C5", "x": 1.385, "y": -1.5, "mac": "1a:00:00:00:00:03"},
+
+    "node4":    {"role": "receiver", "chip": "ESP32-S3", "x": 0.0,   "y": 0.0,  "port_hint": "COM10"},
+    "node4_tx": {"role": "sender",   "chip": "ESP32-S3", "x": 0.0,   "y": 0.0,  "mac": "1a:00:00:00:00:04"}
+  }
+}

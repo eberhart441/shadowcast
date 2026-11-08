@@ -1,0 +1,17 @@
+{
+  "comment": "4 real ESP32 boards flashed with firmware/csi_transceiver (NUM_SENDERS=4, SENDER_ID 0-3), at the 4 corners of the real rig's room (2.77m x 1.84m). node1 is currently physically disconnected (no 4th USB cable) -- its receiver and sender entries are 'enabled': false so the dashboard runs cleanly on the 3 connected boards; flip both back to true (and fix port_hint) once it's reconnected. Each physical board appears twice (paired receiver + sender entry at the same x/y) per docs/design/transceiver-room-config.md.",
+  "room": {"width_m": 2.77, "depth_m": 1.84},
+  "nodes": {
+    "node0":    {"role": "receiver", "chip": "ESP32-C5", "x": 0.0,  "y": 0.0,  "port_hint": "COM6"},
+    "node0_tx": {"role": "sender",   "chip": "ESP32-C5", "x": 0.0,  "y": 0.0,  "mac": "1a:00:00:00:00:00"},
+
+    "node1":    {"role": "receiver", "chip": "ESP32-C5", "x": 2.77, "y": 0.0,  "port_hint": "COM7", "enabled": false},
+    "node1_tx": {"role": "sender",   "chip": "ESP32-C5", "x": 2.77, "y": 0.0,  "mac": "1a:00:00:00:00:01", "enabled": false},
+
+    "node2":    {"role": "receiver", "chip": "ESP32-S3", "x": 2.77, "y": 1.84, "port_hint": "COM8"},
+    "node2_tx": {"role": "sender",   "chip": "ESP32-S3", "x": 2.77, "y": 1.84, "mac": "1a:00:00:00:00:02"},
+
+    "node3":    {"role": "receiver", "chip": "ESP32-C5", "x": 0.0,  "y": 1.84, "port_hint": "COM9"},
+    "node3_tx": {"role": "sender",   "chip": "ESP32-C5", "x": 0.0,  "y": 1.84, "mac": "1a:00:00:00:00:03"}
+  }
+}
