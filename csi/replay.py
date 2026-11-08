@@ -5,7 +5,9 @@
     server.start(); server.wait_finished(); server.stop()
 
 A replayed log serves its logged payloads verbatim, at their logged times divided by ``speed``, through the
-same /api/state and /api/events as a live run. The last payload is marked ``status.finished``.
+same /api/state and /api/events as a live run. The last payload is marked ``status.finished``. A log written
+before the tracker existed (no payload has a ``track`` key) gets each frame's ``track`` computed from its logged
+heatmap (csi/tracker.py) as it is served, so old runs can be watched with the tracker too.
 """
 from __future__ import annotations
 
@@ -26,6 +28,7 @@ from .recording import META_NAME, Session, load_session
 from .room import Room
 from .server import DEFAULT_HOST, FRAME_INTERVAL_S, LOG_FORMAT, REPLAY_OFF, DashboardServer, FrameServer
 from .simulate import DEFAULT_MAC
+from .tracker import Tracker
 
 Pathlike = Union[str, Path]
 
@@ -100,6 +103,8 @@ class ReplayServer(FrameServer):
                  web_index: Union[Path, str, None] = None) -> None:
         super().__init__(host, port, web_index)
         self._payloads: Sequence[dict] = [_replay_commands(p) for p in log.payloads]
+        # an old log has no track: follow the person on its logged heatmaps while serving (a new log keeps its own)
+        self._tracker = None if any("track" in p for p in self._payloads) else Tracker()
         self._speed = validate_speed(speed)
         self._latest = json.dumps(self._payloads[0])
         self._feeder: threading.Thread | None = None
@@ -120,6 +125,8 @@ class ReplayServer(FrameServer):
                 if self._stop.wait(wait_s):
                     return
             previous = t
+            if self._tracker is not None:
+                payload = {**payload, "track": self._tracker.update(t, payload["heatmap"])}
             text = json.dumps(payload)
             with self._lock:
                 self._latest = text

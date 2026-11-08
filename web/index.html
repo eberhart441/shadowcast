@@ -19,6 +19,7 @@
     --uncal: #e3a008;
     --warm: #7d9ab5;
     --sender: #58a6ff;
+    --track: #4de8ff;
   }
   * { box-sizing: border-box; }
   [hidden] { display: none !important; }
@@ -85,6 +86,10 @@
   #map { display: block; width: 100%; height: 300px; }
   .caption { margin: 12px 0 8px; font-size: 1.05rem; font-weight: 650; }
   .busy-note { margin: 0 0 8px; color: var(--uncal); font-weight: 650; }
+  .track-note { margin: 0 0 8px; color: var(--track); font-weight: 650; }
+  .track-note.lost { color: var(--text); }
+  .track-toggle { display: inline-flex; align-items: center; gap: 6px; margin: 0 0 8px; color: var(--muted); }
+  .track-toggle input { width: 18px; height: 18px; margin: 0; }
   .legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 0.92rem; color: var(--muted); }
   .sw {
     display: inline-block; width: 16px; height: 6px; border-radius: 3px; margin-right: 6px; vertical-align: middle;
@@ -101,6 +106,14 @@
   }
   .shape-busy {
     display: inline-block; width: 13px; height: 13px; border-radius: 50%; border: 3px solid var(--uncal);
+    margin-right: 6px; vertical-align: middle;
+  }
+  .shape-track {
+    display: inline-block; width: 16px; height: 11px; border-radius: 50%; border: 2px solid var(--track);
+    background: rgba(77, 232, 255, 0.25); margin-right: 6px; vertical-align: middle;
+  }
+  .shape-lost {
+    display: inline-block; width: 13px; height: 13px; border-radius: 50%; border: 2px dashed var(--text);
     margin-right: 6px; vertical-align: middle;
   }
 
@@ -204,6 +217,8 @@
     <canvas id="map" role="img" aria-label="Room map: heatmap of likely motion, with the room's links and nodes"></canvas>
     <p class="caption" id="map-caption">Rough motion-likelihood estimate from 4 links, not a position track.</p>
     <p class="busy-note" id="busy-note" role="status" hidden></p>
+    <p class="track-note" id="track-note" hidden></p>
+    <label class="track-toggle"><input type="checkbox" id="track-show" checked> Show the person track</label>
     <div class="legend">
       <span><span class="sw EMPTY"></span>EMPTY</span>
       <span><span class="sw MOTION"></span>MOTION</span>
@@ -213,6 +228,8 @@
       <span><span class="shape-rx"></span>receiver</span>
       <span><span class="shape-tx"></span>sender</span>
       <span><span class="shape-busy"></span>activity near a node</span>
+      <span><span class="shape-track"></span>person track (1&sigma;), last 20 s</span>
+      <span><span class="shape-lost"></span>last seen</span>
     </div>
   </section>
 
@@ -291,6 +308,10 @@
   var LOSS_WARN = 0.10;         // link health: a sender losing more than this share of its packets is flagged
   var CLIP_WARN = 0.05;         // ... and a link with more than this share of clipped samples
   var BUSY_COLOUR = "#e3a008";  // the near-node veto: a ring round the node and a line in its label
+  var TRACK_COLOUR = "#4de8ff"; // the person track (payload.track, csi/tracker.py): cyan, apart from heat and links
+  var LOST_COLOUR = "#e8edf3";  // its 'last seen' marker
+  var TRAIL_FADE_S = 20;        // the trail fades out over this many seconds (the tracker keeps 20 s)
+  var COASTING_S = 0.5;         // an active track unmeasured for longer than this is coasting: dashed ellipse
   var STATES = ["EMPTY", "MOTION", "NO_SIGNAL", "UNCALIBRATED", "WARMUP"];
   var COLOR = {
     EMPTY: "#3fb950", MOTION: "#f85149", NO_SIGNAL: "#8b949e", UNCALIBRATED: "#e3a008", WARMUP: "#7d9ab5"
@@ -314,6 +335,11 @@
     if (s < 1) return "now";
     return s < 120 ? Math.round(s) + " s ago" : Math.round(s / 60) + " min ago";
   }
+  // a length of time as text: seconds, then minutes
+  function duration(s) {
+    s = Math.max(0, s || 0);
+    return s < 120 ? Math.round(s) + " s" : Math.round(s / 60) + " min";
+  }
   function el(tag, cls, text) {
     var node = document.createElement(tag);
     if (cls) node.className = cls;
@@ -326,7 +352,8 @@
     connDot: $("conn-dot"), connText: $("conn-text"), pause: $("pause"), pausedFlag: $("paused-flag"),
     receivers: $("receivers"), counts: $("link-counts"), calib: $("calib"), packet: $("pkt-time"),
     messages: $("messages"), map: $("map"), mapCard: $("map-card"), links: $("links"),
-    caption: $("map-caption"), busy: $("busy-note"), lastMotion: $("last-motion")
+    caption: $("map-caption"), busy: $("busy-note"), lastMotion: $("last-motion"),
+    track: $("track-note"), trackShow: $("track-show")
   };
   var ctx = els.map.getContext("2d");
   var heatCanvas = document.createElement("canvas");
@@ -473,6 +500,23 @@
     };
   }
   // ---- geometry: pure (tested with node) end
+
+  // ---- track: pure (tested with node) begin
+  // The 1-sigma ellipse of a track from its sx, sy (metres) and their correlation rho: semi-axes in metres and the
+  // rotation of the first (major) axis from +x. The map's y runs down like the room's, so the angle carries over.
+  function sigmaEllipse(sx, sy, rho) {
+    var a = sx * sx, d = sy * sy, b = (rho || 0) * sx * sy;
+    var mean = (a + d) / 2, half = Math.sqrt((a - d) * (a - d) / 4 + b * b);
+    var major = mean + half, minor = Math.max(0, mean - half);
+    return { rx: Math.sqrt(major), ry: Math.sqrt(minor), angle: Math.atan2(major - a, b) };
+  }
+  // the payload's track, or null when there is none to draw (an old log has no track key; null means no track)
+  function usableTrack(tr) {
+    if (!tr || typeof tr !== "object") return null;
+    if (!Number.isFinite(tr.x) || !Number.isFinite(tr.y)) return null;
+    return tr;
+  }
+  // ---- track: pure (tested with node) end
 
   // room x, y in metres -> css px; the frame b sets the scale and the offset, the room sits inside it
   function sizeMap(room, b) {
@@ -623,6 +667,8 @@
       labelBlock([{ text: row.id, font: FONT }], x1 + (x2 - x1) * t, y1 + (y2 - y1) * t, "center", "middle", "#e8edf3");
     });
 
+    if (trackShown()) drawTrack(usableTrack(p.track), g, p.status.time_s);
+
     // nodes: receivers are squares, senders are circles. A node outside the room (rx3 beyond the top wall)
     // gets a dashed leader to the nearest room edge and an "outside room" line in its label. A node with
     // movement right next to it (heatmap.busy_nodes, the near-node veto) gets a ring and an "activity near" line.
@@ -676,6 +722,90 @@
       if (busy[n.name]) lines.push({ text: "activity near " + n.name, font: TICK_FONT, colour: BUSY_COLOUR });
       labelBlock(lines, x + side.dx, y + side.dy, side.hAlign, side.vAlign);
     });
+  }
+
+  function trackShown() { return !!els.trackShow.checked; }
+
+  // The person track: the trail as a polyline that fades with age, then the estimate with its 1-sigma ellipse
+  // (dashed while coasting), or a 'last seen' marker with its growing uncertainty and how long ago.
+  function drawTrack(tr, g, now) {
+    if (!tr) return;
+    var X = g.X, Y = g.Y;
+    var trail = Array.isArray(tr.trail) ? tr.trail : [];
+    ctx.save();
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    ctx.strokeStyle = tr.active ? TRACK_COLOUR : LOST_COLOUR;
+    ctx.lineWidth = 3;
+    for (var i = 1; i < trail.length; i++) {
+      var a = trail[i - 1], b = trail[i];
+      ctx.globalAlpha = 0.1 + 0.75 * clamp(1 - (now - b[0]) / TRAIL_FADE_S, 0, 1);
+      ctx.beginPath();
+      ctx.moveTo(X(a[1]), Y(a[2]));
+      ctx.lineTo(X(b[1]), Y(b[2]));
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+    var e = sigmaEllipse(tr.sx || 0, tr.sy || 0, tr.rho || 0);
+    var x = X(tr.x), y = Y(tr.y);
+    var rx = Math.max(3, e.rx * g.s), ry = Math.max(3, e.ry * g.s);
+    if (tr.active) {
+      ctx.fillStyle = "rgba(77, 232, 255, 0.14)";
+      ctx.strokeStyle = TRACK_COLOUR;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.ellipse(x, y, rx, ry, e.angle, 0, 2 * Math.PI);
+      ctx.fill();
+      if ((tr.last_seen_s || 0) > COASTING_S) ctx.setLineDash([7, 5]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = TRACK_COLOUR;
+      ctx.strokeStyle = "#070a0f";
+      ctx.beginPath();
+      ctx.arc(x, y, 7, 0, 2 * Math.PI);
+      ctx.fill();
+      ctx.stroke();
+    } else {
+      ctx.strokeStyle = LOST_COLOUR;
+      ctx.lineWidth = 2;
+      ctx.setLineDash([5, 5]);
+      ctx.beginPath();
+      ctx.ellipse(x, y, rx, ry, e.angle, 0, 2 * Math.PI);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(x - 7, y - 7); ctx.lineTo(x + 7, y + 7);
+      ctx.moveTo(x + 7, y - 7); ctx.lineTo(x - 7, y + 7);
+      ctx.stroke();
+    }
+    ctx.restore();
+    if (!tr.active) {
+      labelBlock([{ text: "last seen " + ago(tr.last_seen_s), font: FONT }], x + 12, y - 12, "left", "bottom",
+        LOST_COLOUR);
+    }
+  }
+
+  // the track in words, under the map; nothing for an old log or when there is no track
+  function renderTrack(p) {
+    var tr = usableTrack(p.track);
+    var on = trackShown();
+    els.track.hidden = !tr || !on;
+    els.track.className = "track-note" + (tr && !tr.active ? " lost" : "");
+    if (!tr || !on) { els.track.textContent = ""; return; }
+    var where = "(" + fmt(tr.x, 2) + ", " + fmt(tr.y, 2) + ") m";
+    var sigma = Math.max(tr.sx || 0, tr.sy || 0);
+    if (!tr.active) {
+      els.track.textContent = "Last seen " + ago(tr.last_seen_s) + " at " + where + ", within about " +
+        fmt(sigma, 1) + " m. The person may have stopped moving: still people fade from the map.";
+    } else if ((tr.last_seen_s || 0) > COASTING_S) {
+      els.track.textContent = "Person track coasting near " + where + ": last measured " +
+        fmt(tr.last_seen_s, 1) + " s ago.";
+    } else {
+      els.track.textContent = "Person track at " + where + " \u00b1 " + fmt(sigma, 2) + " m, moving " +
+        fmt(Math.sqrt((tr.vx || 0) * (tr.vx || 0) + (tr.vy || 0) * (tr.vy || 0)), 1) + " m/s, followed for " +
+        duration(tr.age_s) + ".";
+    }
   }
 
   // the near-node veto in words, under the map; old logs have no busy_nodes and show nothing
@@ -1043,6 +1173,7 @@
     shown = p;
     drawMap(p);
     renderBusy(p);
+    renderTrack(p);
     renderLinks(p);
     renderStatus(p);
     renderControls(p);
@@ -1059,6 +1190,7 @@
   });
 
   wireControls();
+  els.trackShow.addEventListener("change", function () { if (shown) render(shown); });
   drawWaiting();
   start();
 })();
