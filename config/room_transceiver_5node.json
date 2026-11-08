@@ -11,8 +11,8 @@
     "node2":    {"role": "receiver", "chip": "ESP32-S3", "x": 2.77,  "y": 1.84, "port_hint": "COM8"},
     "node2_tx": {"role": "sender",   "chip": "ESP32-S3", "x": 2.77,  "y": 1.84, "mac": "1a:00:00:00:00:02"},
 
-    "node3":    {"role": "receiver", "chip": "ESP32-C5", "x": 1.385, "y": -1.5, "port_hint": "COM9"},
-    "node3_tx": {"role": "sender",   "chip": "ESP32-C5", "x": 1.385, "y": -1.5, "mac": "1a:00:00:00:00:03"},
+    "node3":    {"role": "receiver", "chip": "ESP32-C5", "x": 1.385, "y": -1.5, "port_hint": "COM9", "enabled": false},
+    "node3_tx": {"role": "sender",   "chip": "ESP32-C5", "x": 1.385, "y": -1.5, "mac": "1a:00:00:00:00:03", "enabled": false},
 
     "node4":    {"role": "receiver", "chip": "ESP32-S3", "x": 0.0,   "y": 0.0,  "port_hint": "COM10"},
     "node4_tx": {"role": "sender",   "chip": "ESP32-S3", "x": 0.0,   "y": 0.0,  "mac": "1a:00:00:00:00:04"}

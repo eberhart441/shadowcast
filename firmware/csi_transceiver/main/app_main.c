@@ -54,6 +54,7 @@
 #include "esp_now.h"
 #include "esp_csi_gain_ctrl.h"
 #include "esp_timer.h"
+#include "esp_random.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
@@ -271,7 +272,16 @@ static void my_turn_cb(void *arg)
         }
     }
     s_count++;
-    schedule_my_turn(NUM_SENDERS * SLOT_US);
+    /* Bounded random jitter on the fallback (unheard) self-rearm only -- not on the precise
+     * note_peer_heard resync path. Found on real 5-node hardware: a node with asymmetric/bad
+     * RX can land in a stable bad phase relative to specific peers and never self-correct,
+     * since nothing ever perturbs it (diagnosed via a background research pass, not guessed).
+     * A small random nudge each time we fall back to free-running lets a stuck node's phase
+     * drift until it lands somewhere it's actually heard again, at which point the precise
+     * path above takes back over. Half a slot width either way is enough to shift phase
+     * without meaningfully disrupting an already-working schedule. */
+    int64_t jitter_us = (int64_t)(esp_random() % (SLOT_US + 1)) - (SLOT_US / 2);
+    schedule_my_turn(NUM_SENDERS * SLOT_US + jitter_us);
 }
 
 /* Common to both ways we can hear a peer (see note_peer_heard_from_csi below): reschedule
@@ -529,7 +539,12 @@ void app_main()
      * task so the WiFi/ESP-NOW stack is never blocked behind it. */
     s_csi_print_queue = xQueueCreate(CSI_PRINT_QUEUE_LEN, sizeof(csi_print_item_t));
     configASSERT(s_csi_print_queue != NULL);
-    xTaskCreate(csi_print_task, "csi_print", 4096, NULL, tskIDLE_PRIORITY + 1, NULL);
+    /* 8192, not the original 4096: marginal at higher NUM_SENDERS per a diagnostic agent's
+     * review (more peers heard -> more frequent csi_print_task wakeups -> more exposure to any
+     * rare worst-case stack depth in the ets_printf call chain). Doubled as a cheap precaution;
+     * not confirmed as the actual cause of a real crash -- read the reset reason on a misbehaving
+     * board first if this recurs (stack overflow panics name the task explicitly). */
+    xTaskCreate(csi_print_task, "csi_print", 8192, NULL, tskIDLE_PRIORITY + 1, NULL);
 
     /**
      * @brief Initialize Wi-Fi
