@@ -18,7 +18,7 @@ usage, calibration and measured results, see the [README](../README.md). The sco
 | Time model | State advances on timestamps carried by the packets, not on wall-clock time, so replays and seeded simulations are reproducible |
 | Scaling | The links are every enabled receiver paired with every enabled sender in `config/room.json`. Adding a board is a configuration change, not a code change |
 | Web stack | `http.server.ThreadingHTTPServer` with no web framework. The pages are single files with no network assets and no build step |
-| Quality | 439 tests across 49 modules, with more lines of tests (6,507) than of `csi/` (4,803). Ruff and the fast tier run before every push; CI runs ruff and the full suite on every pull request |
+| Quality | 446 tests across 50 modules, with more lines of tests (6,871) than of `csi/` (4,803). Ruff and the fast tier run before every push; CI runs ruff and the full suite on every pull request |
 
 Contents: [1. System diagram](#1-system-diagram) · [2. Module map](#2-module-map) ·
 [3. Design principles](#3-design-principles) · [4. Concurrency model](#4-concurrency-model) ·
@@ -392,10 +392,11 @@ Any other path gets 404.
 
 **Numbers.** These come from `python -m pytest --collect-only -q`.
 
-- **439 tests in 49 modules.** 69 are marked `slow`, so the fast tier has 370.
-- **6,507 lines of tests**, against 4,803 lines in `csi/`.
-- **Run times.** With `-n auto`, the full suite finishes in under a minute (47 s measured on a 16-thread machine),
-  and the fast tier in about 22 s.
+- **446 tests in 50 modules.** 69 are marked `slow`, so the fast tier has 377.
+- **6,871 lines of tests**, against 4,803 lines in `csi/`.
+- **Run times.** With `-n auto` on a 16-thread machine, the full suite takes 47 s and the fast tier about 22 s. On
+  GitHub Actions the full suite is about four times slower: its test step took 193.8 s (3 m 14 s) for PR #26
+  ([run 42471421015](https://github.com/CodeMetalForge-Hackathon/Team-12/actions/runs/42471421015)).
 - **CI** runs the full suite on Ubuntu with Python 3.12.
 - **The suite assumes a POSIX system.** 33 tests drive bash scripts, POSIX signals or a pseudo-terminal, so run it on
   Linux or macOS, as CI does.
@@ -420,6 +421,8 @@ Any other path gets 404.
   `room_5node.json` and `room_star.json`, which places a receiver outside the room.
 - **SSE pacing is off in tests.** An autouse fixture turns off the SSE stream's wall-clock pacing, so tests read
   events at full speed. The pacing test opts back in with `@pytest.mark.real_sse_pacing`.
+- **The Markdown is linted too.** [`tests/test_docs.py`](../tests/test_docs.py), in the fast tier, checks that math
+  is GitHub-safe and that relative links and their `#anchors` resolve.
 - **Edge cases are pinned down.** The tests cover:
   - 32-bit counter wraps and receiver reboots (`test_detect.py`, `test_health.py`)
   - out-of-order packets (`test_out_of_order.py`)
@@ -442,7 +445,7 @@ Run the checks yourself:
 ```bash
 pip install -r requirements.txt && pip install -e .
 scripts/check.sh            # ruff + fast tier
-scripts/check.sh --full     # ruff + all 439 tests
+scripts/check.sh --full     # ruff + all 446 tests
 ```
 
 ---
@@ -468,7 +471,7 @@ scripts/check.sh --full     # ruff + all 439 tests
 ├── tests/
 │   ├── conftest.py            pins CSI_ROOM to the frozen fixture; turns off SSE pacing in tests
 │   ├── fixtures/              room_rig4.json (frozen 4-node rig), room_5node.json, room_star.json
-│   └── test_*.py              49 modules, one per area
+│   └── test_*.py              50 modules, one per area
 ├── web/
 │   ├── index.html             the dashboard page: one static file, no network assets
 │   └── ui-overhaul/index.html redesigned page with a 3D view, served with --page; self-contained
@@ -537,8 +540,8 @@ How the parser ([`csi/parser.py`](../csi/parser.py)) handles the stream:
   false-fires in empty rooms.
 - **One moving person, zone-level accuracy.** The heatmap shows where the signal changes, not a position track.
 - **Little labelled data.** The repository has two single-link recordings and no labelled recording of the
-  four-link rig. The README's "Results and known limits" section gives the measured figures.
+  four-link rig. The README's [Results](../README.md#results) section gives the measured figures.
 - **No authentication.** Network exposure is an explicit opt-in (`--host`, `--allow-control`), meant only for a
   trusted network.
-- **Decision support only.** The output is never the only check that a room is empty. See the README section
-  "Intended use and limits".
+- **Decision support only.** The output is never the only check that a room is empty. See
+  [Limits](../README.md#limits) in the README.

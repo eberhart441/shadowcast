@@ -5,7 +5,7 @@ Setup and conventions for any subagent that implements or merges work in this re
 ## Setup
 
 - Integration branch: `csi-sensing`. A fresh worktree may start on the unrelated initial commit; create the work branch from `csi-sensing` (`git reset --hard csi-sensing` if the worktree has no work yet).
-- Python: `/Users/andrewaburustum/Documents/codemetalforge/.venv/bin/python`. Run `python -m pytest` from the worktree root so the worktree's `csi` is the one imported. The sandbox refuses `PYTHONPATH`.
+- Python: an existing virtualenv's interpreter, by absolute path, since a new worktree has no `.venv` (`docs/agents/project-context.md`, "What bites"). Run `python -m pytest` from the worktree root so the worktree's `csi` is the one imported. The sandbox refuses `PYTHONPATH`.
 - Stay out of the main checkout's branch state: no `git switch` there, and leave `data/` alone.
 
 ## Work

@@ -222,7 +222,7 @@ recalibration; no code changes.
   packets/s.
 - **Receivers are wired.** Wireless receivers (CSI forwarded over UDP) are not built; the decision to
   stay wired for now (2026-11-07) and its estimate are in
-  [`docs/agents/project-context.md`](agents/project-context.md), "Decisions and why".
+  [ADR 0004](adr/0004-wired-receivers-wireless-deferred.md).
 
 ### Placement hints
 

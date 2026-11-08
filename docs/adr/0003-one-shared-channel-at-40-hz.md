@@ -18,7 +18,7 @@ Every receiver must hear every sender, so all boards share one channel. Senders 
 ## Alternatives considered
 
 - **The stock 100 Hz send rate.** Tried and rejected: two senders lost about 65% of packets.
-- **Coordinated sending (TDMA slots after a sync beacon), then a multi-channel split after narrowing to HT20.** Proposed, not built: issues #16, #17, #19, #20 and #21 are open. Issue #16 notes that 65% loss is more than naive channel-utilisation arithmetic predicts, and suspects phase-correlated collisions between free-running senders. That hypothesis is unconfirmed; the proposed first experiment is the same two senders at 100 Hz with and without TDMA.
+- **Coordinated sending (TDMA slots after a sync beacon), then a multi-channel split after narrowing to HT20.** Proposed, not built: issues #16, #17, #19, #20 and #21 were open on 2026-11-07. Issue #16 notes that 65% loss is more than naive channel-utilisation arithmetic predicts, and suspects phase-correlated collisions between free-running senders. That hypothesis is unconfirmed; the proposed first experiment is the same two senders at 100 Hz with and without TDMA.
 - **Which channel.** Channel 6 was picked, not surveyed. No channel scan or interference survey is recorded; the first README said to pick one, "e.g. 6", and keep it fixed (`2cc5131`).
 
 ## Consequences
