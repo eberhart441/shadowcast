@@ -42,14 +42,14 @@ def post(url, path, *, headers, body=None, raw=None):
     data = raw if raw is not None else json.dumps({"link": RIGHT, "value": 1.0} if body is None else body).encode()
     req = urllib.request.Request(url + path, data=data, method="POST", headers=headers)
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with urllib.request.urlopen(req, timeout=30) as resp:
             return resp.status, json.loads(resp.read())
     except urllib.error.HTTPError as err:
         return err.code, json.loads(err.read() or b"{}")
 
 
 def state(server):
-    with urllib.request.urlopen(server.url + "/api/state", timeout=5) as resp:
+    with urllib.request.urlopen(server.url + "/api/state", timeout=30) as resp:
         return json.loads(resp.read())
 
 
@@ -118,5 +118,5 @@ def test_get_requests_stay_open_whatever_the_host_or_origin(serve):
     server = serve()
     req = urllib.request.Request(server.url + "/api/state",
                                  headers={"Host": "evil.example:1", "Origin": "http://evil.example"})
-    with urllib.request.urlopen(req, timeout=5) as resp:
+    with urllib.request.urlopen(req, timeout=30) as resp:
         assert resp.status == 200

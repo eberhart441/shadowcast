@@ -3,7 +3,12 @@ name: ci
 on:
   pull_request:
   push:
-    branches: [csi-sensing, main]
+    branches: [main]
+
+# One run per branch or PR at a time: a new push cancels the superseded run instead of queueing behind it.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:

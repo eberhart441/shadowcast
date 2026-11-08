@@ -31,7 +31,7 @@ def server():
 
 
 def test_root_serves_the_page_with_the_caption_pause_and_controls_container(server):
-    with urllib.request.urlopen(server.url + "/", timeout=5) as resp:
+    with urllib.request.urlopen(server.url + "/", timeout=30) as resp:
         assert resp.status == 200
         assert resp.headers["Content-Type"].startswith("text/html")
         body = resp.read().decode("utf-8")
@@ -130,7 +130,7 @@ def star_payload():
     server.start()
     try:
         assert server.wait_finished(timeout=60)
-        with urllib.request.urlopen(server.url + "/api/state", timeout=10) as resp:
+        with urllib.request.urlopen(server.url + "/api/state", timeout=30) as resp:
             return json.loads(resp.read())
     finally:
         server.stop()

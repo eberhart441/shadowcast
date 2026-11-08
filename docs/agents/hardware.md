@@ -9,8 +9,8 @@ Reference for anything that touches boards, serial ports, firmware, thresholds o
 Resets come from: any `esptool` command (including `chip-id`), flashing, replugging, and (observed) opening a native-USB port when a dashboard starts.
 
 - Set thresholds after the last restart, then keep the dashboard running. Change thresholds through the page or API (`Set`, `Save`).
-- List devices with `python -m serial.tools.list_ports -v` (no side effects). Run `esptool` only against the one port of the board being flashed.
-- A board's port name can change after a reset. Re-list ports before reading it.
+- Find boards with `python scripts/ports.py` (no side effects). It matches each connected board to its node by USB serial (the base MAC) and flags boards that match no node and nodes whose board is not connected. Run `esptool` only against the one port of the board being flashed, taken from that listing.
+- Port names change on every replug and after a reset, so never reuse one from an earlier run. Start receivers with `--auto-ports`: the dashboard finds each enabled receiver's port by its `serial` in `config/room.json`, and fails naming any receiver that is not connected. `--port NAME=PATH` still works for explicit ports.
 
 ## Receiver chip
 

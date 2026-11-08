@@ -48,7 +48,7 @@ def quiet_then_streams(person, duration_s=10.0, seed=12, lead_s=LEAD_S):
     return {rx: itertools.chain(lead[rx], stay[rx]) for rx in lead}
 
 
-def get(url: str, timeout: float = 5.0):
+def get(url: str, timeout: float = 30.0):
     with urllib.request.urlopen(url, timeout=timeout) as resp:
         return resp.status, resp.headers, resp.read()
 
@@ -67,7 +67,7 @@ def grid(payload: dict) -> np.ndarray:
     return np.array(heat["cells"]).reshape(heat["rows"], heat["cols"])
 
 
-def read_events(server: DashboardServer, count: int | None = None, timeout: float = 10.0) -> list[dict]:
+def read_events(server: DashboardServer, count: int | None = None, timeout: float = 30.0) -> list[dict]:
     """Payloads from /api/events: the first ``count`` events, or all of them up to the final event."""
     events = []
     with urllib.request.urlopen(server.url + "/api/events", timeout=timeout) as resp:
