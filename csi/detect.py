@@ -2,12 +2,18 @@
 
 Motion score: per subcarrier, the slow component (below about 1 Hz, which covers
 breathing) is removed with a cascade of device-time high-pass stages; the score is
-the variance of that residual over a 1 s window (windowed by device timestamps, so
+the variance of that residual over a 2 s window (windowed by device timestamps, so
 drops do not stretch it), averaged across subcarriers. So chest movement does not
 read as motion, and motion means gross movement. Motion is declared above a
 threshold, with a short debounce so the state does not flicker.
 
+The scorer's parameters are one ``ScorerConfig``. ``LIVE_SCORER`` is built from the module constants below and
+is what ``MotionScorer()`` uses, so runtime monitoring, every calibration path, evaluation and session replay
+score identically. A calibration records the configuration it was made with, so a threshold from another
+scorer can be recognised (csi/links.py compares a thresholds file with the live configuration).
+
 Public API (reused by the viewer and evaluator):
+    ScorerConfig / LIVE_SCORER   motion-scorer parameters / the one live configuration
     MotionScorer      push(packet) -> score | None, one packet at a time
     detect            (host_ts, line) stream -> Reading(host_ts, score, state, bpm, confidence, enough_data)
     calibrate         empty stream -> Calibration (threshold), raises CalibrationError
@@ -25,7 +31,7 @@ import json
 from collections import deque
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Iterable, Iterator, Optional, Sequence
+from typing import Iterable, Iterator, Mapping, Optional, Sequence
 
 import numpy as np
 
@@ -37,12 +43,59 @@ EMPTY = "EMPTY"
 MOTION = "MOTION"
 STILL_PRESENT = "STILL_PRESENT"
 
-SIM_THRESHOLD = 1.0           # simulator default: simulated empty scores ~0.2, motion ~3-9
+SIM_THRESHOLD = 1.0           # simulator default: simulated empty scores ~0.2, motion ~8-12
 DEFAULT_MARGIN = 1.25         # calibrated threshold = margin x p99 of empty windows (1.0 = the p99 itself)
-WINDOW_S = 1.0
+WINDOW_S = 2.0                # motion window (device time); 1 s before: see ScorerConfig
 MIN_WINDOW_PACKETS = 5
-DEBOUNCE_S = 0.5
+DEBOUNCE_S = 0.5              # leaving MOTION needs this much quiet; the 2 s window already smooths the score
 BREATH_UPDATE_S = 1.0         # recompute breathing at most this often (device time)
+HIGHPASS_TAU_S = 0.32   # time constant of each slow-component stage (device time): cascade corner about 1 Hz
+HIGHPASS_STAGES = 3     # cascade: breathing is attenuated ~17 dB at 0.3 Hz, ~26 dB at 0.2 Hz
+TRAPEZOID = True        # stage output x - (s_prev + s_new) / 2: unit high-frequency gain at any packet rate
+MEDIAN3 = False         # optional 3-tap per-subcarrier median before the high-pass (see ScorerConfig)
+
+
+@dataclass(frozen=True)
+class ScorerConfig:
+    """The motion scorer's parameters. ``LIVE_SCORER`` (the defaults) is the one configuration used live.
+
+    Measured on the recorded hw3/hw5 links (2 m line of sight), decimated to 25 pkt/s with every 4th subcarrier,
+    against ``LEGACY_SCORER`` (1 s window, 0.16 s stages, corner about 2 Hz): the 2 s window and the ~1 Hz corner
+    (most walking energy is at 0.3-1 Hz) raised the weak link's walking detection from about 80% to 95-100% at
+    0% held-out false alarms (quiet rule, margin 1.25), and the strong link's walking-median / empty-p99 from 4.6x
+    to 8.5x. The trapezoidal stage update keeps the score scale, and so a threshold, nearly the same at any packet
+    rate: thresholds calibrated at 25, 40 and 90 pkt/s agree within about 5% (25-30% without it). ``median3`` removes
+    single-sample spikes; with the 2 s window it added only 0.3-0.5 dB of margin on those links and raised hw3's
+    held-out false alarms at 90 pkt/s (0.5% to 1.8%), so it stays off until it is A/B tested on the rig.
+    Thresholds from one configuration do not fit another: the scale differs (1.5-4x between legacy and live).
+    """
+    window_s: float = WINDOW_S
+    tau_s: float = HIGHPASS_TAU_S
+    stages: int = HIGHPASS_STAGES
+    trapezoid: bool = TRAPEZOID
+    median3: bool = MEDIAN3
+
+    def describe(self) -> str:
+        """Short human-readable form, e.g. ``window 2 s, tau 0.32 s x3, trapezoid``."""
+        parts = [f"window {self.window_s:g} s", f"tau {self.tau_s:g} s x{self.stages}"]
+        parts += [name for name, on in (("trapezoid", self.trapezoid), ("median-3", self.median3)) if on]
+        return ", ".join(parts)
+
+    def as_dict(self) -> dict:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: Mapping) -> "ScorerConfig":
+        """A configuration from ``as_dict`` output (e.g. a thresholds file). Raises ValueError if unusable."""
+        try:
+            return cls(window_s=float(data["window_s"]), tau_s=float(data["tau_s"]), stages=int(data["stages"]),
+                       trapezoid=bool(data["trapezoid"]), median3=bool(data.get("median3", False)))
+        except (KeyError, TypeError, ValueError) as e:
+            raise ValueError(f"not a scorer configuration: {data!r}") from e
+
+
+LIVE_SCORER = ScorerConfig()
+LEGACY_SCORER = ScorerConfig(window_s=1.0, tau_s=0.16, stages=3, trapezoid=False, median3=False)
 
 
 @dataclass(frozen=True)
@@ -79,6 +132,7 @@ class Calibration:
     margin: float = DEFAULT_MARGIN  # threshold = margin * p99 of the kept windows
     noisy: bool = False             # noisy-room calibration: threshold = margin * p97 of all windows
     warning: str = ""               # noisy mode: how much of the clip looked like movement
+    scorer: ScorerConfig = LIVE_SCORER  # the motion-scorer configuration the threshold belongs to
 
     def save(self, path: str | Path) -> None:
         Path(path).write_text(json.dumps(asdict(self), indent=2) + "\n")
@@ -87,6 +141,27 @@ class Calibration:
 def load_threshold(path: str | Path) -> float:
     """Read the threshold from a calibration JSON file."""
     return float(json.loads(Path(path).read_text())["threshold"])
+
+
+def load_calibration_scorer(path: str | Path) -> Optional[ScorerConfig]:
+    """The scorer configuration a calibration JSON file was made with; None for files from before it was recorded."""
+    data = json.loads(Path(path).read_text())
+    recorded = data.get("scorer") if isinstance(data, dict) else None
+    return None if recorded is None else ScorerConfig.from_dict(recorded)
+
+
+def scorer_note(recorded: Optional[ScorerConfig], source: str, live: ScorerConfig = LIVE_SCORER) -> Optional[str]:
+    """A warning when thresholds from ``source`` were not made with the ``live`` scorer, else None.
+
+    ``recorded`` None means the file predates the scorer record (most likely the legacy scorer).
+    """
+    if recorded == live:
+        return None
+    if recorded is None:
+        return (f"{source} does not record its motion scorer, so it may predate the current one ({live.describe()}); "
+                "thresholds from the old scorer are on another scale: recalibrate if links read MOTION when empty")
+    return (f"{source} was calibrated with another motion scorer ({recorded.describe()}) than the live one "
+            f"({live.describe()}): its thresholds are on another scale; recalibrate")
 
 
 def estimate_rate_hz(device_ts_us: Iterable[int]) -> float:
@@ -104,8 +179,9 @@ def estimate_rate_hz(device_ts_us: Iterable[int]) -> float:
     return 1e6 / float(np.median(diffs[diffs <= 1.5 * near]))
 
 
-HIGHPASS_TAU_S = 0.16   # time constant of each slow-component stage (device time)
-HIGHPASS_STAGES = 3     # cascade: breathing is attenuated ~21 dB at 0.5 Hz, ~32 dB at 0.3 Hz
+def _median3(a: np.ndarray, b: np.ndarray, c: np.ndarray) -> np.ndarray:
+    """Element-wise median of three vectors."""
+    return np.maximum(np.minimum(a, b), np.minimum(np.maximum(a, b), c))
 
 
 class MotionScorer:
@@ -115,19 +191,45 @@ class MotionScorer:
     running mean (exponential, time constant ``tau_s`` in device time), and repeat
     ``stages`` times. The slow component (breathing and slow drift) is removed, so
     only faster variation, i.e. gross movement, contributes to the variance.
+    ``trapezoid`` subtracts the average of the mean before and after its update, which keeps the stage's
+    high-frequency gain at 1 whatever the packet rate (update-then-subtract loses a rate-dependent share of it).
+    ``median3`` first replaces each value by the median of it and the two before it, per subcarrier.
+    The defaults are ``LIVE_SCORER``; ``from_config`` builds a scorer from any ``ScorerConfig``.
     """
 
     def __init__(self, window_s: float = WINDOW_S, tau_s: float = HIGHPASS_TAU_S,
-                 stages: int = HIGHPASS_STAGES) -> None:
+                 stages: int = HIGHPASS_STAGES, trapezoid: bool = TRAPEZOID, median3: bool = MEDIAN3) -> None:
+        self.config = ScorerConfig(float(window_s), float(tau_s), int(stages), bool(trapezoid), bool(median3))
         self._window_us = window_s * 1e6
         self._tau_s = tau_s
         self._stages = stages
+        self._trapezoid = trapezoid
+        self._median3 = median3
         self._buf: deque[tuple[int, np.ndarray]] = deque()
+        self._raw: deque[np.ndarray] = deque(maxlen=2)  # the two previous amplitude vectors, for median3
         self._slow: Optional[np.ndarray] = None  # (stages, subcarriers) running means
         self._last_t: Optional[int] = None       # device time (us) of the last accepted packet
         self._score: Optional[float] = None
         self._clock = DeviceClock()  # unwraps the 32-bit counter; a reboot restarts the window
         self.dropped = 0                         # out-of-order or repeated packets, not applied
+
+    @classmethod
+    def from_config(cls, config: ScorerConfig = LIVE_SCORER) -> "MotionScorer":
+        return cls(config.window_s, config.tau_s, config.stages, config.trapezoid, config.median3)
+
+    def _restart(self) -> None:
+        """Forget the window and the filter state (a receiver reboot)."""
+        self._buf.clear()
+        self._raw.clear()
+        self._slow = None
+        self._last_t = None
+
+    def _prefilter(self, x: np.ndarray) -> np.ndarray:
+        if not self._median3:
+            return x
+        out = _median3(self._raw[0], self._raw[1], x) if len(self._raw) == 2 else x
+        self._raw.append(x)
+        return out
 
     def _highpass(self, x: np.ndarray, t: int) -> np.ndarray:
         x = x.astype(np.float64)
@@ -142,8 +244,9 @@ class MotionScorer:
         self._last_t = t
         alpha = 1.0 - np.exp(-dt_s / self._tau_s)
         for k in range(self._stages):
-            self._slow[k] += alpha * (x - self._slow[k])
-            x = x - self._slow[k]
+            prev = self._slow[k].copy()
+            self._slow[k] += alpha * (x - prev)
+            x = x - (0.5 * (prev + self._slow[k]) if self._trapezoid else self._slow[k])
         return x
 
     def push(self, pkt: CSIPacket) -> Optional[float]:
@@ -152,13 +255,11 @@ class MotionScorer:
         t, event = self._clock.advance(pkt.device_ts, pkt.host_ts)
         if event == RESET:
             # Receiver rebooted: the old window and filter state belong to another timeline.
-            self._buf.clear()
-            self._slow = None
-            self._last_t = None
+            self._restart()
         if self._last_t is not None and t <= self._last_t:
             self.dropped += 1
             return self._score
-        self._buf.append((t, self._highpass(pkt.amplitude, t)))
+        self._buf.append((t, self._highpass(self._prefilter(np.asarray(pkt.amplitude, dtype=np.float64)), t)))
         while t - self._buf[0][0] > self._window_us:
             self._buf.popleft()
         full = t - self._buf[0][0] >= 0.9 * self._window_us
@@ -243,21 +344,24 @@ def classify(score: float, bpm: Optional[float], threshold: float) -> str:
 
 
 def detect(stream: Stream, threshold: float, parser: Optional[CSIParser] = None,
-           debounce_s: float = DEBOUNCE_S, breathing: bool = False) -> Iterator[Reading]:
+           debounce_s: float = DEBOUNCE_S, breathing: bool = False, *,
+           scorer: ScorerConfig = LIVE_SCORER) -> Iterator[Reading]:
     """Yield a debounced Reading per packet once a full motion window is available."""
-    return detect_packets(parse_stream(stream, parser), threshold, debounce_s, breathing)
+    return detect_packets(parse_stream(stream, parser), threshold, debounce_s, breathing, scorer=scorer)
 
 
 def detect_packets(packets: Iterable[CSIPacket], threshold: float,
-                   debounce_s: float = DEBOUNCE_S, breathing: bool = False) -> Iterator[Reading]:
+                   debounce_s: float = DEBOUNCE_S, breathing: bool = False, *,
+                   scorer: ScorerConfig = LIVE_SCORER) -> Iterator[Reading]:
     """``detect`` for packets already parsed (e.g. loaded from a recording).
 
-    ``breathing=False`` (default) never computes breathing and never emits STILL_PRESENT.
+    ``breathing=False`` (default) never computes breathing and never emits STILL_PRESENT. ``scorer`` must be
+    the configuration the threshold was calibrated with (``Calibration.scorer``); the default is the live one.
     """
-    scorer, debounce = MotionScorer(), _Debouncer(debounce_s)
+    motion, debounce = MotionScorer.from_config(scorer), _Debouncer(debounce_s)
     breath = _BreathingTracker() if breathing else None
     for pkt in packets:
-        score = scorer.push(pkt)
+        score = motion.push(pkt)
         est = NOT_ENOUGH
         if breath is not None:
             if score is not None and score > threshold:
@@ -292,13 +396,14 @@ def packet_loss(device_ts_us: list[int], send_rate_hz: Optional[float] = None) -
 
 
 def calibrate(stream: Stream, parser: Optional[CSIParser] = None,
-              send_rate_hz: Optional[float] = None, margin: float = DEFAULT_MARGIN) -> Calibration:
+              send_rate_hz: Optional[float] = None, margin: float = DEFAULT_MARGIN, *,
+              scorer: ScorerConfig = LIVE_SCORER) -> Calibration:
     """Learn the motion threshold from an empty-room stream.
 
     Raises CalibrationError if the input is too short, too sparse, too lossy or too contaminated, and
     ValueError if ``margin`` is not positive.
     """
-    return calibrate_packets(list(parse_stream(stream, parser)), send_rate_hz, margin)
+    return calibrate_packets(list(parse_stream(stream, parser)), send_rate_hz, margin, scorer=scorer)
 
 
 def _since_last_reboot(packets: list[CSIPacket]) -> tuple[list[CSIPacket], list[int]]:
@@ -317,24 +422,29 @@ def _since_last_reboot(packets: list[CSIPacket]) -> tuple[list[CSIPacket], list[
 
 
 def calibrate_packets(packets: list[CSIPacket], send_rate_hz: Optional[float] = None,
-                      margin: float = DEFAULT_MARGIN) -> Calibration:
+                      margin: float = DEFAULT_MARGIN, *, scorer: ScorerConfig = LIVE_SCORER) -> Calibration:
     """``calibrate`` for packets already parsed (e.g. loaded from a recording)."""
-    return calibrate_clips([packets], send_rate_hz, margin)
+    return calibrate_clips([packets], send_rate_hz, margin, scorer=scorer)
 
 
 def calibrate_clips(clips: Sequence[Sequence[CSIPacket]], send_rate_hz: Optional[float] = None,
                     margin: float = DEFAULT_MARGIN, min_clean_fraction: float = MIN_CLEAN_FRACTION,
-                    noisy: bool = False) -> Calibration:
-    """Learn one threshold from one or more empty-room clips.
+                    noisy: bool = False, *, scorer: ScorerConfig = LIVE_SCORER) -> Calibration:
+    """Learn one threshold from one or more empty-room clips, with the ``scorer`` configuration (default: live).
 
     Each clip is scored on its own (fresh MotionScorer, so no window spans two clips). Scores are
-    judged in 1 s chunks: a chunk is contaminated when its median is more than REJECT_RATIO times
-    the quiet baseline (the median of the lowest-half chunk medians, pooled over all clips), or when
-    its p90 is more than BURST_RATIO times its own median (a passer-by in part of the chunk). The
+    judged in 1 s chunks of the window's end time: a chunk is contaminated when its median is more than
+    REJECT_RATIO times the quiet baseline (the median of the lowest-half chunk medians, pooled over all clips),
+    or when its p90 is more than BURST_RATIO times its own median (a passer-by in part of the chunk). A clip's
+    first scored chunk also accounts for the clip's first seconds, which its windows cover but which end no
+    window of their own (the scorer needs most of a window first), so a quiet clip keeps its whole length. The
     threshold is ``margin`` x the THRESHOLD_PERCENTILE of the windows in the kept chunks only.
     Raises CalibrationError if fewer than MIN_CLEAN_S seconds are kept, or if less than
     ``min_clean_fraction`` of the clip time is kept (a bursty or busy link: its quiet leftovers would make a
     threshold that alarms all the time), and ValueError if ``margin`` is not positive.
+    ``noisy`` (opt-in) keeps every window, movement included, and takes NOISY_PERCENTILE instead: a stopgap for a
+    room that is never empty. Movement then raises the threshold (2 s of walking in a 30 s clip cut weak-motion
+    detection from 74% to 8% in a replay of the recorded data), so the quiet rule is the default everywhere.
     """
     margin = validate_margin(margin)
     if not 0 < min_clean_fraction <= 1:
@@ -370,16 +480,18 @@ def calibrate_clips(clips: Sequence[Sequence[CSIPacket]], send_rate_hz: Optional
         packets_n += len(packets)
         expected_n += duration * rate + 1
         per_chunk: dict[int, list[float]] = {}
-        scorer = MotionScorer()
+        motion = MotionScorer.from_config(scorer)
         t0 = device_ts[0]
         for p, t in zip(packets, device_ts):
-            s = scorer.push(p)
+            s = motion.push(p)
             if s is not None:
                 per_chunk.setdefault(int((t - t0) / 1e6 // CHUNK_S), []).append(s)
+        first = min(per_chunk, default=None)
         for k, scores in per_chunk.items():
-            chunks.append((max(0.0, min(CHUNK_S, duration - k * CHUNK_S)), np.array(scores)))
+            start = 0.0 if k == first else k * CHUNK_S  # the first scored chunk covers the clip's start
+            chunks.append((max(0.0, min((k + 1) * CHUNK_S, duration) - start), np.array(scores)))
     if not chunks:
-        raise CalibrationError("input too short: no full 1 s window")
+        raise CalibrationError(f"input too short: no full {scorer.window_s:g} s window")
 
     medians = np.array([float(np.median(s)) for _, s in chunks])
     order = np.sort(medians)
@@ -421,4 +533,4 @@ def calibrate_clips(clips: Sequence[Sequence[CSIPacket]], send_rate_hz: Optional
                        rate_hz=float(send_rate_hz) if send_rate_hz is not None else float(np.median(rates)),
                        duration_s=total_s, loss=loss, clean_s=clean_s, rejected_s=rejected_s,
                        pkt_rate_hz=packets_n / total_s, clips=len(clips), margin=margin,
-                       noisy=noisy, warning=warning)
+                       noisy=noisy, warning=warning, scorer=scorer)

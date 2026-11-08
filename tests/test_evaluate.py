@@ -213,3 +213,16 @@ def test_cli_margin_is_accepted_printed_and_validated(tmp_path):
                          cwd=ROOT, capture_output=True, text=True)
     assert bad.returncode != 0
     assert "margin" in bad.stderr
+
+
+def test_evaluation_uses_one_scorer_for_calibration_and_detection_and_reports_it(tmp_path):
+    from csi.detect import LEGACY_SCORER, LIVE_SCORER
+    folder = record_plan(tmp_path / "room", [("empty", 20), ("walking", 10), ("empty", 20), ("walking", 10)])
+    live = evaluate_sessions([folder])
+    legacy = evaluate_sessions([folder], scorer=LEGACY_SCORER)
+    assert live.scorer == LIVE_SCORER and live.sessions[0].calibration.scorer == LIVE_SCORER
+    assert legacy.scorer == LEGACY_SCORER and legacy.sessions[0].calibration.scorer == LEGACY_SCORER
+    assert f"motion scorer: {LIVE_SCORER.describe()}" in format_report(live)
+    for report in (live, legacy):  # each scores against its own threshold, so the walk is found with either
+        cm = report.sessions[0].confusion
+        assert cm.loc["walking", "MOTION"] > 0.9 * cm.loc["walking"].sum()

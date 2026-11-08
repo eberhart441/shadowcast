@@ -9,7 +9,11 @@ Public API:
     LinkMonitor            push(receiver, packet) -> state; snapshot(now) -> list of per-link dicts
     calibrate_links        tagged empty-room packets -> {label: threshold}
     calibrate_links_report same, plus {label: reason} for links that were skipped
-    save_thresholds / load_thresholds   links.json, a plain {label: threshold} object
+    save_thresholds / load_thresholds   links.json: {label: threshold}, optionally with the calibration's record
+    read_thresholds        links.json -> ThresholdFile (thresholds plus scorer, packet rates and time, if recorded)
+    threshold_file_notes / rate_notes   warnings when a file does not fit the live scorer or the live packet rates
+
+Every link scores with ``LIVE_SCORER`` (csi/detect.py), the configuration the calibration paths use too.
 
 States: EMPTY and MOTION (from the detector), plus
     WARMUP        no full motion window yet
@@ -20,13 +24,15 @@ from __future__ import annotations
 
 import json
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, Mapping, Optional, Sequence
 
 from .adaptive import AdaptiveDetector, Reading, RoomDecision
-from .detect import (DEBOUNCE_S, DEFAULT_MARGIN, MIN_CLEAN_FRACTION, MOTION, Calibration, CalibrationError,
-                     MotionScorer, _Debouncer, calibrate_clips, classify, validate_margin)
+from .detect import (DEBOUNCE_S, DEFAULT_MARGIN, EMPTY, LIVE_SCORER, MIN_CLEAN_FRACTION, MOTION, Calibration,
+                     CalibrationError, MotionScorer, ScorerConfig, _Debouncer, calibrate_clips, classify,
+                     scorer_note, validate_margin)
 from .health import LinkHealth
 from .parser import CSIPacket
 
@@ -36,6 +42,9 @@ UNCALIBRATED = "UNCALIBRATED"
 NO_SIGNAL_S = 2.0
 FIXED = "fixed"        # a link judged against a threshold
 AUTO = "auto"          # a link judged against its own adaptive baseline (csi/adaptive.py)
+THRESHOLDS_FORMAT = "csi-link-thresholds"  # links.json with a calibration record (a plain file has no format key)
+THRESHOLDS_VERSION = 2
+RATE_TOLERANCE = 0.3   # a live packet rate this far (relative) from the calibration rate gets a warning
 
 
 @dataclass(frozen=True)
@@ -60,7 +69,7 @@ class _Link:
         self.auto_allowed = auto
         self.mode = FIXED
         self.detector: Optional[AdaptiveDetector] = None
-        self.scorer = MotionScorer()
+        self.scorer = MotionScorer.from_config(LIVE_SCORER)  # the configuration every calibration path uses
         self.debounce = _Debouncer(debounce_s)
         self.health = LinkHealth(send_rate_hz=send_rate_hz)
         self.score: Optional[float] = None
@@ -231,6 +240,7 @@ class LinkCalibration:
     calibrations: dict[str, Calibration]   # calibrated links: label -> full calibration report
     skipped: dict[str, str]                # link label -> why it was refused
     margin: float = DEFAULT_MARGIN         # the margin every link was calibrated with
+    scorer: ScorerConfig = LIVE_SCORER     # the motion-scorer configuration every link was calibrated with
 
     @property
     def thresholds(self) -> dict[str, float]:
@@ -244,18 +254,32 @@ class LinkCalibration:
     def rejected_s(self) -> dict[str, float]:
         return {label: c.rejected_s for label, c in self.calibrations.items()}
 
+    @property
+    def pkt_rate_hz(self) -> dict[str, float]:
+        """Received packet rate per calibrated link during its calibration clips."""
+        return {label: c.pkt_rate_hz for label, c in self.calibrations.items()}
+
+    def record(self) -> dict:
+        """What a thresholds file keeps about this calibration (see ``save_thresholds``)."""
+        return {"scorer": self.scorer.as_dict(),
+                "pkt_rate_hz": {label: round(rate, 2) for label, rate in sorted(self.pkt_rate_hz.items())},
+                "margin": self.margin,
+                "noisy": any(c.noisy for c in self.calibrations.values())}
+
 
 def calibrate_links_report(tagged: Optional[Iterable[tuple[str, CSIPacket]]] = None,
                            expected: Iterable[LinkId] = (), send_rate_hz: Optional[float] = None,
                            *, clips: Optional[Sequence[Iterable[tuple[str, CSIPacket]]]] = None,
                            margin: float = DEFAULT_MARGIN,
-                           min_clean_fraction: float = MIN_CLEAN_FRACTION, noisy: bool = False) -> LinkCalibration:
+                           min_clean_fraction: float = MIN_CLEAN_FRACTION, noisy: bool = False,
+                           scorer: ScorerConfig = LIVE_SCORER) -> LinkCalibration:
     """Calibrate each link from its own empty-room packets (see ``calibrate_clips``).
 
     ``tagged`` is one clip; ``clips`` is several clips, each scored separately and pooled per link. A
     link with too few packets, too sparse, too lossy or too contaminated is skipped and the reason is
     kept. ``expected`` links with no packets at all are skipped as "no packets". ``margin`` applies to
-    every link; a non-positive margin raises ValueError before any link is looked at.
+    every link; a non-positive margin raises ValueError before any link is looked at. ``scorer`` is the live
+    configuration unless a caller deliberately compares another one.
     """
     margin = validate_margin(margin)
     if clips is None:
@@ -276,10 +300,11 @@ def calibrate_links_report(tagged: Optional[Iterable[tuple[str, CSIPacket]]] = N
             skipped[label] = "no packets"
             continue
         try:
-            calibrations[label] = calibrate_clips(link_clips, send_rate_hz, margin, min_clean_fraction, noisy=noisy)
+            calibrations[label] = calibrate_clips(link_clips, send_rate_hz, margin, min_clean_fraction, noisy=noisy,
+                                                  scorer=scorer)
         except CalibrationError as e:
             skipped[label] = str(e)
-    return LinkCalibration(calibrations, skipped, margin)
+    return LinkCalibration(calibrations, skipped, margin, scorer)
 
 
 def calibrate_links(tagged: Iterable[tuple[str, CSIPacket]]) -> dict[str, float]:
@@ -287,9 +312,79 @@ def calibrate_links(tagged: Iterable[tuple[str, CSIPacket]]) -> dict[str, float]
     return calibrate_links_report(tagged).thresholds
 
 
-def save_thresholds(path: str | Path, thresholds: Mapping[str, float]) -> None:
-    Path(path).write_text(json.dumps({k: float(v) for k, v in sorted(thresholds.items())}, indent=2) + "\n")
+@dataclass(frozen=True)
+class ThresholdFile:
+    """A links.json as read back. A plain file (no calibration record) has only ``thresholds``."""
+    thresholds: dict[str, float]
+    scorer: Optional[ScorerConfig] = None                        # the scorer it was calibrated with, if recorded
+    pkt_rate_hz: dict[str, float] = field(default_factory=dict)  # each link's packet rate during calibration
+    saved_at: Optional[str] = None                               # ISO 8601 time of the save, if recorded
+    margin: Optional[float] = None
+    noisy: Optional[bool] = None
+
+
+def save_thresholds(path: str | Path, thresholds: Mapping[str, float], record: Optional[Mapping] = None) -> None:
+    """Write links.json. Without ``record``: the plain ``{label: threshold}`` object (what the dashboard's Save
+    writes). With one (``LinkCalibration.record()``): ``{"format", "version", "thresholds": {...}, "scorer",
+    "pkt_rate_hz", "margin", "noisy", "saved_at"}``, so a later run can tell whether the thresholds still fit.
+    ``load_thresholds`` and ``read_thresholds`` read both shapes."""
+    values = {k: float(v) for k, v in sorted(thresholds.items())}
+    if record is None:
+        obj: dict = values
+    else:
+        obj = {"format": THRESHOLDS_FORMAT, "version": THRESHOLDS_VERSION, "thresholds": values}
+        obj.update((k, v) for k, v in record.items() if k not in obj)
+        obj.setdefault("saved_at", datetime.now(timezone.utc).isoformat(timespec="seconds"))
+    Path(path).write_text(json.dumps(obj, indent=2) + "\n")
+
+
+def read_thresholds(path: str | Path) -> ThresholdFile:
+    """Read links.json in either shape. Raises OSError, or ValueError for a file that is not link thresholds."""
+    obj = json.loads(Path(path).read_text())
+    if not isinstance(obj, dict):
+        raise ValueError(f"{path} is not a JSON object of link thresholds")
+    try:
+        if not isinstance(obj.get("thresholds"), dict):  # plain {label: threshold}, as before the record existed
+            return ThresholdFile({k: float(v) for k, v in obj.items()})
+        scorer = obj.get("scorer")
+        margin, noisy = obj.get("margin"), obj.get("noisy")
+        return ThresholdFile(
+            thresholds={k: float(v) for k, v in obj["thresholds"].items()},
+            scorer=None if scorer is None else ScorerConfig.from_dict(scorer),
+            pkt_rate_hz={k: float(v) for k, v in (obj.get("pkt_rate_hz") or {}).items()},
+            saved_at=obj.get("saved_at"),
+            margin=None if margin is None else float(margin),
+            noisy=None if noisy is None else bool(noisy))
+    except (TypeError, AttributeError) as e:
+        raise ValueError(f"{path} is not a link thresholds file: {e}") from e
 
 
 def load_thresholds(path: str | Path) -> dict[str, float]:
-    return {k: float(v) for k, v in json.loads(Path(path).read_text()).items()}
+    """``{label: threshold}`` from links.json (either shape)."""
+    return read_thresholds(path).thresholds
+
+
+def threshold_file_notes(file: ThresholdFile, source: str = "the thresholds file",
+                         live: ScorerConfig = LIVE_SCORER) -> list[str]:
+    """Warnings for a thresholds file that may not fit the live scorer (none when it records the live one)."""
+    note = scorer_note(file.scorer, source, live)
+    return [] if note is None else [note]
+
+
+def rate_notes(calibration_rates: Mapping[str, float], rows: Iterable[Mapping],
+               tolerance: float = RATE_TOLERANCE) -> list[str]:
+    """One warning per link whose live packet rate is more than ``tolerance`` away from its calibration rate.
+
+    ``rows`` are ``LinkMonitor.snapshot`` rows. Only links in EMPTY or MOTION are compared (not warming up, silent
+    or uncalibrated), and only those with a recorded rate. The score scale hardly moves with the rate any more
+    (trapezoidal high-pass), but a large change still means another sender setup or interference."""
+    notes = []
+    for row in rows:
+        rate = calibration_rates.get(row["id"])
+        if not rate or row.get("state") not in (EMPTY, MOTION):
+            continue
+        live = float(row.get("pkt_rate") or 0.0)
+        if abs(live - rate) > tolerance * rate:
+            notes.append(f"{row['id']}: {live:.0f} pkt/s now against {rate:.0f} pkt/s at calibration "
+                         f"(more than {tolerance:.0%} apart): check the senders, or recalibrate")
+    return notes

@@ -1,22 +1,29 @@
-"""Adaptive motion detection: each link learns its own noise level, and a room decision needs link agreement.
+"""Adaptive motion detection: each link learns its own noise level online, and a room decision needs link agreement.
 
-A fixed threshold goes stale when the room is never quiet or a receiver re-baselines its gain (its scores
-then move by 3-5x). The adaptive mode needs no calibration. Per link, ``AdaptiveDetector`` keeps a rolling
-baseline of its own score over the last ``window_s`` of packet time:
+A fixed threshold needs an empty-room calibration, and it goes stale when a receiver re-baselines its gain (its
+scores then move by 3-5x). The adaptive mode needs neither. Per link, ``AdaptiveDetector`` keeps a rolling window
+of its own score (one sample per ``sample_s``) over the last ``window_s`` (180 s) of packet time and sets a
+constant-false-alarm level from the lower ``base_fraction`` (60%) of it, which movement cannot reach (movement
+only adds to the top):
 
-    baseline  median of the kept samples
-    spread    1.4826 x median absolute deviation (a robust sigma)
-    enter     max(baseline + k x spread, ratio_floor x baseline)
-    exit      max(baseline + exit_k x spread, exit_ratio x baseline)     (lower than enter: hysteresis)
+    baseline  median of the lower 60% of the window's scores
+    spread    1.4826 x their median absolute deviation from it (a robust sigma of the quiet noise)
+    enter     max(baseline + k x spread, ratio_floor x baseline)     k = 4, ratio floor 1.5
+    exit      max(baseline + exit_k x spread, exit_ratio x baseline) (lower than enter: hysteresis)
 
 A link is ``elevated`` (state MOTION) once its score has stayed at or above ``enter`` for ``min_dur_s``, and it
-leaves when the score drops below ``exit``. The first ``warmup_s`` of packet time (and at least
-``min_samples`` samples) report WARMUP and never alarm. The baseline is a median, so a person moving through
-(10-30 s against a 75 s window) only moves it part of the way; ``EXCLUDE_HIGH`` (off) would keep high samples out
-of it, which biased the median low on drifting noise. If most of the last ``cap_s`` (``rebuild_fraction`` of the
-samples) sat at or above ``enter``, or at or below ``baseline / ratio_floor``, that level is taken as the new
-normal: the baseline is rebuilt from the samples of the last ``cap_s`` (a receiver re-baseline, or a room that
-stays busy). So a shift is relearned within about ``cap_s``, and a person who stands still for that long is absorbed.
+leaves when the score drops below ``exit``. The first ``warmup_s`` of packet time (and at least ``min_samples``
+samples) report WARMUP and never alarm. While a link is elevated its baseline is frozen: no samples go in and none
+age out, so a person who keeps moving stays detected instead of being learned as the new normal. A level that
+lasts ``freeze_cap_s`` (300 s) is taken as the new normal: the baseline is rebuilt from the last ``cap_s`` of
+samples. A level that drops (``rebuild_fraction`` of the last ``cap_s`` at or below ``baseline / ratio_floor``) is
+relearned the same way. A missing score after valid ones (``None``: the scorer restarted its window, after a
+receiver reboot, which re-rolls the receiver's gain, or a gap of about a window) starts the detector over.
+
+With the 2 s motion window this enters at about 1.5-1.8x the quiet level, so the 1.8-3x lifts a walker gave on
+the real rig are caught. On the recorded hw3/hw5 links (25 pkt/s, enter estimated from their empty recordings)
+every walking window was above enter, against 0% (hw5) and 5% (hw3, gain drifting) of the empty windows. Bursts
+in an "empty" room are not told apart from people: one hw5 empty recording has a 3x burst, which reads MOTION.
 
 ``RoomDecision`` combines the links: MOTION when at least ``min_links`` links are elevated at once, or one link
 is ``strong`` (at least ``strong_ratio`` x its enter level, sustained). Otherwise EMPTY, held for ``hold_s``.
@@ -38,18 +45,21 @@ EMPTY = "EMPTY"
 MOTION = "MOTION"
 WARMUP = "WARMUP"
 
-WINDOW_S = 75.0
+WINDOW_S = 180.0        # baseline window, in packet time spent not frozen
 WARMUP_S = 10.0
 MIN_SAMPLES = 20
-K = 5.5                 # enter at baseline + K robust sigmas ...
-RATIO_FLOOR = 2.0       # ... and at least RATIO_FLOOR x baseline
+BASE_FRACTION = 0.6     # the baseline and spread come from the lowest 60% of the window's scores
+K = 4.0                 # enter at baseline + K robust sigmas ...
+RATIO_FLOOR = 1.5       # ... and at least RATIO_FLOOR x baseline
 EXIT_K = 2.5
-EXIT_RATIO = 1.5
+EXIT_RATIO = 1.25
 MIN_DUR_S = 0.6         # sustained at or above enter for this long before elevated
-CAP_S = 30.0            # a level that fills most of this long is taken as the new normal
-REBUILD_FRACTION = 0.8  # ... where "most" = this share of samples high (or low) over the cap window
-EXCLUDE_HIGH = False    # keep high samples in the baseline too: the 75 s median already resists a 10-30 s walk, and
-                        # excluding them biased the median low on drifting noise (real captures; see the report)
+CAP_S = 30.0            # a lower level that fills most of this long is taken as the new normal
+REBUILD_FRACTION = 0.8  # ... where "most" = this share of the samples over the cap window
+FREEZE_CAP_S = 300.0    # the baseline stays frozen while a link is elevated, for at most this long
+SAMPLE_S = 0.1          # one score per this much packet time goes into the windows (each score spans 2 s)
+EXCLUDE_HIGH = False    # samples at or above enter (before the link is elevated) stay in the window: the
+                        # lower-60% statistics ignore them anyway
 RECALC_S = 0.25         # baseline statistics are refreshed at most this often (packet time)
 STRONG_RATIO = 2.0      # strong: at least this x the enter level, sustained
 ROOM_MIN_LINKS = 2
@@ -78,51 +88,70 @@ class AdaptiveDetector:
                  min_samples: int = MIN_SAMPLES, k: float = K, ratio_floor: float = RATIO_FLOOR,
                  exit_k: float = EXIT_K, exit_ratio: float = EXIT_RATIO, min_dur_s: float = MIN_DUR_S,
                  cap_s: float = CAP_S, rebuild_fraction: float = REBUILD_FRACTION, exclude_high: bool = EXCLUDE_HIGH,
-                 recalc_s: float = RECALC_S, strong_ratio: float = STRONG_RATIO) -> None:
+                 recalc_s: float = RECALC_S, strong_ratio: float = STRONG_RATIO,
+                 base_fraction: float = BASE_FRACTION, freeze_cap_s: float = FREEZE_CAP_S,
+                 sample_s: float = SAMPLE_S) -> None:
         self.window_s, self.warmup_s, self.min_samples = window_s, warmup_s, min_samples
         self.exclude_high = exclude_high
         self.k, self.ratio_floor, self.exit_k, self.exit_ratio = k, ratio_floor, exit_k, exit_ratio
         self.min_dur_s, self.cap_s, self.recalc_s, self.strong_ratio = min_dur_s, cap_s, recalc_s, strong_ratio
-        self.rebuild_fraction = rebuild_fraction
-        self._all: deque[tuple[float, float]] = deque()   # every sample in the window (for rebuilds)
-        self._base: deque[tuple[float, float]] = deque()  # the samples the baseline is computed from
+        self.rebuild_fraction, self.base_fraction = rebuild_fraction, base_fraction
+        self.freeze_cap_s, self.sample_s = freeze_cap_s, sample_s
+        self._last: Optional[Reading] = None
+        self._start()
+
+    def _start(self) -> None:
+        """Forget everything learned: a new link, or one whose scorer restarted."""
+        self._recent: deque[tuple[float, float]] = deque()  # (t, score) samples of the last cap_s, for rebuilds
+        self._base: deque[tuple[float, float]] = deque()    # (baseline clock, score): what the statistics use
+        self._low: deque[tuple[float, bool]] = deque()      # (t, score low) over the last cap_s
+        self._low_count = 0
         self._first_t: Optional[float] = None
         self._last_t: Optional[float] = None
+        self._sample_t: Optional[float] = None  # packet time of the last sample put in the windows
+        self._frozen_s = 0.0                    # packet time spent elevated; the baseline clock is t - frozen_s
         self._stats: Optional[tuple[float, float, float, float]] = None  # baseline, spread, enter, exit
         self._stats_t: Optional[float] = None
         self._elevated = False
+        self._elevated_since: Optional[float] = None
         self._enter_since: Optional[float] = None
         self._strong_since: Optional[float] = None
-        self._hist: deque[tuple[float, bool, bool]] = deque()  # (t, high, low) over the last cap_s
-        self._last: Optional[Reading] = None
 
     # ------------------------------------------------------------------ public
 
     def push(self, t: float, score: Optional[float]) -> Reading:
-        """One (time, score) sample. ``None`` (no score yet) and out-of-order times change nothing."""
-        if score is None or (self._last_t is not None and t <= self._last_t):
+        """One (time, score) sample. Out-of-order times change nothing. ``None`` (no score) changes nothing before
+        the first valid score; after one it means the scorer restarted its window, so the detector starts over."""
+        if score is None:
+            if self._first_t is not None:
+                self._start()
+                return self._set(Reading(t, WARMUP, None))
             return self._last if self._last is not None else Reading(t, WARMUP, score)
+        if self._last_t is not None and t <= self._last_t:
+            return self._last if self._last is not None else Reading(t, WARMUP, score)
+        if self._elevated:
+            self._frozen_s += t - self._last_t  # frozen: the baseline clock stands still
         self._last_t = t
         if self._first_t is None:
             self._first_t = t
-        self._all.append((t, score))
-        self._trim(t)
+        sampled = self._sample_t is None or t - self._sample_t >= self.sample_s
+        if sampled:
+            self._sample_t = t
+            self._recent.append((t, score))
+            while self._recent[0][0] < t - self.cap_s:
+                self._recent.popleft()
         if not self._is_warm(t):
-            self._base.append((t, score))
+            if sampled:
+                self._add_base(t, score)
             self._stats = None
             return self._set(Reading(t, WARMUP, score))
         self._refresh(t)
         baseline, spread, enter, exit_ = self._stats
-        high = score >= enter
-        low = score <= baseline / self.ratio_floor
-        if not high or not self.exclude_high:  # high samples stay out of the baseline until a sustained high level is taken as the new normal
-            self._base.append((t, score))
-        self._hist.append((t, high, low))
-        while self._hist and self._hist[0][0] < t - self.cap_s:
-            self._hist.popleft()
-        if self._should_rebuild(t):
-            self._rebuild(t - self.cap_s)
-        if self._stats is None:  # rebuilt: the thresholds follow the new baseline
+        if sampled and not self._elevated and (score < enter or not self.exclude_high):
+            self._add_base(t, score)
+        self._track_low(t, score <= baseline / self.ratio_floor)
+        if self._low_level_lasted(t) or self._freeze_expired(t):
+            self._rebuild(t, score)
             self._refresh(t)
             baseline, spread, enter, exit_ = self._stats
         self._update_elevation(t, score, enter, exit_)
@@ -138,44 +167,58 @@ class AdaptiveDetector:
         self._last = reading
         return reading
 
-    def _trim(self, t: float) -> None:
-        while self._all and self._all[0][0] < t - self.window_s:
-            self._all.popleft()
-        while self._base and self._base[0][0] < t - self.window_s:
+    def _add_base(self, t: float, score: float) -> None:
+        clock = t - self._frozen_s
+        self._base.append((clock, score))
+        while self._base[0][0] < clock - self.window_s:
             self._base.popleft()
 
     def _is_warm(self, t: float) -> bool:
         return t - self._first_t >= self.warmup_s and len(self._base) >= self.min_samples
 
     def _refresh(self, t: float) -> None:
-        if self._stats is not None and self._stats_t is not None and t - self._stats_t < self.recalc_s:
+        """Baseline statistics from the lower ``base_fraction`` of the window. Unchanged while frozen."""
+        if self._stats is not None and (self._elevated or t - self._stats_t < self.recalc_s):
             return
-        values = np.array([s for _, s in self._base])
-        baseline = max(float(np.median(values)), _TINY)
-        spread = MAD_SCALE * float(np.median(np.abs(values - baseline)))
+        values = np.fromiter((s for _, s in self._base), dtype=np.float64, count=len(self._base))
+        n_low = max(1, int(round(self.base_fraction * values.size)))
+        low = np.partition(values, n_low - 1)[:n_low]
+        baseline = max(float(np.median(low)), _TINY)
+        spread = MAD_SCALE * float(np.median(np.abs(low - baseline)))
         enter = max(baseline + self.k * spread, self.ratio_floor * baseline)
         exit_ = max(baseline + self.exit_k * spread, self.exit_ratio * baseline)
         self._stats = (baseline, spread, enter, exit_)
         self._stats_t = t
 
-    def _should_rebuild(self, t: float) -> bool:
-        """Most of the last ``cap_s`` sat above enter (or below baseline / ratio_floor): the level is the new normal.
+    def _track_low(self, t: float, low: bool) -> None:
+        self._low.append((t, low))
+        self._low_count += low
+        while self._low[0][0] < t - self.cap_s:
+            self._low_count -= self._low.popleft()[1]
 
-        A fraction rather than an unbroken run, because a real shift in a noisy link still has quiet samples in it.
+    def _low_level_lasted(self, t: float) -> bool:
+        """Most of the last ``cap_s`` sat at or below baseline / ratio_floor: the lower level is the new normal.
+
+        A fraction rather than an unbroken run, because a real shift in a noisy link still has other samples in it.
         """
-        if not self._hist or self._hist[0][0] > t - 0.9 * self.cap_s:
+        if self._low[0][0] > t - 0.9 * self.cap_s:
             return False
-        n = len(self._hist)
-        high = sum(h for _, h, _ in self._hist) / n
-        low = sum(lo for _, _, lo in self._hist) / n
-        return high >= self.rebuild_fraction or low >= self.rebuild_fraction
+        return self._low_count >= self.rebuild_fraction * len(self._low)
 
-    def _rebuild(self, since: float) -> None:
-        """The level since ``since`` is the new normal: the baseline is made of those samples only."""
-        self._base = deque((t, s) for t, s in self._all if t >= since)
-        self._hist.clear()
+    def _freeze_expired(self, t: float) -> bool:
+        return self._elevated and t - self._elevated_since >= self.freeze_cap_s
+
+    def _rebuild(self, t: float, score: float) -> None:
+        """The level of the last ``cap_s`` is the new normal: the baseline is made of those samples only."""
+        clock = t - self._frozen_s
+        recent = [(ts, s) for ts, s in self._recent if ts >= t - self.cap_s] or [(t, score)]
+        self._base = deque((clock - (t - ts), s) for ts, s in recent)
+        self._low.clear()
+        self._low_count = 0
         self._stats = None
         self._stats_t = None
+        if self._elevated:
+            self._elevated_since = t  # if the link stays elevated, the freeze cap counts from the new normal
 
     def _update_elevation(self, t: float, score: float, enter: float, exit_: float) -> None:
         if not self._elevated:
@@ -183,11 +226,11 @@ class AdaptiveDetector:
                 if self._enter_since is None:
                     self._enter_since = t
                 if t - self._enter_since >= self.min_dur_s:
-                    self._elevated = True
+                    self._elevated, self._elevated_since = True, t
             elif score < exit_:
                 self._enter_since = None
         elif score < exit_:
-            self._elevated = False
+            self._elevated, self._elevated_since = False, None
             self._enter_since = None
 
     def _update_strong(self, t: float, score: float, enter: float) -> bool:

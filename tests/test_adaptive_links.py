@@ -25,21 +25,28 @@ T0 = 1_700_000_000.0
 LABELS = {"rx1<-00", "rx1<-01", "rx2<-00", "rx2<-01"}
 
 
+# Segments after the first continue the device clock (device_offset_us): a clock that goes back reads as a receiver
+# reboot, which restarts the adaptive baseline (see test_a_reboot_with_a_new_gain_is_relearned_after_a_new_warm_up).
 def empty(seconds, seed=1, t0=T0):
-    return list(simulate_room_links(person=None, duration_s=seconds, seed=seed, t0=t0))
+    return list(simulate_room_links(person=None, duration_s=seconds, seed=seed, t0=t0,
+                                    device_offset_us=round((t0 - T0) * 1e6)))
 
 
 def walk(seconds, seed=2, t0=T0):
-    return list(simulate_room_links(person=default_walk(ROOM), duration_s=seconds, seed=seed, t0=t0))
+    return list(simulate_room_links(person=default_walk(ROOM), duration_s=seconds, seed=seed, t0=t0,
+                                    device_offset_us=round((t0 - T0) * 1e6)))
 
 
-def scaled(packets, factor, after_host_ts):
-    """Packets with amplitudes x factor from ``after_host_ts`` on: a receiver re-baselining its gain."""
+def rebooted(packets, factor, after_host_ts):
+    """Packets from ``after_host_ts`` on come from receivers that rebooted: their device clock starts again near 0 and
+    their re-rolled gain scales the amplitudes by ``factor``."""
     import numpy as np
-    out = []
+    out, offset = [], None
     for receiver, pkt in packets:
         if pkt.host_ts >= after_host_ts:
-            pkt = dataclasses.replace(pkt, amplitude=np.asarray(pkt.amplitude) * factor)
+            offset = pkt.device_ts if offset is None else offset
+            pkt = dataclasses.replace(pkt, amplitude=np.asarray(pkt.amplitude) * factor,
+                                      device_ts=pkt.device_ts - offset + 1000)
         out.append((receiver, pkt))
     return out
 
@@ -84,16 +91,26 @@ def test_auto_payload_reports_mode_elevated_level_and_room_state_and_is_json_ser
 
 
 @pytest.mark.slow
-def test_scale_jump_is_relearned_and_then_quiet_in_auto_mode():
-    packets = empty(100, seed=5)
-    jump_at = T0 + 20.0
+def test_a_reboot_with_a_new_gain_is_relearned_after_a_new_warm_up():
+    # The old test scaled the amplitudes with no reboot and expected the level to be relearned in about 30 s.
+    # The baseline is now frozen while a link is elevated (someone moving stays detected for up to 5 minutes),
+    # so a scale change is relearned quickly only when the scorer restarts, which a receiver reboot (the event
+    # that re-rolls the gain) always does.
+    packets = empty(60, seed=5)
+    reboot_at = T0 + 20.0
     state = DashboardState(ROOM, mode="auto")
-    seen_after = []
-    for i, (receiver, pkt) in enumerate(scaled(packets, 2.5, jump_at)):  # score x6: a re-baseline
+    seen_after = {label: [] for label in LABELS}
+    for i, (receiver, pkt) in enumerate(rebooted(packets, 2.5, reboot_at)):  # score x6 after the reboot
         state.push(receiver, pkt)
-        if pkt.host_ts > jump_at + 40.0 and i % 50 == 0:
-            seen_after.append(by_id(state.snapshot(pkt.host_ts))[LinkId(receiver, pkt.mac).label]["state"])
-    assert len(seen_after) > 20 and set(seen_after) <= {"EMPTY"}
+        if i % 100 == 0 and pkt.host_ts > reboot_at:
+            rows = by_id(state.snapshot(pkt.host_ts))
+            for label in LABELS:
+                seen_after[label].append((pkt.host_ts - reboot_at, rows[label]["state"]))
+    for label in LABELS:
+        early = {s for t, s in seen_after[label] if 0.5 < t < 9.0}
+        late = [s for t, s in seen_after[label] if t > 14.0]
+        assert early == {WARMUP}, (label, early)
+        assert len(late) > 20 and set(late) == {"EMPTY"}, (label, set(late))
 
 
 @pytest.mark.slow
@@ -196,11 +213,17 @@ def test_quiet_mode_refuses_a_busy_clip_but_noisy_mode_calibrates_it_with_a_warn
         assert "noisy" in cal.warning
 
 
-def test_noisy_calibration_request_defaults_on_and_can_be_turned_off():
-    assert parse_request({})["noisy"] is True
-    assert parse_request({"noisy": False})["noisy"] is False
+def test_calibration_requests_default_to_the_quiet_rules_and_noisy_is_opt_in():
+    # the quiet rules are the default now: the noisy p97 rule lets movement in the clip lift the threshold
+    assert parse_request({})["noisy"] is False
+    assert parse_request({"noisy": True})["noisy"] is True
     with pytest.raises(RequestError):
         parse_request({"noisy": "yes"})
+
+
+def test_the_default_calibration_records_a_minute_of_empty_room():
+    request = parse_request({})
+    assert request["clips"] * request["seconds"] >= 60
 
 
 # ---------------------------------------------------------------- HTTP seam

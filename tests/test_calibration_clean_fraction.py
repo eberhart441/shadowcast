@@ -36,8 +36,11 @@ def test_a_bursty_clip_with_less_than_half_quiet_is_refused_with_the_reason_not_
 
 
 def test_the_fraction_is_a_parameter_and_a_clip_passes_at_a_lower_one():
-    cal = calibrate_clips([bursty()], min_clean_fraction=0.4)
-    assert cal.clean_s == pytest.approx(12, abs=1.5)
+    # 0.3 rather than 0.4: the 2 s scoring window keeps the walk in its scores for about a second longer after it
+    # ends than the 1 s window did, so the bursty clip keeps about 10 s of quiet now (about 12 s before): 0.4 of 25 s
+    # would sit on the edge
+    cal = calibrate_clips([bursty()], min_clean_fraction=0.3)
+    assert cal.clean_s == pytest.approx(10, abs=2.5)
     assert cal.threshold > 0
 
 
@@ -70,8 +73,8 @@ def test_the_live_calibration_refuses_the_same_bursty_link_with_the_same_reason(
     quiet = list(simulate_room_links(person=None, room=room, duration_s=13, seed=32, t0=t0 + 13,
                                      device_offset_us=13_000_000))
     stream = sorted(walking + quiet, key=lambda item: item[1].host_ts)
-    # quiet-room mode (noisy is the dashboard default now): the busy link is refused
-    job = CalibrationJob(parse_request({"clips": 1, "seconds": 25, "lead_s": 0, "noisy": False}), expected=[], now_mono=0.0,
+    # quiet-room rules (the default): the busy link is refused
+    job = CalibrationJob(parse_request({"clips": 1, "seconds": 25, "lead_s": 0}), expected=[], now_mono=0.0,
                          current=lambda: {}, apply=lambda label, value: None)
     job.tick(t0, 0.0)
     for rx, p in stream:

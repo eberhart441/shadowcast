@@ -7,7 +7,9 @@
     detect_live.py --port /dev/ttyUSB0 --threshold 12 --breathing              # opt-in breathing (experimental)
 
 Motion-only by default: states are EMPTY and MOTION. Real ports need an explicit
---threshold or --threshold-file (calibrate first). The simulator uses a default.
+--threshold or --threshold-file (calibrate first, 60-120 s of empty room). The simulator uses a
+default. A calibration file records its motion-scorer configuration; one made with another scorer
+is flagged at start, since its threshold is on another scale.
 --breathing turns on the breathing detector (STILL_PRESENT); it is off by default
 because it false-fires on empty rooms on real hardware. Breathing needs a full
 15 s window; until then the output says "not enough data".
@@ -23,7 +25,8 @@ from typing import Iterator
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from csi.common import SenderWatch, add_margin_arg, add_threshold_args, resolve_threshold, simulated_rate_hz  # noqa: E402
-from csi.detect import MOTION, SIM_THRESHOLD, STILL_PRESENT, CalibrationError, Reading, calibrate, detect_packets  # noqa: E402
+from csi.detect import (DEBOUNCE_S, LIVE_SCORER, MOTION, SIM_THRESHOLD, STILL_PRESENT, CalibrationError,  # noqa: E402
+                        Reading, calibrate, detect_packets, load_calibration_scorer, scorer_note)
 from csi.parser import CSIParser, Stream, parse_stream, serial_stream  # noqa: E402
 from csi.simulate import Segment, simulate_stream  # noqa: E402
 
@@ -42,12 +45,15 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--seed", type=int, default=0, help="simulator seed")
     add_threshold_args(ap)
     c = ap.add_argument_group("calibration")
-    c.add_argument("--calibrate", type=float, metavar="SECONDS", help="learn threshold from an empty room")
+    c.add_argument("--calibrate", type=float, metavar="SECONDS",
+                   help="learn the threshold from SECONDS of empty room (60-120 recommended: nobody may move, "
+                        "movement is refused)")
     add_margin_arg(c, "with --calibrate, the threshold")
     c.add_argument("--out", type=Path, default=Path("calibration.json"), help="where to save it")
     ap.add_argument("--breathing", action="store_true",
                     help="opt in to breathing detection (STILL_PRESENT); off by default")
-    ap.add_argument("--debounce", type=float, default=0.5, help="seconds a state must persist")
+    ap.add_argument("--debounce", type=float, default=DEBOUNCE_S,
+                    help=f"seconds a state must persist before leaving MOTION (default {DEBOUNCE_S:g})")
     ap.add_argument("--duration", type=float, help="stop after this many seconds (default: run until Ctrl+C)")
     return ap
 
@@ -92,7 +98,7 @@ def run_calibration(args: argparse.Namespace) -> int:
     print(f"clean {cal.clean_s:.1f} s, rejected {cal.rejected_s:.1f} s as movement "
           f"({cal.pkt_rate_hz:.1f} pkt/s, loss {cal.loss:.1%})")
     print(f"threshold {cal.threshold:.3f} (margin {cal.margin:.2f} x p99; rate {cal.rate_hz:.0f} Hz, "
-          f"loss {cal.loss:.1%}) -> {args.out}")
+          f"loss {cal.loss:.1%}; scorer {cal.scorer.describe()}) -> {args.out}")
     return 0
 
 
@@ -109,8 +115,22 @@ def describe(r: Reading, breathing: bool) -> str:
     return f"score {r.score:.2f}, no breathing (confidence {r.confidence:.2f})"
 
 
+def threshold_file_warning(path: str | None) -> str | None:
+    """A warning when --threshold-file was not calibrated with the live scorer (None when it was, or no file)."""
+    if not path:
+        return None
+    try:
+        recorded = load_calibration_scorer(path)
+    except (OSError, ValueError):  # an unreadable record: warn as for a file without one
+        recorded = None
+    return scorer_note(recorded, f"--threshold-file {path}", LIVE_SCORER)
+
+
 def run_live(args: argparse.Namespace) -> int:
     threshold = resolve_threshold(args, SIM_THRESHOLD)
+    warning = None if args.threshold is not None else threshold_file_warning(args.threshold_file)
+    if warning:
+        print(f"warning: {warning}", file=sys.stderr, flush=True)
     parser = CSIParser()
     mode = "motion + breathing" if args.breathing else "motion-only"
     print(f"threshold {threshold:.3f} ({mode}); Ctrl+C to stop", flush=True)

@@ -80,3 +80,17 @@ def test_simulated_empty_and_motion_separate_at_the_simulator_default():
     motion = [r.state for r in detect(simulate_stream(scenario=[Segment("motion", 10)], seed=3), SIM_THRESHOLD)]
     assert set(empty) == {EMPTY}
     assert motion[-1] == MOTION
+
+
+def test_detect_live_warns_about_a_threshold_file_from_another_scorer(tmp_path):
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import detect_live
+    from csi.detect import LEGACY_SCORER, Calibration
+    path = tmp_path / "calib.json"
+    Calibration(threshold=11.5, rate_hz=100.0, duration_s=20.0, loss=0.0).save(path)      # the live scorer
+    assert detect_live.threshold_file_warning(str(path)) is None
+    Calibration(threshold=11.5, rate_hz=100.0, duration_s=20.0, loss=0.0, scorer=LEGACY_SCORER).save(path)
+    assert "another motion scorer" in detect_live.threshold_file_warning(str(path))
+    path.write_text('{"threshold": 11.5}')                     # a file from before the scorer was recorded
+    assert "does not record" in detect_live.threshold_file_warning(str(path))
+    assert detect_live.threshold_file_warning(None) is None
