@@ -34,6 +34,11 @@ URI_SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
 MACROS = {",": r"\thinspace", ";": r"\thickspace", ":": r"\medspace", "!": r"\negthinspace", "{": r"\lbrace",
           "}": r"\rbrace", "|": r"\Vert", "<": r"\lt", ">": r"\gt"}
 FENCE_HINT = "move the expression into a ```math fence"
+# Macros GitHub's math renderer refuses in every syntax, showing "The following macros are not allowed: ...", and what
+# to write instead.
+BLOCKED_MACROS = {"operatorname": r"\mathrm{...}"}
+BLOCKED = re.compile(r"\\(" + "|".join(BLOCKED_MACROS) + r")(?![A-Za-z])")
+MATH_FENCE_OPEN = re.compile(r"^\s*(`{3,})math\s*$")
 
 
 # ---- reading Markdown -------------------------------------------------------------------------------------------
@@ -111,9 +116,30 @@ def _span_problem(body: str) -> str | None:
     return f"inline math ${shown}$: GitHub's markdown pass changes it before MathJax runs; {'; '.join(hints)}{note}"
 
 
+def math_fence_lines(text: str):
+    """Yield (line number, line) for every line inside a ```math fence."""
+    fence = None
+    for number, line in enumerate(text.splitlines(), 1):
+        if fence is None:
+            match = MATH_FENCE_OPEN.match(line)
+            fence = match.group(1) if match else None
+        elif line.strip().startswith(fence) and not line.strip().strip("`"):
+            fence = None
+        else:
+            yield number, line
+
+
+def _blocked_problems(tex: str) -> list[str]:
+    """One message per macro in ``tex`` that GitHub's math renderer refuses."""
+    return [f"`\\{name}` is not allowed by GitHub's math renderer (\"The following macros are not allowed\"); "
+            f"use `{BLOCKED_MACROS[name]}`" for name in dict.fromkeys(BLOCKED.findall(tex))]
+
+
 def check_math(text: str) -> list[tuple[int, str]]:
-    """(line number, message) for each display $$ block and each inline span that GitHub would not render as written."""
-    problems, display_start = [], None
+    """(line number, message) for each display $$ block, each inline span that GitHub would not render as written,
+    and each macro GitHub refuses, inline or in a ```math fence."""
+    problems = [(number, problem) for number, line in math_fence_lines(text) for problem in _blocked_problems(line)]
+    display_start = None
     for number, raw in prose_lines(text):
         line = blank_code_spans(raw)
         stripped = line.strip()
@@ -139,9 +165,10 @@ def check_math(text: str) -> list[tuple[int, str]]:
             problem = _span_problem(body)
             if problem:
                 problems.append((number, problem))
+            problems += [(number, blocked) for blocked in _blocked_problems(body)]
     if display_start is not None:
         problems.append((display_start, "display math $$ is never closed; use a ```math fence instead"))
-    return problems
+    return sorted(problems, key=lambda problem: problem[0])
 
 
 # ---- links --------------------------------------------------------------------------------------------------------
@@ -329,6 +356,27 @@ def test_each_math_bug_that_broke_theory_md_is_reported():
 
 def test_math_that_github_renders_and_dollars_in_code_are_not_reported():
     assert check_math(CLEAN_MATH) == []
+
+
+BLOCKED_MATH = r"""# Fixture
+
+Inline: $\operatorname{tr}\hat\Sigma$ and $\mathrm{tr}\hat\Sigma$.
+
+```math
+s=\operatorname{median}\lbrace x\rbrace
+```
+
+```text
+\operatorname{median} is only code here
+```
+"""
+
+
+def test_macros_github_refuses_are_reported_inline_and_in_math_fences():
+    problems = check_math(BLOCKED_MATH)
+    assert [number for number, _ in problems] == [3, 6], "\n" + report("fixture", problems)
+    assert all(r"`\operatorname` is not allowed" in message and r"`\mathrm{...}`" in message
+               for _, message in problems)
 
 
 def test_heading_slugs_follow_githubs_rules():

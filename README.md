@@ -11,7 +11,7 @@ Today it runs on four boards in one room. The math doesn't care how many boards 
 
 [![CI](https://github.com/CodeMetalForge-Hackathon/Team-12/actions/workflows/ci.yml/badge.svg)](https://github.com/CodeMetalForge-Hackathon/Team-12/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/python-3.10%2B-3776AB)
-![Tests](https://img.shields.io/badge/tests-446-brightgreen)
+![Tests](https://img.shields.io/badge/tests-447-brightgreen)
 ![Server](https://img.shields.io/badge/HTTP%20server-stdlib%20only-informational)
 ![License](https://img.shields.io/badge/license-Apache%202.0-blue)
 
@@ -25,7 +25,7 @@ As a person walks a loop through the room, the heat follows them, and each link 
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/stats-dark.svg">
-  <img src="docs/assets/stats-light.svg" width="100%" alt="100% of walking windows flagged MOTION (hw5 recording, 2,621 windows). 94% of empty-room windows read EMPTY (hw5 validation recording). About 16,000 subcarrier amplitudes analysed per second (4 links times 114 subcarriers). 446 automated tests, no hardware needed, CI on every PR. 1,225 links from 50 nodes: pairs grow as n(n-1)/2.">
+  <img src="docs/assets/stats-light.svg" width="100%" alt="100% of walking windows flagged MOTION (hw5 recording, 2,621 windows). 94% of empty-room windows read EMPTY (hw5 validation recording). About 16,000 subcarrier amplitudes analysed per second (4 links times 114 subcarriers). 447 automated tests, no hardware needed, CI on every PR. 1,225 links from 50 nodes: pairs grow as n(n-1)/2.">
 </picture>
 
 [Beyond one room](#beyond-one-room) · [Quick start](#quick-start-no-hardware-needed) · [How it works](#how-it-works) · [The math](#the-math) ·
@@ -57,7 +57,7 @@ a live **RF-tomography heatmap** of where in the room the change is.
 | **Output** | Per-link state machine, a room-level vote, and a 28 × 18 heatmap (≈10 cm cells), streamed to the browser at ~5 Hz over Server-Sent Events |
 | **Hardware** | 4 × ESP32-C5 (2 senders, 2 receivers), ESP-NOW on channel 6, vendored firmware |
 | **Software** | Pure Python + NumPy signal pipeline, a standard-library HTTP/SSE server, single-file web UI |
-| **Quality** | 446 automated tests, no hardware required, CI on every PR, deterministic replay |
+| **Quality** | 447 automated tests, no hardware required, CI on every PR, deterministic replay |
 
 > [!IMPORTANT]
 > **Decision support, not a guarantee.** This system detects *movement*. A person who is completely
@@ -72,10 +72,7 @@ motion-imaging network**. Nothing in the software assumes a room, a building or 
 
 - **The target carries nothing.** No tag, no phone, no cooperation needed.
 - **It passes through what stops light.** 2.4 GHz radio goes through smoke, darkness, drywall, wood and
-  foliage. Published systems have already sensed people through walls with radio:
-  - variance-based radio tomography tracked a moving person from a ring of nodes outside the walls
-    (Wilson & Patwari, *IEEE TMC* 2011);
-  - MIT's Wi-Vi detected people behind walls using WiFi (Adib & Katabi, *SIGCOMM* 2013).
+  foliage, so nodes don't need a line of sight to the target, or even to be in the same room.
 - **Nodes are cheap enough to lose.** Each one is a commodity ESP32 on a battery. Every link is scored
   independently, so a lost node drops only its own links. They read NO_SIGNAL, never a false EMPTY.
 - **Geometry is data.** Nodes are coordinates in [`config/room.json`](config/room.json), and they may sit
@@ -126,7 +123,7 @@ python scripts/dashboard.py --simulate-room --page web/ui-overhaul/index.html
 Run the test suite (CI runs it on Ubuntu, Python 3.12):
 
 ```bash
-python -m pytest -q -n auto      # 446 tests, ~1 min on a 16-thread laptop, 3-6 min on CI
+python -m pytest -q -n auto      # 447 tests, ~1 min on a 16-thread laptop, 3-6 min on CI
 scripts/check.sh                 # ruff + the fast tier, run before every commit
 ```
 
@@ -201,7 +198,7 @@ averaged over the $K = 114$ subcarriers. Equivalently, it is the normalised trac
 covariance:
 
 ```math
-S_n=\frac{1}{K}\sum_{k\in\mathcal K}\frac{1}{\lvert\mathcal W_n\rvert}\sum_{i\in\mathcal W_n}\big(y_k[i]-\bar y_k\big)^2=\frac{1}{K}\operatorname{tr}\hat\Sigma_y(n)
+S_n=\frac{1}{K}\sum_{k\in\mathcal K}\frac{1}{\lvert\mathcal W_n\rvert}\sum_{i\in\mathcal W_n}\big(y_k[i]-\bar y_k\big)^2=\frac{1}{K}\mathrm{tr}\hat\Sigma_y(n)
 ```
 
 **Robust calibration.** The room is never truly empty, so thresholds come from robust statistics. In
@@ -212,7 +209,7 @@ only, so bursts of movement during calibration cannot inflate the spread:
 ```math
 \begin{aligned}
 \theta_\ell^{\text{quiet}} &= 1.25\cdot Q_{0.99}\big(S_i : i\in\text{clean chunks}\big)\\[4pt]
-\theta_\ell^{\text{noisy}} &= \max\big(m+6\cdot1.4826\,s_-,\ 3m\big),\qquad s_-=\operatorname{median}\lbrace m-x : x\le m\rbrace
+\theta_\ell^{\text{noisy}} &= \max\big(m+6\cdot1.4826\,s_-,\ 3m\big),\qquad s_-=\mathrm{median}\lbrace m-x : x\le m\rbrace
 \end{aligned}
 ```
 
@@ -220,7 +217,7 @@ only, so bursts of movement during calibration cannot inflate the spread:
 than its threshold. The evidence is a clipped log-ratio that is zero up to 1.2× the baseline and saturates at 3×:
 
 ```math
-e_\ell=\operatorname{clip}_{[0,1]}\!\left(\frac{\ln\big(S_\ell/(1.2\,b_\ell)\big)}{\ln 2.5}\right)
+e_\ell=\mathrm{clip}_{[0,1]}\!\left(\frac{\ln\big(S_\ell/(1.2\,b_\ell)\big)}{\ln 2.5}\right)
 ```
 
 This is **gain-invariant**. Receiver gain $g$ scales the score as $g^2$, and the ratio cancels it exactly:
@@ -270,7 +267,7 @@ The full tour is in [**docs/architecture.md**](docs/architecture.md).
   checks.
 - **Never blocks on a client.** Calibration math runs off the server lock, and each browser reads a bounded frame
   log with its own cursor, so a slow client cannot stall ingest.
-- **446 automated tests and more test code than product code** (6.9k vs 4.8k lines), pinned to a frozen room
+- **447 automated tests and more test code than product code** (6.9k vs 4.8k lines), pinned to a frozen room
   fixture so reconfiguring the live rig never changes a test outcome. Ruff and the fast tier run on every push;
   the full suite runs on every PR.
 - **Reproducible hardware.** Firmware is vendored at a pinned upstream commit, and boards are found by USB serial

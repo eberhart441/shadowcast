@@ -64,7 +64,7 @@ flowchart LR
 ### 1.1 Multipath CSI
 
 An OFDM receiver estimates, per packet, the complex channel frequency response on each subcarrier
-$f_k=f_c+k\thinspace \Delta f$, with $\Delta f=312.5$ kHz [1]. In a room the channel is a sum over propagation
+$f_k=f_c+k\thinspace \Delta f$, with $\Delta f=312.5$ kHz. In a room the channel is a sum over propagation
 paths, each with a complex gain $a_p$ and a delay $\tau_p=d_p/c$ for path length $d_p$:
 
 ```math
@@ -78,8 +78,8 @@ that do:
 H_k(t)=\underbrace{\sum_{p\in\mathcal S} a_p\,e^{-j2\pi f_k\tau_p}}_{H_k^{\mathrm s}\ \text{(static)}}+\underbrace{\sum_{p\in\mathcal D} a_p(t)\,e^{-j2\pi f_k\tau_p(t)}}_{H_k^{\mathrm d}(t)\ \text{(body paths)}} .
 ```
 
-The phase of a body path advances at a rate set by how fast its length changes, which is the basis
-of the CSI-speed model [3]:
+The phase of a body path advances at a rate set by how fast its length changes, which ties the
+fluctuation rate of the CSI directly to the body's speed:
 
 ```math
 \frac{1}{2\pi}\frac{d}{dt}\Big(2\pi f_k\,\tau_p(t)\Big)=\frac{\dot d_p(t)}{\lambda_k}.
@@ -124,7 +124,7 @@ phase (residual carrier-frequency offset, PLL phase):
 ```
 
 where $\delta t_n$ and $\psi_n$ are random from packet to packet. Raw phase is unusable as it stands.
-Sanitising it (fitting and removing a linear phase across $k$, as in SpotFi [4]) also removes any real
+Sanitising it (fitting and removing a linear phase across $k$) also removes any real
 linear in $k$ phase change. The cross-antenna conjugate product that cancels these offsets on
 multi-antenna NICs is not available, because these boards receive on one antenna.
 
@@ -149,7 +149,7 @@ A_k[n]=\sqrt{I_k[n]^2+Q_k[n]^2},\qquad I_k,Q_k\in\lbrace-128,\dots,127\rbrace .
 The boundary of the $m$-th Fresnel zone of a link from sender T to receiver R is the ellipsoid of
 points P with excess path length $\lvert TP\rvert+\lvert PR\rvert-\lvert TR\rvert=m\lambda/2$. A body inside the first zone
 perturbs the strongest (line-of-sight and near-line-of-sight) paths, and the effect falls off outside
-it [5, 6]. At the midpoint of a link of length $d$ the first zone has radius
+it. At the midpoint of a link of length $d$ the first zone has radius
 
 ```math
 r_1=\tfrac12\sqrt{\lambda d}.
@@ -179,8 +179,7 @@ windowed variance is therefore an estimate of amplitude power in a band above ab
 
 where $G$ is the high-pass response (Section 3.1) and $\Gamma_{A_k}$ is the power spectral density of
 subcarrier $k$'s amplitude. This is an **energy detector**, the classic test for an unknown signal in
-noise, and a windowed-variance statistic of this kind goes back to the first device-free sensing
-work [2]. Two properties follow and are used later:
+noise. Two properties follow and are used later:
 
 * **Aliasing is harmless.** At about 37 packets/s the Nyquist frequency is about 18.5 Hz, close to
   $f_{\max}$. Energy from faster motion folds back into the band but still counts as variance. Only
@@ -220,7 +219,7 @@ The parser never raises on bad input.
 parser computes `np.hypot`, so the order does not matter:
 
 ```math
-A_m[n]=\operatorname{hypot}\big(r_{2m}[n],\,r_{2m+1}[n]\big),\qquad m=0,\dots,M-1 .
+A_m[n]=\mathrm{hypot}\big(r_{2m}[n],\,r_{2m+1}[n]\big),\qquad m=0,\dots,M-1 .
 ```
 
 **Null-subcarrier mask** (`CSIParser._admit`, `_finish_warm_up`, `_maybe_relock`). The kept set
@@ -329,7 +328,7 @@ window, averaged over subcarriers. Equivalently, it is the normalised trace of t
 covariance:
 
 ```math
-S_n=\frac{1}{K}\sum_{k\in\mathcal K}\frac{1}{\lvert\mathcal W_n\rvert}\sum_{i\in\mathcal W_n}\big(y_k[i]-\bar y_k\big)^2=\frac{1}{K}\operatorname{tr}\hat\Sigma_{y}(n)\qquad\text{(3.1)}
+S_n=\frac{1}{K}\sum_{k\in\mathcal K}\frac{1}{\lvert\mathcal W_n\rvert}\sum_{i\in\mathcal W_n}\big(y_k[i]-\bar y_k\big)^2=\frac{1}{K}\mathrm{tr}\hat\Sigma_{y}(n)\qquad\text{(3.1)}
 ```
 
 $S_n$ is defined only when $\lvert\mathcal W_n\rvert\ge5$ and the window spans at least
@@ -438,7 +437,7 @@ in it (`_since_last_reboot`). The send rate is estimated robustly to drops (`est
 make some intervals 2× or 3× the period, so the estimator anchors on the lower decile:
 
 ```math
-\hat f=\frac{10^6}{\operatorname{median}\big\lbrace\Delta_i:\ \Delta_i\le1.5\,Q_{0.10}(\Delta)\big\rbrace},\qquad L=\max\Big(0,\ 1-\frac{N}{D\hat f+1}\Big),
+\hat f=\frac{10^6}{\mathrm{median}\big\lbrace\Delta_i:\ \Delta_i\le1.5\,Q_{0.10}(\Delta)\big\rbrace},\qquad L=\max\Big(0,\ 1-\frac{N}{D\hat f+1}\Big),
 ```
 
 where $\Delta_i$ are the positive device-time intervals in µs, $N$ packets span $D$ seconds, and $L$ is
@@ -453,7 +452,7 @@ window spans two clips. Every window score $S_i$ is assigned to a 1 s chunk $j=\
 **quiet baseline** is the median of the lower half of the chunk medians, roughly their first quartile:
 
 ```math
-B=\operatorname{median}\big(m_{(1)},\dots,m_{(\max(1,\lfloor J/2\rfloor))}\big).
+B=\mathrm{median}\big(m_{(1)},\dots,m_{(\max(1,\lfloor J/2\rfloor))}\big).
 ```
 
 A chunk is rejected as contaminated if either test fires: its median is too high (someone moving,
@@ -496,15 +495,15 @@ distribution. Its breakdown point against upper-tail contamination is 3 %.
 ### 5.3 Formula for a room that is never empty (`scripts/calibrate.py`)
 
 `csi/noisy_calibration.py`, `link_threshold`. The script polls `/api/state` every 0.25 s (`POLL_S`) for
-45 s (`DEFAULT_SECONDS`). Over the usable scores $x$ of one link, with $m=\operatorname{median}(x)$:
+45 s (`DEFAULT_SECONDS`). Over the usable scores $x$ of one link, with $m=\mathrm{median}(x)$:
 
 ```math
-s_-=\operatorname{median}\big\lbrace m-x:\ x\le m\big\rbrace,\qquad\theta_\ell=\max\big(m+6\times1.4826\,s_-,\ \ 3m\big).\qquad\text{(5.3)}
+s_-=\mathrm{median}\big\lbrace m-x:\ x\le m\big\rbrace,\qquad\theta_\ell=\max\big(m+6\times1.4826\,s_-,\ \ 3m\big).\qquad\text{(5.3)}
 ```
 
 $s_-$ is a **lower-half MAD**. For symmetric noise it equals the ordinary MAD, and $1.4826=1/z_{0.75}$,
 where $z_{0.75}\approx0.6745$ is the upper quartile of the standard normal, makes it a consistent
-estimate of $\sigma$ under Gaussian noise [7, 8]. Movement adds only upper-tail
+estimate of $\sigma$ under Gaussian noise [1, 2]. Movement adds only upper-tail
 mass, so it reaches (5.3) only through the median, which has a 50 % breakdown point. It never reaches
 the spread. The floor $3m$ protects against an optimistic spread, since a variance-type score is
 right-skewed and its lower half is narrower than its upper half. A link with fewer than 40 usable
@@ -547,9 +546,9 @@ that. The null distribution drifted between the calibration and the validation r
 
 `csi/heatmap.py`, `Heatmap.advance`, geometry in `csi/room.py`. The map turns per-link scores into a
 field over the floor plan by back-projection: each link's evidence is smeared along its own segment,
-as in unfiltered back-projection in tomography and RF tomographic imaging [5]. There is no inversion
-step. Wilson and Patwari's RTI solves a regularised least-squares problem; this code combines the
-footprints with a nonlinear, agreement-rewarding rule instead.
+as in unfiltered back-projection in tomography. There is no inversion step: instead of solving a
+regularised least-squares problem, this code combines the footprints with a nonlinear,
+agreement-rewarding rule.
 
 ### 6.1 Per-link quiet baseline
 
@@ -558,7 +557,7 @@ footprints with a nonlinear, agreement-rewarding rule instead.
 from a packet the baseline has not seen yet, and only while the link's state is EMPTY or MOTION:
 
 ```math
-b_\ell(\tau)=\operatorname{median}\big\lbrace S_\ell(\tau'):\ \tau-60\,\mathrm s\le\tau'\le\tau\big\rbrace,
+b_\ell(\tau)=\mathrm{median}\big\lbrace S_\ell(\tau'):\ \tau-60\,\mathrm s\le\tau'\le\tau\big\rbrace,
 ```
 
 defined once the samples span at least 10 s. The baseline is a median rather than a low percentile.
@@ -574,7 +573,7 @@ docstring), so threshold-relative evidence was almost always zero.
 `link_evidence`, with `R_FLOOR` $r_0=1.2$ and `R_FULL` $r_1=3.0$:
 
 ```math
-e_\ell=\operatorname{clip}_{[0,1]}\!\left(\frac{\ln\!\big(S_\ell/(r_0\,b_\ell)\big)}{\ln(r_1/r_0)}\right)=\operatorname{clip}_{[0,1]}\!\left(\frac{\Lambda_\ell-0.79\ \mathrm{dB}}{3.98\ \mathrm{dB}}\right),\qquad\Lambda_\ell=10\log_{10}\frac{S_\ell}{b_\ell}.\qquad\text{(6.1)}
+e_\ell=\mathrm{clip}_{[0,1]}\!\left(\frac{\ln\!\big(S_\ell/(r_0\,b_\ell)\big)}{\ln(r_1/r_0)}\right)=\mathrm{clip}_{[0,1]}\!\left(\frac{\Lambda_\ell-0.79\ \mathrm{dB}}{3.98\ \mathrm{dB}}\right),\qquad\Lambda_\ell=10\log_{10}\frac{S_\ell}{b_\ell}.\qquad\text{(6.1)}
 ```
 
 Evidence is linear in the score excess measured in decibels. There is a dead zone up to 0.79 dB
@@ -650,7 +649,7 @@ Worked values from (6.2) and (6.3) at the defaults:
 cell relaxes towards its target with a time constant that depends on direction:
 
 ```math
-V(\mathbf c)\leftarrow\operatorname{clip}_{[0,1]}\Big(V+\big(T-V\big)\big(1-e^{-\Delta\tau/\tau_\pm}\big)\Big),
+V(\mathbf c)\leftarrow\mathrm{clip}_{[0,1]}\Big(V+\big(T-V\big)\big(1-e^{-\Delta\tau/\tau_\pm}\big)\Big),
 ```
 
 where $\tau_\pm=\tau_{\text{rise}}$ if $T\gt V$ and $\tau_\pm=\tau_{\text{decay}}$ otherwise.
@@ -670,7 +669,7 @@ amplitude vectors in device time, re-estimated at most once per second. It needs
 and a span of at least 0.97 × 15 s. The tracker is reset whenever $S\gt \theta$, because motion
 contaminates the window, and MOTION always overrides breathing in `classify`.
 
-1. **Resample** onto a uniform grid at $f_s=1/\operatorname{median}(\Delta t)$ by linear interpolation,
+1. **Resample** onto a uniform grid at $f_s=1/\mathrm{median}(\Delta t)$ by linear interpolation,
    so drops leave interpolated gaps instead of stretching the frequency axis.
 2. **Band-limit** each subcarrier: subtract the mean and a least-squares line, apply a Hann taper, take
    the rFFT, zero every bin outside $[0.1,0.5]$ Hz (6 to 30 breaths/min), and invert. The taper stays
@@ -717,7 +716,7 @@ Over the last `WINDOW_S` = 75 s of samples, with statistics refreshed at most ev
 (`RECALC_S`):
 
 ```math
-b=\operatorname{median}(S),\qquad\hat\sigma=1.4826\cdot\operatorname{median}\lvert S-b\rvert,
+b=\mathrm{median}(S),\qquad\hat\sigma=1.4826\cdot\mathrm{median}\lvert S-b\rvert,
 ```
 
 ```math
@@ -780,11 +779,11 @@ The output is $t_n=r_n+\text{offset}$.
 ### 9.2 Link health
 
 `csi/health.py`, `LinkHealth`. The send rate is the configured `--rate` if given. Otherwise it is
-$10^6/\operatorname{median}$ of the last 200 positive device-time intervals, once at least 50 exist.
+$10^6/\mathrm{median}$ of the last 200 positive device-time intervals, once at least 50 exist.
 Each in-order step adds to the drop counter:
 
 ```math
-\text{drops}\mathrel{+}=\max\big(0,\ \operatorname{round}(\Delta t\cdot\hat f)-1\big).
+\text{drops}\mathrel{+}=\max\big(0,\ \mathrm{round}(\Delta t\cdot\hat f)-1\big).
 ```
 
 The packet rate is the number of packets in the last 2 s of host time divided by 2.
@@ -813,7 +812,7 @@ time. Let $\rho=\tau-\tau_0$ be the time since recording started, with clip leng
 pause 3 s. Then
 
 ```math
-(k,\ o)=\operatorname{divmod}(\rho,\ T_c+3\ \mathrm s),
+(k,\ o)=\mathrm{divmod}(\rho,\ T_c+3\ \mathrm s),
 ```
 
 and a packet belongs to clip $k$ if $k$ is less than the number of clips and $o\lt T_c$.
@@ -836,7 +835,7 @@ The confusion matrix $C[u,v]$ counts decisions with true label $u$ and predicted
 per-label accuracy is
 
 ```math
-\operatorname{acc}(u)=\frac{C\big[u,\ v^\ast(u)\big]}{\sum_{v}C[u,v]},
+\mathrm{acc}(u)=\frac{C\big[u,\ v^\ast(u)\big]}{\sum_{v}C[u,v]},
 ```
 
 where $v^\ast(u)$ is the expected state. With breathing off, the `still_*` rows are printed as
@@ -940,17 +939,5 @@ no labelled recording of it (`docs/agents/project-context.md`).
 
 ## References
 
-1. D. Halperin, W. Hu, A. Sheth, D. Wetherall. "Tool release: Gathering 802.11n traces with channel
-   state information." *ACM SIGCOMM CCR*, 2011.
-2. M. Youssef, M. Mah, A. Agrawala. "Challenges: Device-free passive localization for wireless
-   environments." *MobiCom*, 2007.
-3. W. Wang, A. X. Liu, M. Shahzad, K. Ling, S. Lu. "Understanding and modeling of WiFi signal based
-   human activity recognition" (CARM). *MobiCom*, 2015.
-4. M. Kotaru, K. Joshi, D. Bharadia, S. Katti. "SpotFi: Decimeter level localization using WiFi."
-   *SIGCOMM*, 2015.
-5. J. Wilson, N. Patwari. "Radio tomographic imaging with wireless networks." *IEEE Trans. Mobile
-   Computing* 9(5), 2010.
-6. H. Wang, D. Zhang, J. Ma, Y. Wang, Y. Wang, D. Wu, T. Gu, B. Xie. "Human respiration detection with
-   commodity WiFi devices: Do user location and body orientation matter?" *UbiComp*, 2016.
-7. F. R. Hampel. "The influence curve and its role in robust estimation." *JASA* 69, 1974.
-8. P. J. Rousseeuw, C. Croux. "Alternatives to the median absolute deviation." *JASA* 88, 1993.
+1. F. R. Hampel. "The influence curve and its role in robust estimation." *JASA* 69, 1974.
+2. P. J. Rousseeuw, C. Croux. "Alternatives to the median absolute deviation." *JASA* 88, 1993.
