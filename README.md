@@ -940,6 +940,46 @@ python scripts/eval_log.py --log walk.jsonl --path walk.csv --absolute \
   walks `walking` and the quiet minutes `empty` there.
 - A log from before the tracker has no track. It is scored with the centroid, and the summary says so.
 
+### Tuning the heatmap and tracker offline
+
+`scripts/tune_replay.py` replays logged walks through the heatmap and the tracker with other settings and ranks the
+settings by how well they place the walker. Its inputs are those of `eval_log.py --path`, plus an optional labels CSV
+whose `empty` rows are scored for false activity. Each `--path` and `--labels` belongs to the `--log` before it.
+
+```bash
+python scripts/tune_replay.py --log walk.jsonl --path walk.csv --labels labels.csv --absolute --out best.json
+python scripts/tune_replay.py --log a.jsonl --path a.csv --log b.jsonl --path b.csv --absolute --jobs 4
+python scripts/tune_replay.py --log c.jsonl --path c.csv --absolute --start best.json --passes 0   # check on new walks
+```
+
+- Replay: at each logged frame, the logged link rows (state, score and age of each link) step a fresh heatmap with the
+  candidate settings, so the quiet baselines, the near-node veto, the estimator and the smoothing all run again, and a
+  tracker follows its image. Link states are as logged: thresholds are not tuned. The live dashboard also steps the
+  heatmap on packets between frames, so the run's own settings replayed (the `(as configured)` row) come close to the
+  `as logged` reference but do not match it exactly. A large gap between the two means the replay misses something.
+- Score: the estimate is the one `eval_log.py --path` uses: the active track, else the map's weighted centroid. The table
+  gives median and p90 error, the share of walk frames within 1.5 m and 3 m, with an estimate and with a track, and the
+  share of empty frames with false activity: an active track, or a cell at or above 0.25 (`--empty-heat`). The cost
+  that ranks the settings is the mean error capped at 3 m (`--cap`). A frame without an estimate costs 3 m. The cost
+  then adds 3 m times the false-activity share (`--empty-weight`). Without labels, `--empty-before-walks` scores
+  each run's quiet start (from 15 s after the log starts to 3 s before its first walk) as empty.
+- Search: coordinate descent from the defaults, separately for each estimator. The settings are the evidence rule and
+  its thresholds, then the footprint width and crossing weight (back-projection) or the RTI ellipse width `lambda` and
+  regularisation `alpha`, then rise and decay, then sensitivity. Each is swept in turn with the others held, for
+  `--passes` rounds (default 2). A change is kept only if it lowers the cost by at least 1 cm. Then the tracker's
+  start and keep levels, process noise, gate and blob cut are swept on the two best heatmap settings. The best, row 1
+  of the table, is the setting with the fewest changes from the defaults among those within 1 cm of the lowest cost. A
+  run takes 35 to 65 replays; 10 minutes of log take a few minutes with `--jobs 4`. `--quick` does one pass over fewer
+  values.
+- References: `room centre` always guesses the middle of the room. Settings that do not clearly beat it do not
+  localise on these walks, and the report warns.
+- Applying the best: `--estimator` is a dashboard flag. Sensitivity, rise, decay and falloff can be set live with the
+  page's sliders or the printed `POST /api/params` command, and last until the dashboard restarts. The others are code
+  defaults in `csi/heatmap.py`, `csi/rti.py` and `csi/tracker.py`, and the report names them. `--out` writes every
+  setting as JSON: its `heatmap` and `tracker` blocks are `Heatmap` and `Tracker` keyword arguments.
+- A few walks are easy to overfit. Tune on some walks and check the result on others with `--start best.json
+  --passes 0`.
+
 ### Recorded data
 
 Real recordings are on the `data/two-board-sessions` branch, not on `main`: `hw3` and
