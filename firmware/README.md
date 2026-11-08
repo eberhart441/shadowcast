@@ -25,6 +25,8 @@ Use one build directory per chip, role and set of build flags, set up with `-B`.
 
 Pass build flags on the `set-target` line of a new build directory, as below. They stay in that directory's CMake cache. Changing or dropping a flag in an existing directory does not reliably rebuild, so use a fresh directory for each combination.
 
+Building two chips in parallel from one example folder needs a separate config per build directory: add `-DSDKCONFIG=<build_dir>/sdkconfig` to each `idf.py` call. The example's `sdkconfig` is shared and carries the last target.
+
 Receiver (any chip; C5 is the one to use, see `docs/agents/hardware.md`):
 
 ```
@@ -138,6 +140,12 @@ idf.py -B build_c5_id01_ch11 -DSENDER_ID=0x01 -DCSI_CHANNEL=11 set-target esp32c
 ```
 
 To switch, flash all of them (with the `esptool` command above): a board left on channel 6 is silent to the others. Check the `channel` column of the `CSI_DATA` lines reads 11 and the senders' boot lines say `wifi_channel: 11`, then recalibrate. A receiver whose links are all silent is usually on the wrong channel or still on the old prefix.
+
+`flash_args` lists paths relative to the build directory, so run `esptool write_flash @flash_args` from inside it, not from `firmware/`.
+
+`dependencies.lock` records the last `set-target`. After building another chip, run `git checkout -- firmware/*/dependencies.lock` so the target change is not committed.
+
+`scripts/flash.sh <receiver|sender> <esp32c5|esp32s3> <port> [sender_id]` does the build, the check that the port holds the named chip, and the flash for one board, in `build_<chip>` (or `build_<chip>_id<NN>` for a sender). It needs `IDF_PATH` (source `export.sh` first). It refuses a receiver while a dashboard answers on port 8000, unless `--force` is given. `--dry-run` prints every command and runs none.
 
 ## Serial output
 

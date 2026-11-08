@@ -45,6 +45,7 @@ class Node:
     y: float
     mac: str = ""
     chip: str = ""
+    serial: str = ""  # the board's USB serial, its base MAC in colon form (identifies the board; see csi/ports.py)
 
 
 @dataclass(frozen=True)
@@ -82,7 +83,7 @@ def load_room(path: Union[str, Path] = DEFAULT_ROOM_PATH) -> Room:
             disabled.append(name)
             continue
         nodes.append(Node(name, spec["role"], float(spec["x"]), float(spec["y"]), spec.get("mac", ""),
-                          spec.get("chip", "")))
+                          spec.get("chip", ""), spec.get("serial", "")))
     return Room(
         width_m=float(config["room"]["width_m"]),
         depth_m=float(config["room"]["depth_m"]),

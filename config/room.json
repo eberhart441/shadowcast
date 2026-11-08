@@ -10,14 +10,14 @@
       "chip": "ESP32-C5",
       "x": 0.0,
       "y": 0.0,
-      "port_hint": "/dev/cu.usbmodem2101"
+      "serial": "10:BD:A3:CC:85:BC"
     },
     "rx1": {
       "role": "receiver",
       "chip": "ESP32-C5",
       "x": 2.77,
       "y": 0.0,
-      "port_hint": "/dev/cu.usbmodem1101"
+      "serial": "38:44:BE:A5:18:B0"
     },
     "rx3": {
       "role": "receiver",
@@ -31,14 +31,16 @@
       "chip": "ESP32-C5",
       "mac": "1a:0c:12:00:00:00",
       "x": 2.77,
-      "y": 1.84
+      "y": 1.84,
+      "serial": "38:44:BE:A5:41:BC"
     },
     "tx1": {
       "role": "sender",
       "chip": "ESP32-C5",
       "mac": "1a:0c:12:00:00:01",
       "x": 0.0,
-      "y": 1.84
+      "y": 1.84,
+      "serial": "38:44:BE:A5:33:9C"
     }
   },
   "link_weights": {

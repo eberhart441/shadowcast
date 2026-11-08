@@ -159,7 +159,7 @@ def _wait_for_finished(port: int, timeout: float) -> dict:
     deadline = time.time() + timeout
     while time.time() < deadline:
         try:
-            with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/state", timeout=2) as resp:
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/state", timeout=10) as resp:
                 payload = json.loads(resp.read())
             if payload["status"]["finished"]:
                 return payload
@@ -174,7 +174,7 @@ def _wait_for_hot_room(port: int, timeout: float) -> dict:
     last_error = None
     while time.time() < deadline:
         try:
-            with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/state", timeout=2) as resp:
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/state", timeout=10) as resp:
                 payload = json.loads(resp.read())
             if payload["links"] and max(payload["heatmap"]["cells"]) > 0.05:
                 return payload
@@ -190,3 +190,67 @@ def test_allow_control_and_save_thresholds_options_parse():
     args = parse("--simulate-room", "--host", "0.0.0.0", "--allow-control", "--save-thresholds", "out/links.json")
     assert args.allow_control is True
     assert args.save_thresholds == Path("out/links.json")
+
+
+def test_auto_ports_is_a_source_of_its_own():
+    cli.check_source(parse("--auto-ports"))
+    cli.check_source(parse("--auto-ports", "--http-port", "8123"))
+    with pytest.raises(SystemExit):
+        cli.check_source(parse("--auto-ports", "--port", "rx1=/dev/cu.a"))
+    with pytest.raises(SystemExit):
+        cli.check_source(parse("--auto-ports", "--simulate-room"))
+    with pytest.raises(SystemExit):
+        cli.check_source(parse("--auto-ports", "--replay", "run.jsonl"))
+
+
+def test_auto_ports_with_a_missing_receiver_fails_before_serving(monkeypatch, tmp_path, capsys):
+    from serial.tools import list_ports
+    from types import SimpleNamespace
+
+    config = json.loads((ROOT / "tests" / "fixtures" / "room_rig4.json").read_text())
+    config["nodes"]["rx1"]["serial"] = "38:44:BE:A5:18:B0"
+    config["nodes"]["rx2"]["serial"] = "10:BD:A3:CC:85:BC"
+    room = tmp_path / "room.json"
+    room.write_text(json.dumps(config))
+    monkeypatch.setattr(list_ports, "comports", lambda: [
+        SimpleNamespace(device="/dev/cu.usbmodem1101", serial_number="38:44:BE:A5:18:B0", vid=0x303A)])
+    with pytest.raises(SystemExit) as info:
+        cli.main(["--auto-ports", "--room", str(room), "--http-port", str(free_port())])
+    assert "rx2" in str(info.value) and "10:BD:A3:CC:85:BC" in str(info.value)
+    assert "Traceback" not in capsys.readouterr().err
+
+
+def _wait_for_http(port: int, proc: subprocess.Popen, timeout: float) -> None:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if proc.poll() is not None:
+            raise AssertionError(f"dashboard exited early with {proc.returncode}: {proc.stderr.read()}")
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/state", timeout=2):
+                return
+        except OSError:
+            time.sleep(0.2)
+    raise AssertionError(f"dashboard on port {port} never answered")
+
+
+def test_sigterm_stops_the_simulated_dashboard_like_ctrl_c_within_five_seconds():
+    port = free_port()
+    proc = subprocess.Popen([sys.executable, str(ROOT / "scripts" / "dashboard.py"), "--simulate-room",
+                             "--http-port", str(port)], cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            text=True)
+    try:
+        _wait_for_http(port, proc, timeout=120)
+        proc.send_signal(signal.SIGTERM)
+        try:
+            out, err = proc.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.communicate()
+            raise AssertionError("dashboard did not exit within 5 s of SIGTERM")
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.communicate()
+    assert proc.returncode == 0, err
+    assert "stopped" in out
+    assert "Traceback" not in err

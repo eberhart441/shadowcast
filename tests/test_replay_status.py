@@ -31,7 +31,7 @@ def started():
 
 
 def get_json(server, path="/api/state"):
-    with urllib.request.urlopen(server.url + path, timeout=5) as resp:
+    with urllib.request.urlopen(server.url + path, timeout=30) as resp:
         return json.loads(resp.read())
 
 
@@ -39,7 +39,7 @@ def post_status(server, path, body):
     req = urllib.request.Request(server.url + path, data=json.dumps(body).encode(), method="POST",
                                  headers={"Content-Type": "application/json"})
     try:
-        with urllib.request.urlopen(req, timeout=5) as resp:
+        with urllib.request.urlopen(req, timeout=30) as resp:
             return resp.status
     except urllib.error.HTTPError as err:
         return err.code

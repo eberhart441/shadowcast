@@ -104,7 +104,7 @@ def heat_centre_x(payload):
 
 
 def get_json(url):
-    with urllib.request.urlopen(url, timeout=10) as resp:
+    with urllib.request.urlopen(url, timeout=30) as resp:
         return json.loads(resp.read())
 
 

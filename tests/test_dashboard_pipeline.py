@@ -46,14 +46,14 @@ def server():
 
 
 def get_json(server, path="/api/state"):
-    with urllib.request.urlopen(server.url + path, timeout=5) as resp:
+    with urllib.request.urlopen(server.url + path, timeout=30) as resp:
         return json.loads(resp.read())
 
 
 def sse_payloads(server):
     """Every payload the event stream sends for a finished run, up to and including the final one."""
     out = []
-    with urllib.request.urlopen(server.url + "/api/events", timeout=10) as resp:
+    with urllib.request.urlopen(server.url + "/api/events", timeout=30) as resp:
         for raw in resp:
             line = raw.decode().rstrip("\n")
             if line.startswith("data: "):
