@@ -2,7 +2,9 @@
 the board, and closing the sources releases the port quickly.
 
 pyserial is replaced by a fake, so no hardware is touched. Like ``serial.Serial()`` the fake is created unopened
-and records its settings when opened. It serves scripted chunks: ``in_waiting`` is the size of the next chunk and
+and records its settings when opened. It also records every (DTR, RTS) state the port's lines pass through, from
+the open on: the OS asserts both as the port opens, then pyserial applies DTR and then RTS, and a change made on
+the open port takes effect at once. It serves scripted chunks: ``in_waiting`` is the size of the next chunk and
 ``read`` returns it. With no chunk left it sends nothing: ``read`` waits out its timeout and returns b"", as
 pyserial does. The fake records close(), which is what releases a real port.
 """
@@ -26,15 +28,41 @@ class FakePort:
     def __init__(self, *args, **kwargs):
         self.created_with = (args, kwargs)
         self.port, self.baudrate, self.timeout = None, 9600, None
-        self.dtr = self.rts = True          # pyserial asserts both at open unless they are set otherwise first
+        self._dtr = self._rts = True        # pyserial asserts both at open unless they are set otherwise first
+        self.is_open = False
         self.settings_at_open = None
+        self.line_states = []               # (dtr, rts) on the wire after each change, from the open on
         self.closed = False
         self._chunks = list(FakePort.script)
         FakePort.opened.append(self)
 
+    @property
+    def dtr(self):
+        return self._dtr
+
+    @dtr.setter
+    def dtr(self, value):
+        self._dtr = bool(value)
+        if self.is_open:
+            self.line_states.append((self._dtr, self.line_states[-1][1]))
+
+    @property
+    def rts(self):
+        return self._rts
+
+    @rts.setter
+    def rts(self, value):
+        self._rts = bool(value)
+        if self.is_open:
+            self.line_states.append((self.line_states[-1][0], self._rts))
+
     def open(self):
         self.settings_at_open = {"port": self.port, "baudrate": self.baudrate, "timeout": self.timeout,
-                                 "dtr": self.dtr, "rts": self.rts}
+                                 "dtr": self._dtr, "rts": self._rts}
+        self.is_open = True
+        self.line_states.append((True, True))                # the OS asserts both lines as the port opens
+        self.line_states.append((self._dtr, True))           # then pyserial applies DTR ...
+        self.line_states.append((self._dtr, self._rts))      # ... and then RTS
 
     def reset_input_buffer(self):
         pass
@@ -128,16 +156,19 @@ def test_heartbeats_never_reach_the_parser_as_lines(fake_serial):
     assert fake_serial.opened[0].closed is True
 
 
-def test_the_port_is_created_unopened_and_opens_with_dtr_and_rts_released(fake_serial):
-    # DTR/RTS asserted at open can reset an ESP32, and a receiver that resets re-rolls its forced gain
+def test_opening_the_port_never_passes_through_the_reset_state_and_leaves_both_lines_released(fake_serial):
+    # On the ESP32 auto-reset circuit, DTR released while RTS is asserted holds the chip in reset, and a receiver
+    # that resets re-rolls its forced gain. Setting both off before the open used to pass through that state.
     stream = serial_stream("/dev/cu.fake", baud=921600, timeout=0.05)
     next_items(stream, 1, within_s=5.0)
     stream.close()
 
     port = fake_serial.opened[0]
-    assert port.created_with == ((), {})               # Serial(path, ...) would open at once, before dtr/rts are set
-    assert port.settings_at_open == {"port": "/dev/cu.fake", "baudrate": 921600, "timeout": 0.05,
-                                     "dtr": False, "rts": False}
+    assert port.created_with == ((), {})               # created unopened: the settings are in place at the open
+    assert port.settings_at_open["port"] == "/dev/cu.fake"
+    assert (port.settings_at_open["baudrate"], port.settings_at_open["timeout"]) == (921600, 0.05)
+    assert (False, True) not in port.line_states       # (dtr, rts): never DTR released while RTS is asserted
+    assert port.line_states[-1] == (False, False)      # both released while the port is read
     assert port.closed is True
 
 

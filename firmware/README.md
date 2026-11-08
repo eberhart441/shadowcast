@@ -34,6 +34,8 @@ idf.py -B build_c5 build
 idf.py -B build_c5 -p /dev/cu.usbmodemXXXX flash
 ```
 
+The receiver logs its image at boot (`wifi_channel: 6, mac: 1a:0c:12:00:00:fe, print_stride: 1, print_raw: 0, force_gain: 1, gain_lock: 0 (offset 2)`), shown when you flash with `flash monitor`.
+
 Sender: pick the ID from `config/room.json` (the last byte of the sender's `mac`, e.g. tx0 is `0x00`, tx1 is `0x01`) and give each ID its own build directory:
 
 ```
@@ -60,12 +62,12 @@ python -m esptool --chip esp32c5 -p /dev/cu.usbmodemXXXX -b 460800 --before defa
 | `CSI_SEND_HZ` | `csi_send` | `20` | Nominal packets per second. The real rate is a little lower (see the budget below). |
 | `CSI_CHANNEL` | both | `6` | Wi-Fi channel, 5 to 11. Every board must use the same one. |
 | `CSI_PRINT_STRIDE` | `csi_recv` | `1` | Print only every Nth subcarrier (I/Q pair). `4` prints 30 of the C5's 117 subcarriers (`len` 60), and a line shrinks from about 0.85 KB to about 0.27 KB. |
-| `CSI_FORCE_GAIN` | `csi_recv` | `1` | `1` forces the receive gain at packet 100 (stock). `0` leaves the AGC running; use it with `CSI_PRINT_RAW=1`. |
+| `CSI_FORCE_GAIN` | `csi_recv` | `1` | `1` forces the receive gain at packet 100 (our default; upstream esp-csi ships `0`). `0` leaves the AGC running and needs `CSI_PRINT_RAW=1`. |
 | `CSI_PRINT_RAW` | `csi_recv` | `0` | `1` prints the raw int8 CSI values, without the gain-compensation multiply. |
 | `CSI_GAIN_LOCK_STRONGEST` | `csi_recv` | `0` | Experimental. `1` forces the strongest sender's gain instead of the median gain. |
-| `CSI_GAIN_LOCK_OFFSET` | `csi_recv` | `0` | With the lock: lower the locked AGC by this many steps (about 1 dB each) for headroom. |
+| `CSI_GAIN_LOCK_OFFSET` | `csi_recv` | `2` | With the lock: lower the locked AGC by this many steps (about 1 dB each) for headroom. |
 
-A bad value (channel outside 5 to 11, stride below 1, rate below 1, `SENDER_ID` `0xfe` or above `0xff`, a gain lock without forced gain or on a chip without gain control) stops the build with an error. Examples, each followed by `idf.py -B <dir> build` and a flash:
+A bad value (channel outside 5 to 11, stride below 1, rate below 1, `SENDER_ID` `0xfe` or above `0xff`, `CSI_FORCE_GAIN`, `CSI_PRINT_RAW` or `CSI_GAIN_LOCK_STRONGEST` other than 0 or 1 (`ON` included), `CSI_FORCE_GAIN=0` without `CSI_PRINT_RAW=1`, a gain lock without forced gain or on a chip without gain control) stops the build with an error. Examples, each followed by `idf.py -B <dir> build` and a flash:
 
 ```
 cd firmware/csi_recv
@@ -80,9 +82,9 @@ idf.py -B build_s3_id02_25hz -DSENDER_ID=0x02 -DCSI_SEND_HZ=25 set-target esp32s
 
 ### Gain options
 
-Stock behaviour (`CSI_FORCE_GAIN=1`): the receiver takes the median AGC gain of the first 50 packets after boot, from all senders mixed, and forces it at packet 100. A sender much stronger than that median clips at the int8 rail (scaled from our hw5 data: about 29% of subcarriers at 6 dB stronger); a much weaker one gets coarse values. Every reset picks a new gain, which shifts that receiver's scores.
+Default behaviour (`CSI_FORCE_GAIN=1`): the receiver takes the median AGC gain of the first 50 packets after boot, from all senders mixed, and forces it at packet 100. A sender much stronger than that median clips at the int8 rail (scaled from our hw5 data: about 29% of subcarriers at 6 dB stronger); a much weaker one gets coarse values. Every reset picks a new gain, which shifts that receiver's scores.
 
-- `CSI_GAIN_LOCK_STRONGEST=1` forces instead the gain of the packet with the lowest `agc_gain` among packets 0-99 (the strongest sender), lowered by `CSI_GAIN_LOCK_OFFSET` AGC steps, so no sender clips; weaker senders get coarser values. At packet 100 the receiver logs `gain lock on the strongest sender: agc_force A, fft_force F (median baseline ...)`. From then on it prints the locked values without compensation, because the library compensates against its own median, which would scale the strongest link back up past 127. Power every sender before the receiver boots: a sender that starts later is not in the lock. One unusually strong packet sets the lock, so check the logged value. The library reads a forced (0, 0) as "automatic gain", so a lock that comes out at agc 0 and fft 0 leaves the AGC on. Try it on one receiver against a stock one before using it everywhere.
+- `CSI_GAIN_LOCK_STRONGEST=1` forces instead the gain of the packet with the lowest total gain (`agc_gain + fft_gain / 4`, in dB) among packets 0-99 (the strongest sender), lowered by `CSI_GAIN_LOCK_OFFSET` AGC steps (default 2, about 2 dB), so the strongest sender seen at boot does not clip unless its signal rises by more than the offset; weaker senders get coarser values. At packet 100 the receiver logs `gain lock on the strongest sender: agc_force A, fft_force F (median baseline ...)`. From then on it prints the locked values without compensation, because the library compensates against its own median, which would scale the strongest link back up past 127. Power every sender before the receiver boots: a sender that starts later is not in the lock. One unusually strong packet sets the lock, so check the locked value: watch the boot with `idf.py -p PORT monitor` before starting the dashboard (opening the monitor resets the board and re-takes the lock), or read `agc_gain` / `fft_gain` on the C5 link cards. The library reads a forced (0, 0) as "automatic gain", so a lock that comes out at agc 0 and fft 0 leaves the AGC on. Try it on one receiver against a default one before using it everywhere.
 - `CSI_FORCE_GAIN=0` leaves the AGC running, so there is no forced gain for a reset to re-roll. The compensation multiply can then exceed 127, and `csi/parser.py` drops any line with a value outside int8, so pair it with `CSI_PRINT_RAW=1`. The host does not compensate for AGC changes yet; each C5 line carries the `agc_gain` and `fft_gain` it would need (gain change in dB is about `(agc - agc_ref) + 0.25 x (fft - fft_ref)`). Use it to record and compare, not for the demo.
 
 ## Packet budget per receiver
@@ -99,7 +101,15 @@ Each receiver prints every packet from every sender as one text line inside the 
 | 100 | 11 ms | 90.9 (measured) | none |
 
 - Measure the real rate and loss from the sender's packet counter, the second column (`seq`) of every `CSI_DATA` line: a gap in it is a lost packet.
-- Stay at 20 Hz or above: calibration refuses a link below 15 packets/s (`MIN_CALIBRATION_PKT_RATE_HZ` in `csi/detect.py`), and at 19.6 packets/s a link can lose only about 23%.
+- Choose the rate from the number of senders a receiver hears. The firmware default stays 20 Hz, which fits up to 4; with fewer senders, build them faster for more loss headroom:
+
+  | Senders heard per receiver | `CSI_SEND_HZ` | Per receiver | Loss a link can take and still calibrate |
+  |---|---|---|---|
+  | 2 | 40 | about 77/s | 60% (the loss limit) |
+  | 3 | 25 | about 73/s | about 59% |
+  | 4 | 20 (default) | about 78/s | about 49% |
+
+  Calibration refuses a link that delivers under 10 packets/s (`MIN_CALIBRATION_PKT_RATE_HZ` in `csi/detect.py`) or loses more than 60% of its packets (`MAX_CALIBRATION_LOSS`). Links sensed through a wall are the lossy ones, so do not go below 20 Hz; for the current 2-sender rig, `-DCSI_SEND_HZ=40` on each sender's `set-target` line gives the most headroom.
 - For more than 4 senders, build the receivers with `CSI_PRINT_STRIDE=4` rather than lowering the rate. Lines are about 3x shorter, so the budget should grow about 3x (an estimate from line length; check the loss on the rig).
 
 ## After changing the address prefix, reflash every board
@@ -110,7 +120,7 @@ Boards on firmware from before and after the change to the `1a:0c:12:00:00` pref
 2. Check each sender's boot line shows `mac: 1a:0c:12:00:00:<id>`, and that every receiver's `CSI_DATA` lines show `1a:0c:12:00:00:` addresses.
 3. Recalibrate (flashing reset the receivers).
 
-While boards are mixed, links go silent, and the dashboard can list a link twice: the expected one as NO_SIGNAL and an old-address one under the same label.
+While boards are mixed, links go silent. The dashboard counts an old sender address (`1a:00:00:00:00:XX`) as the configured sender with the same last byte, so a rig whose boards all still run the old firmware keeps working with the current laptop code until it is reflashed (recalibrate after the reflash).
 
 ## Channel-11 fallback
 

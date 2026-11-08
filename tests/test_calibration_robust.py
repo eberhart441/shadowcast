@@ -106,7 +106,14 @@ def test_seventeen_packets_per_second_link_is_calibrated_not_refused():
     assert cal.loss == pytest.approx(0.56, abs=0.05)
 
 
-def test_sparse_link_below_fifteen_packets_per_second_is_refused_with_its_rate():
+def test_twelve_packets_per_second_link_is_calibrated_above_the_ten_per_second_floor():
+    # a 20 Hz sender losing 40%: refused under the old 15 packets/s floor
+    cal = calibrate(loss_stream(20, 0.4, seconds=30), send_rate_hz=20)
+    assert cal.pkt_rate_hz == pytest.approx(12.0, rel=0.15)
+    assert cal.loss == pytest.approx(0.4, abs=0.07)
+
+
+def test_sparse_link_below_ten_packets_per_second_is_refused_with_its_rate():
     with pytest.raises(CalibrationError, match="pkt/s"):
         calibrate(loss_stream(40, 0.85, seconds=30), send_rate_hz=40)
 

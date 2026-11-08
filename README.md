@@ -109,9 +109,11 @@ the senders run from battery or USB. The rig runs on channel 6. Senders on the c
 | `tx0` | sender | ESP32-S3 | (2.77, 1.84), bottom-right | MAC `1a:0c:12:00:00:00`, battery or USB |
 | `tx1` | sender | ESP32-C5 | (0, 1.84), bottom-left | MAC `1a:0c:12:00:00:01`, battery or USB |
 
-The sender addresses use the team prefix `1a:0c:12:00:00` of the current firmware. Boards still on the
-old firmware (`1a:00:00:00:00:xx`) are not heard: reflash every board together (see
-[Flashing the firmware](#flashing-the-firmware)).
+The sender addresses use the team prefix `1a:0c:12:00:00` of the current firmware. Boards on the old
+firmware (`1a:00:00:00:00:xx`) and on the new one do not hear each other: reflash every board together (see
+[Flashing the firmware](#flashing-the-firmware)). Until then, the dashboard counts an old sender address
+(`1a:00:00:00:00:XX`) as the configured sender with the same last byte, so a rig whose boards all still
+run the old firmware keeps working with this code.
 
 A third receiver, `rx3` (ESP32-C5, top-middle at (1.385, 0)), is defined in `config/room.json`
 with `"enabled": false`. It is not part of the rig: it is ignored everywhere until you set it
@@ -174,16 +176,17 @@ S3 receiver at about 65 to 79. Collisions between senders are negligible at thes
 hears every sender, so **plan for at most about 80 packets/s per receiver: the sum of the real rates of
 all the senders.**
 
-| Senders | `CSI_SEND_HZ` | Real packets/s per sender | Per receiver |
-|---|---|---|---|
-| up to 4 | 20 (default) | 19.6 | 78 |
-| 3 | 25 | 24.4 | 73 |
-| 2 | 40 (the old rate) | 38.5 (measured) | 77 |
+| Senders heard per receiver | `CSI_SEND_HZ` | Real packets/s per sender | Per receiver | Loss a link can take and still calibrate |
+|---|---|---|---|---|
+| 2 | 40 (the old rate) | 38.5 (measured) | 77 | 60% (the loss limit) |
+| 3 | 25 | 24.4 | 73 | about 59% |
+| 4 | 20 (default) | 19.6 | 78 | about 49% |
 
 - Real rates sit below the nominal ones because the sender's sleep adds 1 ms to every period ("100 Hz"
   measured 90.9 packets/s, "40 Hz" 38.46).
-- Do not go below 20 Hz: calibration refuses a link under 15 packets/s, and at 19.6 packets/s a link
-  can lose only about 23% before it gets there.
+- Pick the rate from the number of senders each receiver hears: the highest rate that fits leaves the
+  most room for loss, which links through a wall need. Calibration refuses a link under 10 packets/s or
+  losing more than 60% of its packets. Do not go below 20 Hz.
 - For more than 4 senders, build the receivers with `CSI_PRINT_STRIDE=4` (every 4th subcarrier, lines
   about 3x shorter) rather than lowering the rate. The gain in budget is estimated from the line length
   and has not been measured on the rig yet.
@@ -273,7 +276,7 @@ Build flags, passed on the `set-target` line of a fresh build directory
 | `CSI_CHANNEL` | both | `6` | Channel 5 to 11, the same on every board. 11 is the prepared fallback. |
 | `CSI_PRINT_STRIDE` | `csi_recv` | `1` | Print every Nth subcarrier. `4` makes lines about 3x shorter, for more senders. |
 | `CSI_FORCE_GAIN`, `CSI_PRINT_RAW` | `csi_recv` | `1`, `0` | AGC left on with raw values: for A/B recordings, not the demo. |
-| `CSI_GAIN_LOCK_STRONGEST`, `CSI_GAIN_LOCK_OFFSET` | `csi_recv` | `0`, `0` | Experimental: lock the strongest sender's gain so its link does not clip. |
+| `CSI_GAIN_LOCK_STRONGEST`, `CSI_GAIN_LOCK_OFFSET` | `csi_recv` | `0`, `2` | Experimental: lock the strongest sender's gain so its link does not clip. |
 
 After changing `CSI_PRINT_STRIDE` or any gain flag, recalibrate. The usual builds:
 
@@ -297,8 +300,9 @@ rewrites it, so flash each image straight after building it. To flash a pre-buil
 other, and `config/room.json` lists the new sender addresses. Flash every sender and every receiver from
 the same commit in one session, check each sender's boot line (`send_frequency: 20, mac:
 1a:0c:12:00:00:<id>`) and the addresses in the receivers' `CSI_DATA` lines, then recalibrate. While
-boards are mixed, links go silent, and the dashboard can list a link twice: the expected one as
-NO_SIGNAL, and an old-address one under the same label.
+boards are mixed, links go silent. A rig whose boards all still run the old firmware keeps working: the
+dashboard counts an old sender address (`1a:00:00:00:00:XX`) as the configured sender with the same last
+byte, so its links show once, under the configured senders.
 
 Notes:
 
@@ -347,9 +351,9 @@ new gain and shifts that receiver's scores 3 to 5 times. So:
 4. From then on, leave every receiver and the dashboard running. If a receiver resets anyway,
    recalibrate its links.
 
-Opening a port now keeps DTR and RTS (the lines that reset an ESP32) released, so restarting the dashboard
-should no longer reset the receivers. This is not yet confirmed on the rig: until it is, treat a dashboard
-restart as a reset.
+Opening a port now releases RTS before DTR (the lines that reset an ESP32), an order that never passes
+through the reset state, so restarting the dashboard should no longer reset the receivers. This is not yet
+confirmed on the rig: until it is, treat a dashboard restart as a reset.
 
 **Recalibrate after updating to this version.** The motion scorer changed (a 2 s window and an
 about 1 Hz high-pass, see [How it works](#how-it-works)), so older thresholds are on another scale (1.5 to
@@ -396,7 +400,7 @@ Noisy-room rules (opt-in: tick **noisy room**, or send `"noisy": true`):
 
 Both modes:
 
-- Refuse a link that delivers under 15 packets/s or loses more than 60% of its packets.
+- Refuse a link that delivers under 10 packets/s or loses more than 60% of its packets.
   Loss is measured against the sender's rate: `links_live.py --rate` sets it. Left out,
   the rate is estimated from device timestamps, as the dashboard does. (The link cards measure loss
   from the sender's packet counter instead, which needs no rate.)
@@ -404,9 +408,10 @@ Both modes:
 `links_live.py --calibrate` writes `links.json` with the thresholds plus a record of the calibration: the
 motion scorer, each link's packet rate during calibration, the margin and the time. `links_live.py` warns
 when a link's live packet rate is more than 30% away from its calibration rate. The dashboard's **Save
-thresholds** writes the plain `{label: threshold}` object without the record, so the next start warns that
-the file does not record its scorer; for a file saved after updating, that warning is harmless. Both
-shapes load everywhere.
+thresholds** writes the thresholds with the live motion scorer recorded (no packet rates or margin), so the
+next start does not warn about the file. Thresholds calibrated or Set in the dashboard are on the live
+scorer's scale; recalibrate thresholds loaded from an older file before saving them. Both shapes load
+everywhere.
 
 ### Auto threshold (no calibration)
 
@@ -418,7 +423,7 @@ learned online, and ignores any `--thresholds` file:
 - While a link is in MOTION its baseline is frozen, so someone who keeps moving stays detected, for up to
   5 minutes. A level that lasts longer becomes the new normal.
 - A receiver reboot restarts the warm-up of that receiver's links, so a re-rolled gain is relearned
-  instead of read as motion.
+  instead of read as motion. A short gap in a link's packets does not.
 - The room is MOTION when two links agree, or one link is well above its own level.
 
 It is not the default. A lasting rise in background noise also counts as a level change, and can hold a
@@ -492,8 +497,8 @@ A Set makes that link's threshold fixed. Saving writes every current threshold t
 
 Thresholds do not survive restarts of the receivers. A receiver re-rolls its forced gain whenever it
 resets, and that shifts its scores, so a threshold tuned before a reset is stale. Opening a port used to
-reset the receiver too; the ports now open with DTR and RTS released, which should stop that, but it is not
-yet confirmed on the rig, so:
+reset the receiver too; the ports now release RTS before DTR as they open, which should stop that, but it is
+not yet confirmed on the rig, so:
 
 - Set thresholds **after** the last restart of the dashboard and of every receiver, and do not restart
   the dashboard once you have tuned it.
@@ -583,10 +588,10 @@ What the page shows (`web/index.html`, one static file with no network assets):
   for 0.6 s, and leaves below `max(baseline + 2.5 x spread, 1.25 x baseline)`. It is WARMUP for about the
   first 12 s. While a link is elevated its baseline is frozen, for at most 300 s; a level that lasts longer
   becomes the new normal, and so does a level that drops for most of 30 s. A receiver reboot (its device
-  clock restarts) restarts the warm-up of its links. The room is MOTION when at least two links are elevated
-  together, or one link is at least 2x its enter level for 0.6 s. A Set on a link makes it fixed
-  (`value: null` returns it to auto). The payload carries `mode`, `elevated`, `level` per link and
-  `status.room`. The constants are at the top of `csi/adaptive.py`.
+  clock restarts) restarts the warm-up of its links; a short packet gap does not. The room is MOTION when at
+  least two links are elevated together, or one link is at least 2x its enter level for 0.6 s. A Set on a
+  link makes it fixed (`value: null` returns it to auto). The payload carries `mode`, `elevated`, `level`
+  per link and `status.room`. The constants are at the top of `csi/adaptive.py`.
 - `--simulate-room`: a simulated person walks a loop through the room in real time.
 - `--sim-quiet-first SECONDS`: with `--simulate-room`, the simulated room stays empty for that
   long before the walk starts, so Calibrate can be tried (90 is a good value: the default calibration
@@ -610,7 +615,7 @@ Ctrl+C stops the server and closes every port.
 | `POST /api/calibrate` | Body `{clips, seconds, margin, lead_s, noisy}`; defaults 3, 20, 1.25, 5 and `noisy` false (quiet-room rules). Runs the countdown and clips above. 409 while one is running. |
 | `POST /api/calibrate/cancel` | Stops a running calibration. |
 | `POST /api/threshold` | Body `{link, value}` sets one link's threshold. `GET /api/thresholds` lists them. |
-| `POST /api/thresholds/save` | Writes all thresholds as `{label: number}` to the save path and returns it. |
+| `POST /api/thresholds/save` | Writes all thresholds, with the live motion scorer recorded, to the save path and returns the path and the thresholds. |
 | `POST /api/params` | Body `{sensitivity, decay, rise, falloff}` changes the heatmap live (`decay` and `rise` in seconds, `falloff` in metres). Unknown keys or out-of-range values give 400. |
 
 Commands take a JSON body and must send `Content-Type: application/json` (see [Security](#security)).
@@ -684,8 +689,8 @@ python scripts/dashboard.py --replay-session data/hw5 --speed 8 # a recorded ses
   to change the margin, or `--thresholds links.json` to skip calibration. A single-receiver
   recording replays as one link, and `status.messages` says so.
 - A session recorded before the address-prefix change replays its `1a:00:00:00:00:00` sender as the
-  room's first sender. A second old-prefix sender (`1a:00:00:00:00:01`) keeps its old address, so its link
-  shows twice under one label: once as NO_SIGNAL and once with the recorded data.
+  room's first sender, and any other old-prefix sender (`1a:00:00:00:00:01`) as the configured sender with
+  the same last byte, so each link shows once.
 - A replay sets `status.finished` true at the end and keeps the final state up until
   Ctrl+C. Replays are read-only.
 
@@ -796,8 +801,9 @@ No recording of the four-link rig is in the repository yet.
 
 ## How it works
 
-1. **Serial input and parsing** (`csi/parser.py`). `serial_stream` opens each port with DTR and RTS
-   released (so opening it should not reset the board), reads whatever is waiting in one call, and stamps
+1. **Serial input and parsing** (`csi/parser.py`). `serial_stream` opens each port and releases RTS before
+   DTR (an order that never passes through the reset state, so opening it should not reset the board),
+   reads whatever is waiting in one call, and stamps
    each chunk's lines with the time it arrived. Each `CSI_DATA` line becomes one amplitude vector
    (`hypot` of each int8 I/Q pair). Null subcarriers are dropped with a mask locked
    from the first valid packet (learned from the first 20 lines for a `CSI_PRINT_STRIDE` build). The packet
@@ -937,7 +943,7 @@ Known limits:
 | Thresholds are wrong after a reset | A reset re-rolls the receiver's forced gain. | Reset in place, then recalibrate. |
 | Every link reads MOTION in an empty room after updating | The thresholds file is from the previous motion scorer (a warning says so at start). | Recalibrate (see [Calibrating](#calibrating)). |
 | A link fires MOTION with nobody there | Noisy or bursty link. | Check packet rate, **Loss (seq)** and **Clipped** on its card. Raise the margin, or set a manual threshold with **Set**. Re-aim the antenna. |
-| Links silent, or one listed twice, after flashing | Boards on the old and the new address prefix. | Reflash every board from the same commit (see [Flashing the firmware](#flashing-the-firmware)). |
+| Links silent after flashing | Boards on the old and the new address prefix. | Reflash every board from the same commit (see [Flashing the firmware](#flashing-the-firmware)). |
 | **Loss (seq)** high on every link of one receiver | The receiver is over its packet budget. | Lower the senders' rate or build the receivers with `CSI_PRINT_STRIDE=4` (see [Scaling up](#scaling-up)). |
 | **Clipped** high on one link | The receiver's gain, forced from all senders, is too high for that strong sender. | Move that sender farther away or turn it, or try the experimental gain lock (`firmware/README.md`). |
 | A link shows UNCALIBRATED | No threshold: no `--thresholds` file, or calibration skipped it. | Read `status.messages` for the reason, then calibrate again. |

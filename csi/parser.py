@@ -309,18 +309,21 @@ def serial_stream(port: str, baud: int = 921600, timeout: float = 1.0) -> Iterat
     stop flag at least every ``timeout`` seconds, and closing the generator closes the port. parse_stream and
     MultiSource skip heartbeats, so they see only lines.
 
-    DTR and RTS are de-asserted before the port opens. On the ESP32 boards they drive reset and boot mode, and
-    a receiver that resets re-rolls its forced gain, so opening a port (e.g. restarting the dashboard) must not
-    reset it.
+    DTR and RTS drive reset and boot mode on the ESP32 boards' auto-reset circuit: DTR released while RTS is
+    asserted holds the chip in reset, and a receiver that resets re-rolls its forced gain. The OS asserts both
+    lines when a port opens, so the port opens with pyserial's defaults (both asserted) and then releases RTS
+    before DTR: both, then DTR only, then neither, never the reset state. Releasing them in the other order, or
+    setting both off before the open (pyserial then applies DTR first), passes through it. This should keep
+    opening a port (e.g. restarting the dashboard) from resetting the board; it is not yet confirmed on the rig.
     """
     import serial  # imported lazily so --simulate works without a port
 
     ser = serial.Serial()  # unopened, so the settings below are in place when it opens
     ser.port, ser.baudrate, ser.timeout = port, baud, timeout
-    ser.dtr = False
-    ser.rts = False
-    ser.open()
+    ser.open()                 # pyserial's defaults: DTR and RTS asserted, as the OS leaves them on open
     try:
+        ser.rts = False        # RTS first: DTR asserted with RTS released does not reset the board
+        ser.dtr = False
         ser.reset_input_buffer()
         pending = b""
         while True:

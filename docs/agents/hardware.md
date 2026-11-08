@@ -6,7 +6,7 @@ Reference for anything that touches boards, serial ports, firmware, thresholds o
 
 `csi_recv` forces its receive gain at packet 100: the median gain of the first 50 packets after boot, from all senders mixed. A reset picks a new gain and shifts every score on that receiver's links 3 to 5 times, so a threshold tuned before the reset is stale after it.
 
-Resets come from: any `esptool` command (including `chip-id`), flashing, replugging, and (observed) opening a native-USB port when a dashboard starts. `serial_stream` now opens ports with DTR and RTS released, which should stop the last one; this is not yet confirmed on the rig, so until it is, treat a dashboard restart as a reset.
+Resets come from: any `esptool` command (including `chip-id`), flashing, replugging, and (observed) opening a native-USB port when a dashboard starts. `serial_stream` now releases RTS before DTR as it opens a port, an order that never passes through the auto-reset state (DTR released while RTS is asserted), which should stop the last one; this is not yet confirmed on the rig, so until it is, treat a dashboard restart as a reset.
 
 - Power every sender, reset the receivers in place, calibrate after the last reset, then keep every receiver and the dashboard running. Change thresholds through the page or API (`Set`, `Save`).
 - A receiver's `agc_gain` / `fft_gain` (on its link cards, C5 receivers only) jumping to a new value and staying there usually means it reset: recalibrate its links. Whether a forced gain is reported unchanged is still to be checked on the rig.
@@ -21,8 +21,8 @@ Use ESP32-C5 receivers. ESP32-S3 receivers were much noisier (35-65% false MOTIO
 
 A receiver prints every packet from every sender as one text line (about 0.85 KB on a C5) at 921600 baud, which caps a C5 receiver at about 100-116 packets/s summed over all senders (an S3 at about 65-79). RF collisions are negligible at these rates. Keep the sum of the senders' real rates at or below about 80 packets/s per receiver:
 
-- Senders default to 20 Hz, really about 19.6 packets/s, so up to 4 senders. 25 Hz (24.4 real) fits 3, 40 Hz (38.5 real) fits 2.
-- Do not go below 20 Hz: calibration refuses a link under 15 packets/s.
+- Senders default to 20 Hz, really about 19.6 packets/s, so up to 4 senders. Pick the rate from the number of senders a receiver hears: 2 -> `CSI_SEND_HZ=40` (38.5 real, about 77/s), 3 -> 25 (24.4 real, about 73/s), 4 -> 20 (about 78/s). The highest rate that fits leaves the most room for loss.
+- Do not go below 20 Hz: calibration refuses a link under 10 packets/s or losing more than 60%, so a link can lose about 49% at 20 Hz, about 59% at 25 Hz and 60% at 40 Hz.
 - For more senders, build the receivers with `CSI_PRINT_STRIDE=4` (about 3x shorter lines; the budget gain is an estimate, not yet measured).
 - Judge loss by each link's `seq_loss` (from the sender's packet counter), not by `drops`, which assumes a send rate.
 
@@ -36,11 +36,11 @@ Build flags, set on the `set-target` line of a fresh build directory (`idf.py -B
 - Receiver only: `CSI_PRINT_STRIDE` (default 1), `CSI_FORCE_GAIN` (default 1) with `CSI_PRINT_RAW` (default 0) for A/B recordings, and the experimental `CSI_GAIN_LOCK_STRONGEST` / `CSI_GAIN_LOCK_OFFSET`.
 - Recalibrate after changing the stride or any gain flag.
 
-**Reflash every board together.** Senders use the team prefix `1a:0c:12:00:00` plus `SENDER_ID`, receivers set their own address to `1a:0c:12:00:00:fe` and accept only that prefix, and `config/room.json` lists the new sender addresses. Boards on the old prefix (`1a:00:00:00:00:xx`) and the new one do not hear each other. Flash every sender and receiver from the same commit in one session, check the senders' boot lines (`mac: 1a:0c:12:00:00:<id>`) and the receivers' `CSI_DATA` addresses, then recalibrate. While boards are mixed, links go silent or show twice under one label.
+**Reflash every board together.** Senders use the team prefix `1a:0c:12:00:00` plus `SENDER_ID`, receivers set their own address to `1a:0c:12:00:00:fe` and accept only that prefix, and `config/room.json` lists the new sender addresses. Boards on the old prefix (`1a:00:00:00:00:xx`) and the new one do not hear each other. Flash every sender and receiver from the same commit in one session, check the senders' boot lines (`mac: 1a:0c:12:00:00:<id>`) and the receivers' `CSI_DATA` addresses, then recalibrate. While boards are mixed, links go silent. Until the reflash, the dashboard counts an old sender address (`1a:00:00:00:00:XX`) as the configured sender with the same last byte, so a rig whose boards all still run the old firmware keeps working with the current laptop code.
 
 ## Thresholds after a scorer change
 
-The motion scorer changed (2 s window, about 1 Hz high-pass), so thresholds files from before are on another scale (1.5-4x lower) and links read MOTION in an empty room. The dashboard, `links_live.py` and `detect_live.py` warn about a file made with another scorer, or with no scorer record (every older file, and any file saved from the dashboard's Save button, where the warning is harmless if it was saved after updating). Recalibrate; the quiet-room rules are the default, and the noisy-room p97 rule is opt-in.
+The motion scorer changed (2 s window, about 1 Hz high-pass), so thresholds files from before are on another scale (1.5-4x lower) and links read MOTION in an empty room. The dashboard, `links_live.py` and `detect_live.py` warn about a file made with another scorer, or with no scorer record (every older file, including those saved from the dashboard's Save button before it recorded the scorer). Recalibrate, and do it before saving from the dashboard: Save now records the live scorer for every threshold it writes. The quiet-room rules are the default, and the noisy-room p97 rule is opt-in.
 
 ## Thresholds in a noisy room
 

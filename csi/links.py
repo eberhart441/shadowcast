@@ -105,8 +105,11 @@ class _Link:
     def push(self, pkt: CSIPacket) -> str:
         self.health.observe(pkt)
         self.rssi, self.last_host = pkt.rssi, pkt.host_ts
+        restarts = self.scorer.restarts
         self.score = self.scorer.push(pkt)
         if self.mode == AUTO:
+            if self.scorer.restarts != restarts:  # the receiver rebooted and re-rolled its gain: learn it again
+                self.detector.restart(pkt.host_ts)
             self.reading = self.detector.push(pkt.host_ts, self.score)
             self.state = self.reading.state
             self.level = self.reading.level
@@ -335,10 +338,11 @@ class ThresholdFile:
 
 
 def save_thresholds(path: str | Path, thresholds: Mapping[str, float], record: Optional[Mapping] = None) -> None:
-    """Write links.json. Without ``record``: the plain ``{label: threshold}`` object (what the dashboard's Save
-    writes). With one (``LinkCalibration.record()``): ``{"format", "version", "thresholds": {...}, "scorer",
-    "pkt_rate_hz", "margin", "noisy", "saved_at"}``, so a later run can tell whether the thresholds still fit.
-    ``load_thresholds`` and ``read_thresholds`` read both shapes."""
+    """Write links.json. Without ``record``: the plain ``{label: threshold}`` object. With one
+    (``LinkCalibration.record()``, or the dashboard's Save, which records only ``{"scorer": ...}``): ``{"format",
+    "version", "thresholds": {...}, "scorer", "pkt_rate_hz", "margin", "noisy", "saved_at"}`` (the keys the record
+    has), so a later run can tell whether the thresholds still fit. ``load_thresholds`` and ``read_thresholds``
+    read both shapes."""
     values = {k: float(v) for k, v in sorted(thresholds.items())}
     if record is None:
         obj: dict = values

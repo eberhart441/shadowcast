@@ -212,6 +212,7 @@ class MotionScorer:
         self._score: Optional[float] = None
         self._clock = DeviceClock()  # unwraps the 32-bit counter; a reboot restarts the window
         self.dropped = 0                         # out-of-order or repeated packets, not applied
+        self.restarts = 0                        # receiver reboots seen: each one started the window over
 
     @classmethod
     def from_config(cls, config: ScorerConfig = LIVE_SCORER) -> "MotionScorer":
@@ -223,6 +224,7 @@ class MotionScorer:
         self._raw.clear()
         self._slow = None
         self._last_t = None
+        self.restarts += 1
 
     def _prefilter(self, x: np.ndarray) -> np.ndarray:
         if not self._median3:
@@ -376,7 +378,8 @@ def detect_packets(packets: Iterable[CSIPacket], threshold: float,
 MIN_CLEAN_S = 8.0                 # clean (kept) empty-room data needed before a threshold is trusted
 MIN_CLEAN_FRACTION = 0.5          # and at least this fraction of the clip time must be quiet (else: bursty/busy)
 MAX_CALIBRATION_LOSS = 0.6        # refuse only when most packets are missing
-MIN_CALIBRATION_PKT_RATE_HZ = 15.0  # below this the window scores are too thin to be stable
+MIN_CALIBRATION_PKT_RATE_HZ = 10.0  # below this the window scores are too thin to be stable (20 packets per 2 s
+                                    # window; round-1 data still separated walking at 10 packets/s in 1 s windows)
 CHUNK_S = 1.0                     # contamination is judged per 1 s chunk (see calibrate_clips)
 REJECT_RATIO = 3.0                # chunk median > 3x the quiet baseline -> someone is moving
 BURST_RATIO = 2.5                 # chunk p90 > 2.5x its own median -> a passer-by inside the chunk

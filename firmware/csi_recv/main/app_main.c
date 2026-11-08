@@ -37,18 +37,18 @@
 #endif
 #define CONFIG_LESS_INTERFERENCE_CHANNEL   CSI_CHANNEL
 
-/* 1 (stock): force the receive gain at packet 100. 0: leave the AGC running (pair with CSI_PRINT_RAW=1). */
+/* 1 (our default; upstream esp-csi ships 0): force the receive gain at packet 100. 0: leave the AGC running (pair with CSI_PRINT_RAW=1). */
 #ifndef CSI_FORCE_GAIN
 #define CSI_FORCE_GAIN 1
 #endif
 
 /* Experimental, off by default: force the gain of the strongest sender heard in packets 0-99 (the packet with the
- * lowest agc_gain), lowered by CSI_GAIN_LOCK_OFFSET agc steps, instead of the library's median baseline. */
+ * lowest total gain, agc_gain + fft_gain / 4), lowered by CSI_GAIN_LOCK_OFFSET agc steps, instead of the library's median baseline. */
 #ifndef CSI_GAIN_LOCK_STRONGEST
 #define CSI_GAIN_LOCK_STRONGEST 0
 #endif
 #ifndef CSI_GAIN_LOCK_OFFSET
-#define CSI_GAIN_LOCK_OFFSET 0
+#define CSI_GAIN_LOCK_OFFSET 2  /* only used with the lock: ~2 dB of headroom */
 #endif
 
 /* 1: print the raw int8 CSI values, without the gain-compensation multiply. With the AGC running that multiply can
@@ -87,6 +87,12 @@
 #define CONFIG_GAIN_CONTROL                 1
 #endif
 
+_Static_assert((CSI_FORCE_GAIN) == 0 || (CSI_FORCE_GAIN) == 1, "CSI_FORCE_GAIN must be 0 or 1");
+_Static_assert((CSI_PRINT_RAW) == 0 || (CSI_PRINT_RAW) == 1, "CSI_PRINT_RAW must be 0 or 1");
+_Static_assert((CSI_GAIN_LOCK_STRONGEST) == 0 || (CSI_GAIN_LOCK_STRONGEST) == 1, "CSI_GAIN_LOCK_STRONGEST must be 0 or 1");
+#if CONFIG_GAIN_CONTROL && !CONFIG_FORCE_GAIN && !CSI_PRINT_RAW
+#error "CSI_FORCE_GAIN=0 needs CSI_PRINT_RAW=1: AGC-compensated values exceed int8 and csi/parser.py drops those lines"
+#endif
 #if CSI_GAIN_LOCK_STRONGEST && !(CONFIG_GAIN_CONTROL && CONFIG_FORCE_GAIN)
 #error "CSI_GAIN_LOCK_STRONGEST needs CSI_FORCE_GAIN=1 and a chip with gain control (ESP32-S3, C3, C5, C6, C61)"
 #endif
@@ -199,14 +205,17 @@ static void wifi_csi_rx_cb(void *ctx, wifi_csi_info_t *info)
     static uint8_t agc_gain_baseline = 0;
     static int8_t fft_gain_baseline = 0;
 #if CSI_GAIN_LOCK_STRONGEST
-    static int agc_gain_lock = UINT8_MAX + 1;  /* lowest agc_gain in packets 0-99 (the first packet replaces this) */
+    static int gain_lock_q = INT32_MAX;        /* lowest total gain in packets 0-99, in 0.25 dB steps: 4 * agc + fft */
+    static uint8_t agc_gain_lock = 0;          /* agc_gain of that packet */
     static int8_t fft_gain_lock = 0;           /* fft_gain of that packet */
 #endif
     esp_csi_gain_ctrl_get_rx_gain(rx_ctrl, &agc_gain, &fft_gain);
     if (s_count < 100) {
         esp_csi_gain_ctrl_record_rx_gain(agc_gain, fft_gain);
 #if CSI_GAIN_LOCK_STRONGEST
-        if (agc_gain < agc_gain_lock || (agc_gain == agc_gain_lock && fft_gain < fft_gain_lock)) {
+        int gain_q = 4 * agc_gain + fft_gain;  /* the library's model: gain in dB = agc + 0.25 * fft */
+        if (gain_q < gain_lock_q) {
+            gain_lock_q = gain_q;
             agc_gain_lock = agc_gain;
             fft_gain_lock = fft_gain;
         }
@@ -223,7 +232,10 @@ static void wifi_csi_rx_cb(void *ctx, wifi_csi_info_t *info)
         ESP_LOGI(TAG, "gain lock on the strongest sender: agc_force %d, fft_force %d (median baseline agc %d, fft %d)",
                  agc_force, fft_force, agc_gain_baseline, fft_gain_baseline);
 #endif
-        esp_csi_gain_ctrl_set_rx_force_gain(agc_force, fft_force);
+        esp_err_t force_err = esp_csi_gain_ctrl_set_rx_force_gain(agc_force, fft_force);
+        if (force_err != ESP_OK) {
+            ESP_LOGW(TAG, "force gain (agc %d, fft %d) refused: %s", agc_force, fft_force, esp_err_to_name(force_err));
+        }
         ESP_LOGD(TAG, "fft_force %d, agc_force %d", fft_force, agc_force);
 #endif
     }
@@ -376,4 +388,7 @@ void app_main()
     wifi_esp_now_init(peer);
 
     wifi_csi_init();
+    ESP_LOGI(TAG, "wifi_channel: %d, mac: " MACSTR ", print_stride: %d, print_raw: %d, force_gain: %d, gain_lock: %d (offset %d)",
+             CONFIG_LESS_INTERFERENCE_CHANNEL, MAC2STR(CSI_RECV_MAC), CSI_PRINT_STRIDE, CSI_PRINT_RAW,
+             CONFIG_FORCE_GAIN, CSI_GAIN_LOCK_STRONGEST, CSI_GAIN_LOCK_OFFSET);
 }

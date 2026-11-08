@@ -54,11 +54,17 @@ def elevated_runs(out, pts):
 
 
 def test_scale_jump_after_a_scorer_restart_is_relearned_after_a_new_warm_up():
-    # a receiver reboots (and re-rolls its gain): its scorer restarts its window, which shows as missing scores,
-    # then the scale is 4x. The detector starts over, warms up on the new level and stays quiet.
-    restart = [(30.0 + i / HZ, None) for i in range(46)]                  # the scorer's ~1.8 s refill
-    pts = series(noisy(3.0, 25 * 30, 0.4, seed=2)) + restart + series(noisy(12.0, 25 * 60, 1.6, seed=3), t0=31.84)
-    out = states(AdaptiveDetector(), pts)
+    # a receiver reboots (and re-rolls its gain): its scorer restarts its window (LinkMonitor then calls restart),
+    # misses scores while the window refills, then the scale is 4x. The detector starts over, warms up on the new
+    # level and stays quiet.
+    before = series(noisy(3.0, 25 * 30, 0.4, seed=2))
+    refill = [(30.0 + i / HZ, None) for i in range(46)]                   # the scorer's ~1.8 s refill
+    after = series(noisy(12.0, 25 * 60, 1.6, seed=3), t0=31.84)
+    pts = before + refill + after
+    det = AdaptiveDetector()
+    out = states(det, before)
+    assert det.restart(30.0).state == "WARMUP"
+    out += states(det, refill + after)
     assert "MOTION" not in out
     assert {s for (t, _), s in zip(pts, out) if 30.0 <= t < 31.84 + WARMUP_S} == {"WARMUP"}
     late = [s for (t, _), s in zip(pts, out) if t > 31.84 + WARMUP_S + 2.0]
@@ -133,13 +139,31 @@ def test_someone_moving_for_minutes_stays_detected_because_the_baseline_is_froze
     assert {s for (t, _), s in zip(pts, out) if t > 272.0} == {"EMPTY"}   # the quiet baseline was kept
 
 
-def test_a_score_gap_after_valid_scores_restarts_the_warm_up():
+def test_a_restart_after_valid_scores_starts_the_warm_up_over():
     det = AdaptiveDetector()
     for t, s in series(noisy(4.0, 25 * 20, 0.4, seed=22)):
         det.push(t, s)
-    assert det.push(20.0, None).state == "WARMUP"
+    assert det.restart(20.0).state == "WARMUP"
+    assert det.push(20.04, None).state == "WARMUP"   # the restarted scorer's window refilling
     assert det.push(20.5, 4.0).state == "WARMUP"
     assert det.push(20.5 + WARMUP_S - 1.0, 4.0).state == "WARMUP"
+
+
+def test_a_short_score_gap_keeps_the_link_warm():
+    # a few packets lost in a row leave the scorer's 2 s window short for a moment, so it returns None, with no
+    # reboot: the detector keeps its baseline and its last reading instead of warming up again (it used to restart,
+    # several times a minute on a lossy link, and a walker shadowing the link dropped out as WARMUP)
+    det = AdaptiveDetector()
+    quiet = series(noisy(4.0, 25 * 20, 0.4, seed=22))
+    walking = series(noisy(12.0, 25 * 4, 1.0, seed=23), t0=20.0)
+    gap = [(24.0 + i / HZ, None) for i in range(5)]
+    more = series(noisy(12.0, 25 * 2, 1.0, seed=24), t0=24.2)
+    after = series(noisy(4.0, 25 * 10, 0.4, seed=25), t0=26.2)
+    assert states(det, quiet + walking)[-1] == "MOTION"
+    assert states(det, gap) == ["MOTION"] * len(gap)
+    out = states(det, more + after)
+    assert "WARMUP" not in out
+    assert out[0] == "MOTION" and out[-1] == "EMPTY"
 
 
 def test_one_noisy_link_alone_does_not_make_the_room_motion():

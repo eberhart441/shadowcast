@@ -17,8 +17,9 @@ samples) report WARMUP and never alarm. While a link is elevated its baseline is
 age out, so a person who keeps moving stays detected instead of being learned as the new normal. A level that
 lasts ``freeze_cap_s`` (300 s) is taken as the new normal: the baseline is rebuilt from the last ``cap_s`` of
 samples. A level that drops (``rebuild_fraction`` of the last ``cap_s`` at or below ``baseline / ratio_floor``) is
-relearned the same way. A missing score after valid ones (``None``: the scorer restarted its window, after a
-receiver reboot, which re-rolls the receiver's gain, or a gap of about a window) starts the detector over.
+relearned the same way. A missing score (``None``: the scorer's window is short for a moment, e.g. after a few
+packets lost in a row) changes nothing. ``restart`` starts the detector over: LinkMonitor calls it when the link's
+scorer restarted after a receiver reboot, which re-rolls the receiver's gain.
 
 With the 2 s motion window this enters at about 1.5-1.8x the quiet level, so the 1.8-3x lifts a walker gave on
 the real rig are caught. On the recorded hw3/hw5 links (25 pkt/s, enter estimated from their empty recordings)
@@ -120,12 +121,10 @@ class AdaptiveDetector:
     # ------------------------------------------------------------------ public
 
     def push(self, t: float, score: Optional[float]) -> Reading:
-        """One (time, score) sample. Out-of-order times change nothing. ``None`` (no score) changes nothing before
-        the first valid score; after one it means the scorer restarted its window, so the detector starts over."""
+        """One (time, score) sample. Out-of-order times change nothing. ``None`` (no score: the scorer's window is
+        short, e.g. after a short packet gap) changes nothing either: it returns the last reading (WARMUP before
+        any). Only ``restart`` starts the detector over."""
         if score is None:
-            if self._first_t is not None:
-                self._start()
-                return self._set(Reading(t, WARMUP, None))
             return self._last if self._last is not None else Reading(t, WARMUP, score)
         if self._last_t is not None and t <= self._last_t:
             return self._last if self._last is not None else Reading(t, WARMUP, score)
@@ -160,6 +159,11 @@ class AdaptiveDetector:
         return self._set(Reading(t, state, score, elevated=self._elevated, strong=strong,
                                  level=score / enter if enter > 0 else None, baseline=baseline,
                                  spread=spread, enter=enter, exit=exit_, warm=True))
+
+    def restart(self, t: float) -> Reading:
+        """Start over from a new warm-up: the link's scorer restarted (a receiver reboot, which re-rolls its gain)."""
+        self._start()
+        return self._set(Reading(t, WARMUP, None))
 
     # ------------------------------------------------------------------ internals
 

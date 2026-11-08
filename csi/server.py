@@ -38,13 +38,14 @@ import math
 import threading
 import time
 from collections import deque
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import BinaryIO, Iterator, Mapping, Optional, Sequence, TextIO, Union
 from urllib.parse import urlsplit
 
 from .dashboard import DashboardState
+from .detect import LIVE_SCORER
 from .live_calibration import CalibrationJob, RequestError, parse_request
 from .links import LinkId, calibrate_links, save_thresholds
 from .multisource import MultiSource
@@ -75,6 +76,7 @@ COMMAND_PATHS = frozenset({"/api/calibrate", "/api/calibrate/cancel", "/api/thre
 MAX_BODY_BYTES = 64 * 1024
 DEFAULT_THRESHOLDS_FILE = "links_thresholds.json"   # working directory, unless --save-thresholds says otherwise
 COMMAND_LOG_MAX = 20
+LEGACY_SENDER_PREFIX = "1a:00:00:00:00:"  # sender addresses of the firmware before the team prefix 1a:0c:12:00:00
 # live heatmap parameters: request key -> (heatmap attribute, allowed range)
 PARAM_RANGES = {
     "sensitivity": ("sensitivity", (0.01, 10.0)),
@@ -133,6 +135,22 @@ def _is_ip_literal(name: str) -> bool:
     except ValueError:
         return False
     return True
+
+
+def legacy_sender_macs(room: Room) -> dict[str, str]:
+    """Old-firmware sender address -> the configured sender with the same last byte.
+
+    Boards still on the firmware from before the team prefix send from ``1a:00:00:00:00:XX``. Counting those
+    packets as the configured ``...:XX`` sender's keeps such boards working with this code until every board is
+    reflashed (a staged reflash). An old address that the room itself lists (the test fixtures) is left alone.
+    """
+    configured = {tx.mac.lower() for tx in room.senders}
+    legacy = {}
+    for tx in room.senders:
+        old = LEGACY_SENDER_PREFIX + tx.mac[-2:].lower()
+        if tx.mac and old not in configured:
+            legacy[old] = tx.mac
+    return legacy
 
 
 def _finite_positive(value) -> bool:
@@ -464,6 +482,7 @@ class DashboardServer(FrameServer):
         self._state = DashboardState(room, dict(thresholds or {}), mode=mode, **heatmap_params)
         self._expected = [LinkId(rx.name, tx.mac) for rx, tx in room.links()]
         self._labels = {link.label for link in self._expected}
+        self._legacy_macs = legacy_sender_macs(room)
         self._controls_on = controls_allowed(host, allow_control)
         self._replay = replay
         self._thresholds_path = Path(thresholds_path) if thresholds_path else Path(DEFAULT_THRESHOLDS_FILE)
@@ -580,7 +599,10 @@ class DashboardServer(FrameServer):
             self._last_mono = time.monotonic()
 
     def _push_packet(self, receiver: str, pkt: CSIPacket) -> None:
-        """Caller holds the lock."""
+        """Caller holds the lock. A packet from an old-firmware sender address counts as its configured sender's
+        (``legacy_sender_macs``), for the links, the calibration and the heatmap alike."""
+        if pkt.mac in self._legacy_macs:
+            pkt = replace(pkt, mac=self._legacy_macs[pkt.mac])
         self._state.push(receiver, pkt)
         if self._calib is not None and self._calib.active:
             self._calib.observe(receiver, pkt, time.monotonic())
@@ -752,7 +774,9 @@ class DashboardServer(FrameServer):
             return 409, {"error": "no thresholds to save: calibrate or set a link threshold first"}
         path = self._thresholds_path.resolve()
         try:
-            save_thresholds(path, thresholds)
+            # record the live scorer, so the next start does not warn that the file may predate it: thresholds
+            # calibrated or Set here are on its scale (one loaded from an older file is not; recalibrate it first)
+            save_thresholds(path, thresholds, {"scorer": LIVE_SCORER.as_dict()})
         except OSError as e:
             return 500, {"error": f"cannot write {path}: {e.strerror or e}"}
         self._commands.append(f"saved {len(thresholds)} threshold(s) to {path}")

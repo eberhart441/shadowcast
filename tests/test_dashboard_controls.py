@@ -14,7 +14,8 @@ from functools import lru_cache
 
 import pytest
 
-from csi.links import calibrate_links, load_thresholds
+from csi.detect import LIVE_SCORER
+from csi.links import calibrate_links, load_thresholds, read_thresholds, threshold_file_notes
 from csi.room import Walk, load_room
 from csi.server import DashboardServer, controls_allowed, is_loopback
 from csi.simulate import simulate_room, simulate_room_links
@@ -302,7 +303,7 @@ def test_commands_need_a_json_body_and_a_json_object(serve):
 
 # ----------------------------------------------------------------- saving and reloading
 
-def test_save_writes_a_plain_thresholds_file_that_load_thresholds_reads(serve, tmp_path):
+def test_save_writes_the_thresholds_with_the_live_scorer_so_the_next_start_does_not_warn(serve, tmp_path):
     target = tmp_path / "links.json"
     server = serve(empty_room(duration_s=5), calibrated_thresholds(), thresholds_path=target)
     expected = calibrated_thresholds()
@@ -311,7 +312,10 @@ def test_save_writes_a_plain_thresholds_file_that_load_thresholds_reads(serve, t
 
     assert status == 200
     assert body["path"] == str(target.resolve())
-    assert json.loads(target.read_text()) == pytest.approx(expected)     # plain {label: number}
+    saved = read_thresholds(target)
+    assert saved.thresholds == pytest.approx(expected)
+    assert saved.scorer == LIVE_SCORER                     # the scorer record: a plain file warned on every start
+    assert threshold_file_notes(saved) == []
     assert load_thresholds(target) == pytest.approx(expected)
     with urllib.request.urlopen(server.url + "/api/thresholds", timeout=5) as resp:
         assert json.loads(resp.read())["thresholds"] == pytest.approx(expected)

@@ -3,6 +3,7 @@
 The only seam is the HTTP interface: every assertion is on a response (or on the bound address the
 server reports). Thresholds come from a simulated empty room, as in tests/test_dashboard_state.py.
 """
+import dataclasses
 import itertools
 import json
 import threading
@@ -17,7 +18,7 @@ import pytest
 from csi.links import calibrate_links
 from csi.parser import DEFAULT_HEADER
 from csi.room import Walk, load_room, stand_near_wall
-from csi.server import MIN_EVENT_GAP_S, DashboardServer, default_walk, looping_room_streams
+from csi.server import MIN_EVENT_GAP_S, DashboardServer, default_walk, legacy_sender_macs, looping_room_streams
 from csi.simulate import simulate_room, simulate_room_links
 
 ROOM = load_room()
@@ -204,6 +205,26 @@ def test_source_without_thresholds_shows_every_link_uncalibrated_with_a_message(
     assert payload["status"]["calibrated_links"] == []
     assert payload["status"]["uncalibrated_links"] == sorted(LABELS)
     assert any("UNCALIBRATED" in message for message in payload["status"]["messages"])
+
+
+def test_boards_still_on_the_old_firmware_feed_the_configured_links():
+    # a staged reflash: the room lists the team-prefix senders while the boards still send from 1a:00:00:00:00:xx
+    new_room = dataclasses.replace(ROOM, senders=tuple(dataclasses.replace(tx, mac="1a:0c:12:00:00:" + tx.mac[-2:])
+                                                       for tx in ROOM.senders))
+    assert legacy_sender_macs(ROOM) == {}  # the fixture lists the old addresses itself: nothing to map
+    assert legacy_sender_macs(new_room) == {"1a:00:00:00:00:00": "1a:0c:12:00:00:00",
+                                            "1a:00:00:00:00:01": "1a:0c:12:00:00:01"}
+    server = DashboardServer(new_room, room_streams(duration_s=4), None, port=0)  # packets carry ROOM's old addresses
+    server.start()
+    try:
+        assert server.wait_finished(timeout=30)
+        rows = get_json(server)["links"]
+    finally:
+        server.stop()
+
+    assert len(rows) == len(LABELS) and {row["id"] for row in rows} == LABELS  # each link once, not twice
+    assert {row["mac"] for row in rows} == {tx.mac for tx in new_room.senders}
+    assert all(row["sender"] is not None and row["age_s"] is not None for row in rows)  # heard, known sender
 
 
 def test_root_serves_the_static_page_as_html(serve):
