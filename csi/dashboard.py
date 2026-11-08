@@ -56,7 +56,7 @@ class DashboardState:
                  **heatmap_params) -> None:
         self._room = room
         expected = [LinkId(rx.name, tx.mac) for rx, tx in room.links()]
-        self._monitor = LinkMonitor(thresholds or {}, mode=mode, expected=expected)
+        self._monitor = LinkMonitor(thresholds or {}, mode=mode, expected=expected, room=room)
         self._heat = Heatmap(room, **heatmap_params)
         self._senders = {tx.mac: tx.name for tx in room.senders}
         self._receivers = {rx.name for rx in room.receivers}
@@ -191,7 +191,7 @@ class DashboardState:
             "time_s": now,
             "links_by_state": by_state,
             "parameters": self.parameters(),
-            "room": {"state": self._monitor.room_state, "elevated": list(self._monitor.room_elevated),
+            "room": {**self._monitor.room_status(),
                      "mode": self._monitor.mode, "since_motion_s": _round(self._room_since_motion(now))},
         }
 
