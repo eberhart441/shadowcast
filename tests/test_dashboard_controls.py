@@ -33,12 +33,19 @@ def calibrated_thresholds():
     return calibrate_links(list(simulate_room_links(room=ROOM, person=None, duration_s=25, seed=10)))
 
 
+# Client socket timeouts are generous on purpose. The server holds its state lock while a calibration is processed
+# (csi/server.py _feed/_idle_frame -> CalibrationJob._finish), and a GET waits for that lock. On a loaded CI runner
+# that wait can exceed a few seconds, which made a 5 s read time out. Failures show up as assertions on responses,
+# not as socket timeouts.
+HTTP_TIMEOUT_S = 30.0
+
+
 def post(url: str, path: str, body=None, content_type="application/json", raw: bytes | None = None):
     data = raw if raw is not None else json.dumps({} if body is None else body).encode()
     headers = {} if content_type is None else {"Content-Type": content_type}
     req = urllib.request.Request(url + path, data=data, method="POST", headers=headers)
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT_S) as resp:
             return resp.status, json.loads(resp.read())
     except urllib.error.HTTPError as err:
         text = err.read()
@@ -49,7 +56,7 @@ def post(url: str, path: str, body=None, content_type="application/json", raw: b
 
 
 def get_json(server: DashboardServer, path: str = "/api/state") -> dict:
-    with urllib.request.urlopen(server.url + path, timeout=5) as resp:
+    with urllib.request.urlopen(server.url + path, timeout=HTTP_TIMEOUT_S) as resp:
         return json.loads(resp.read())
 
 
@@ -74,7 +81,7 @@ def chained(*streams):
         yield from it
 
 
-def wait_calibration(server, states=("done", "failed"), timeout=60.0) -> dict:
+def wait_calibration(server, states=("done", "failed"), timeout=120.0) -> dict:
     deadline = time.time() + timeout
     while time.time() < deadline:
         payload = get_json(server)
@@ -313,7 +320,7 @@ def test_save_writes_a_plain_thresholds_file_that_load_thresholds_reads(serve, t
     assert body["path"] == str(target.resolve())
     assert json.loads(target.read_text()) == pytest.approx(expected)     # plain {label: number}
     assert load_thresholds(target) == pytest.approx(expected)
-    with urllib.request.urlopen(server.url + "/api/thresholds", timeout=5) as resp:
+    with urllib.request.urlopen(server.url + "/api/thresholds", timeout=HTTP_TIMEOUT_S) as resp:
         assert json.loads(resp.read())["thresholds"] == pytest.approx(expected)
 
 

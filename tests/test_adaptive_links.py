@@ -217,7 +217,7 @@ def test_http_auto_mode_without_thresholds_serves_adaptive_links_and_a_threshold
     server.start()
     try:
         assert server.wait_finished(timeout=30)
-        with urllib.request.urlopen(server.url + "/api/state", timeout=5) as resp:
+        with urllib.request.urlopen(server.url + "/api/state", timeout=30) as resp:
             payload = json.loads(resp.read())
         assert {row["mode"] for row in payload["links"]} == {"auto"}
         assert "UNCALIBRATED" not in {row["state"] for row in payload["links"]}

@@ -23,6 +23,8 @@ ESP-IDF 5.5.6, kept outside the repo. Install per https://docs.espressif.com/pro
 
 Use one build directory per chip and role, set up with `-B`. The `sdkconfig` is generated and carries the last target, so a build directory configured for one chip will not boot on another.
 
+Building two chips in parallel from one example folder needs a separate config per build directory: add `-DSDKCONFIG=<build_dir>/sdkconfig` to each `idf.py` call. The example's `sdkconfig` is shared and carries the last target.
+
 Receiver (any chip; C5 is the one to use, see `docs/agents/hardware.md`):
 
 ```
@@ -42,6 +44,12 @@ idf.py -B build_c5_id01 -p /dev/cu.usbmodemXXXX flash
 ```
 
 Use `esp32s3` instead of `esp32c5` for an S3 board. Changing `SENDER_ID` in an existing build directory does not reliably rebuild; use a fresh directory.
+
+`flash_args` lists paths relative to the build directory, so run `esptool write_flash @flash_args` from inside it, not from `firmware/`.
+
+`dependencies.lock` records the last `set-target`. After building another chip, run `git checkout -- firmware/*/dependencies.lock` so the target change is not committed.
+
+`scripts/flash.sh <receiver|sender> <esp32c5|esp32s3> <port> [sender_id]` does the build, the check that the port holds the named chip, and the flash for one board, in `build_<chip>` (or `build_<chip>_id<NN>` for a sender). It needs `IDF_PATH` (source `export.sh` first). It refuses a receiver while a dashboard answers on port 8000, unless `--force` is given. `--dry-run` prints every command and runs none.
 
 ## Serial output
 
