@@ -17,10 +17,13 @@ returns one JSON-serialisable dict:
                 seq_rate .. noise_floor: link health from the monitor rows (csi/links.py), passed through:
                 packets/s the sender sent and the share lost (from its sequence counter), the share of clipped
                 samples (0..1), the receiver's gains and noise floor (ints). None when the monitor has none.
-    heatmap   {cols, rows, extents, cells, max, contributing, busy_nodes}
+    heatmap   {cols, rows, extents, cells, max, contributing, busy_nodes, estimator}
                 cells: flat row-major floats in 0..1 (row 0 is the top edge, y = 0)
                 busy_nodes: nodes with movement right next to them (near-node veto, csi/heatmap.py); their
                 links are down-weighted on the map
+                estimator: "rti" or "backprojection", the estimator that drew this frame (Heatmap.estimator_used;
+                status.parameters.estimator is the configured choice, which may be "auto"). Logs written before
+                the RTI estimator have no estimator key.
     status    {time_s, links_by_state, parameters, room}
                 room: {state, elevated (labels), mode, since_motion_s}: room-level MOTION from link agreement
                 (csi/adaptive.py); since_motion_s: seconds since any of the room's links was last in MOTION
@@ -109,6 +112,7 @@ class DashboardState:
             "baseline_freeze_s": self._heat.baseline_freeze_s,
             "busy_evidence": self._heat.busy_evidence,
             "busy_link_weight": self._heat.busy_link_weight,
+            "estimator": self._heat.estimator,          # configured: auto, backprojection or rti
         }
 
     def snapshot(self, now: Optional[float] = None) -> dict:
@@ -181,6 +185,7 @@ class DashboardState:
             "max": max(cells) if cells else 0.0,
             "contributing": sorted(heat.contributing),
             "busy_nodes": list(heat.busy_nodes),
+            "estimator": heat.estimator_used,
         }
 
     def _status_payload(self, now: float, rows: list[Mapping]) -> dict:
