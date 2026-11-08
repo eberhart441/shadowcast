@@ -1,3 +1,7 @@
+## Project context
+
+What the project is for, where it stands, decisions, gotchas and a glossary: read `docs/agents/project-context.md` first.
+
 ## Agent skills
 
 ### Issue tracker
