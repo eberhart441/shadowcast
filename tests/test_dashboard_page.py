@@ -14,6 +14,8 @@ from pathlib import Path
 import pytest
 
 from csi.dashboard import DashboardState
+from csi.detect import DEFAULT_MARGIN
+from csi.live_calibration import DEFAULT_CLIPS, DEFAULT_SECONDS
 from csi.room import load_room
 from csi.server import DashboardServer
 from csi.simulate import simulate_room
@@ -84,6 +86,19 @@ def test_noisy_room_calibration_is_off_by_default():
     html = PAGE.read_text(encoding="utf-8")
     tag = re.search(r'<input[^>]*id="cal-noisy"[^>]*>', html).group(0)
     assert "checked" not in tag
+
+
+def test_calibration_form_starts_at_the_calibration_api_defaults():
+    # the page always sends its own clips, seconds and margin, so its defaults are the calibration a click runs:
+    # the same minute of empty room (3 x 20 s, for the 2 s motion window) that POST /api/calibrate defaults to
+    html = PAGE.read_text(encoding="utf-8")
+
+    def value(input_id):
+        return float(re.search(rf'<input[^>]*id="{input_id}"[^>]*value="([^"]+)"', html).group(1))
+
+    assert value("cal-clips") == DEFAULT_CLIPS
+    assert value("cal-seconds") == DEFAULT_SECONDS
+    assert value("cal-margin") == DEFAULT_MARGIN
 
 
 def test_page_talks_to_the_command_endpoints_and_shows_the_countdown_text():
