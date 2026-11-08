@@ -1,0 +1,31 @@
+{
+  "comment": "Planning example, not a rig: a 12 x 5 m row of three 4 x 5 m rooms (brick outside, drywall between the rooms) seen from both long sides. Four C5 receivers stand 0.9 m outside the north wall and four senders 0.9 m outside the south wall, 3 m apart, so every link crosses the row. x runs left to right, y runs top to bottom, metres, origin at the top-left corner.",
+  "room": {
+    "width_m": 12.0,
+    "depth_m": 5.0
+  },
+  "send_hz": 20,
+  "zones": {
+    "west room": [0.0, 0.0, 4.0, 5.0],
+    "middle room": [4.0, 0.0, 8.0, 5.0],
+    "east room": [8.0, 0.0, 12.0, 5.0]
+  },
+  "walls": [
+    {"a": [0.0, 0.0], "b": [12.0, 0.0], "db": 10, "material": "brick", "name": "north wall"},
+    {"a": [12.0, 0.0], "b": [12.0, 5.0], "db": 10, "material": "brick", "name": "east wall"},
+    {"a": [12.0, 5.0], "b": [0.0, 5.0], "db": 10, "material": "brick", "name": "south wall"},
+    {"a": [0.0, 5.0], "b": [0.0, 0.0], "db": 10, "material": "brick", "name": "west wall"},
+    {"a": [4.0, 0.0], "b": [4.0, 5.0], "db": 4, "material": "drywall", "name": "west partition"},
+    {"a": [8.0, 0.0], "b": [8.0, 5.0], "db": 4, "material": "drywall", "name": "east partition"}
+  ],
+  "nodes": {
+    "rx1": {"role": "receiver", "chip": "ESP32-C5", "x": 1.5, "y": -0.9},
+    "rx2": {"role": "receiver", "chip": "ESP32-C5", "x": 4.5, "y": -0.9},
+    "rx3": {"role": "receiver", "chip": "ESP32-C5", "x": 7.5, "y": -0.9},
+    "rx4": {"role": "receiver", "chip": "ESP32-C5", "x": 10.5, "y": -0.9},
+    "tx0": {"role": "sender", "chip": "ESP32-C5", "mac": "1a:0c:12:00:00:00", "x": 1.5, "y": 5.9},
+    "tx1": {"role": "sender", "chip": "ESP32-C5", "mac": "1a:0c:12:00:00:01", "x": 4.5, "y": 5.9},
+    "tx2": {"role": "sender", "chip": "ESP32-C5", "mac": "1a:0c:12:00:00:02", "x": 7.5, "y": 5.9},
+    "tx3": {"role": "sender", "chip": "ESP32-C5", "mac": "1a:0c:12:00:00:03", "x": 10.5, "y": 5.9}
+  }
+}

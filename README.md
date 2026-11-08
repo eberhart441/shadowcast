@@ -251,6 +251,56 @@ receivers, two senders, `rx3` on the top wall at (1.385, 0)) and `room_star.json
 the top wall). Both still list `rx3` as an ESP32-S3, which predates the receiver-chip finding above,
 so treat them as layouts, not as a parts list.
 
+### Planning a layout
+
+Once the code is right, where the boards stand decides what they can see. `scripts/plan_layout.py` checks a
+layout before anything is mounted. It uses the standard library only, so it runs without the venv:
+
+```bash
+python scripts/plan_layout.py config/examples/three_room_row.json
+python scripts/plan_layout.py config/room.json --mode transceiver     # every board sends and receives
+python scripts/plan_layout.py config/examples/l_house.json --json > plan.json
+```
+
+It reads the room config, plus optional keys that only it uses (`csi/room.py` ignores them):
+
+- `footprint`: the building or section being watched, as a polygon (default: the room rectangle).
+- `zones`: named rectangles `[x0, y0, x1, y1]` or polygons.
+- `walls`: `{"a": [x, y], "b": [x, y], "db": 10}`, or a `material` instead of `db`. Typical losses are drywall
+  3-5 dB, brick 8-12, concrete block 10-15 and reinforced concrete 15-25 or more.
+- `send_hz`: the senders' rate.
+
+`config/examples/` has four layouts: the current rig, a 12 x 5 m row of three rooms seen from both long sides,
+an 8 x 6 m open floor in four zones, and an L-shaped house with walls (a first attempt with typical mistakes).
+
+Reading the report:
+
+- **Links** shows each link's length, its predicted RSSI and its flags. The RSSI is -32 dBm at 2 m (the hw5
+  measurement), less 20 log10(d / 2 m) and the loss of every wall the link crosses. The flags are:
+  - `SAME_SIDE`: both boards are on one side, so the link runs along the wall and sees almost nothing inside.
+  - `OUTSIDE`: more than 30% of the link lies outside the footprint, not counting 1.5 m at each end, for
+    example across the notch of an L.
+  - `WEAK`: below -70 dBm. Expect a noisy score; the link needs a 2-3 s window or a better antenna.
+  - `SHORT`: under 1.5 m.
+- **Receivers** shows each receiver's RSSI spread and serial load. A spread over 6 dB is too much for one
+  forced gain, which clips the near link and quantises the far one: equalise the distances or try
+  `CSI_GAIN_LOCK_STRONGEST`. The serial load is checked against the [packet budget](#packet-budget-per-receiver).
+- **Coverage** is a map with one character per 0.25 m cell, north up. A digit is the number of links whose
+  sensitive band covers that cell; the band reaches 0.6 m plus 5% of the link's length either side of its
+  line. The digits `0` to `2` mark blind cells, since placing a person takes three crossing links. A `.` is
+  outside the footprint and `R` or `S` marks a board. Each zone lists the links through it and how many
+  different receivers and senders they come from.
+- **Sides and accuracy** counts the sides with a board within 1.5 m outside: aim for at least 3, ideally 4.
+  The accuracy is what the literature reached at this spacing along the perimeter: boards about 1 m apart
+  gave sub-metre, 2 m gave 1-1.5 m and 3 m gave room level.
+- **Suggestions** come most important first:
+  - which board to move off a shared wall, and where to put it
+  - where to add boards (up to three, each placed after the ones before it)
+  - which receivers and links to fix
+
+These are rules of thumb from the radio tomography literature and the team's measurements, not a
+propagation model. Walk-test every link before trusting it.
+
 ## Flashing the firmware
 
 The firmware is in [`firmware/`](firmware/): Espressif's esp-csi `get-started` examples (`csi_send`,
@@ -1056,6 +1106,7 @@ track      null, or {active, x, y, sx, sy, rho, vx, vy, age_s, last_seen_s, trai
 | `scripts/record.py` | Labelled recorder with a countdown and label keys. |
 | `scripts/evaluate.py` | Offline evaluation over recorded sessions. |
 | `scripts/eval_log.py` | Scores a labelled dashboard `--log` run: detection, latency, false alarms, localisation, position error along walked paths (`--path`, `--zone`), scaling curve, link health. |
+| `scripts/plan_layout.py` | Checks a board layout before mounting: link flags, predicted RSSI, receiver gain spread and serial load, coverage map, sides, accuracy and ranked suggestions. Standard library only. |
 | `web/index.html` | The dashboard page. |
 | `firmware/` | The ESP32 firmware (`csi_send`, `csi_recv`) and its build flags; see `firmware/README.md`. |
 

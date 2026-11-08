@@ -1,0 +1,24 @@
+{
+  "comment": "Planning example, not a rig: an 8 x 6 m open floor (no walls) in four zones, surrounded on all four sides. Receivers stand 0.75 m outside the north and west edges, senders 0.75 m outside the south and east edges, so no receiver shares a side with a sender. x runs left to right, y runs top to bottom, metres, origin at the top-left corner.",
+  "room": {
+    "width_m": 8.0,
+    "depth_m": 6.0
+  },
+  "send_hz": 20,
+  "zones": {
+    "north-west": [0.0, 0.0, 4.0, 3.0],
+    "north-east": [4.0, 0.0, 8.0, 3.0],
+    "south-west": [0.0, 3.0, 4.0, 6.0],
+    "south-east": [4.0, 3.0, 8.0, 6.0]
+  },
+  "nodes": {
+    "rx1": {"role": "receiver", "chip": "ESP32-C5", "x": 2.67, "y": -0.75},
+    "rx2": {"role": "receiver", "chip": "ESP32-C5", "x": 5.33, "y": -0.75},
+    "rx3": {"role": "receiver", "chip": "ESP32-C5", "x": -0.75, "y": 2.0},
+    "rx4": {"role": "receiver", "chip": "ESP32-C5", "x": -0.75, "y": 4.0},
+    "tx0": {"role": "sender", "chip": "ESP32-C5", "mac": "1a:0c:12:00:00:00", "x": 2.67, "y": 6.75},
+    "tx1": {"role": "sender", "chip": "ESP32-C5", "mac": "1a:0c:12:00:00:01", "x": 5.33, "y": 6.75},
+    "tx2": {"role": "sender", "chip": "ESP32-C5", "mac": "1a:0c:12:00:00:02", "x": 8.75, "y": 2.0},
+    "tx3": {"role": "sender", "chip": "ESP32-C5", "mac": "1a:0c:12:00:00:03", "x": 8.75, "y": 4.0}
+  }
+}

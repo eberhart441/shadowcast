@@ -1,0 +1,55 @@
+{
+  "comment": "The current rig (a copy of config/room.json at f740336) with the planning keys added: senders at 20 Hz and the room's four quadrants as zones. x runs left to right, y runs top to bottom, metres, origin at the top-left corner. Check it with: python scripts/plan_layout.py config/examples/current_rig.json",
+  "room": {
+    "width_m": 2.77,
+    "depth_m": 1.84
+  },
+  "send_hz": 20,
+  "zones": {
+    "NW": [0.0, 0.0, 1.385, 0.92],
+    "NE": [1.385, 0.0, 2.77, 0.92],
+    "SW": [0.0, 0.92, 1.385, 1.84],
+    "SE": [1.385, 0.92, 2.77, 1.84]
+  },
+  "nodes": {
+    "rx2": {
+      "role": "receiver",
+      "chip": "ESP32-C5",
+      "x": 0.0,
+      "y": 0.0,
+      "port_hint": "/dev/cu.usbmodem101"
+    },
+    "rx1": {
+      "role": "receiver",
+      "chip": "ESP32-C5",
+      "x": 2.77,
+      "y": 0.0,
+      "port_hint": "/dev/cu.usbmodem2101"
+    },
+    "rx3": {
+      "role": "receiver",
+      "chip": "ESP32-C5",
+      "x": 1.385,
+      "y": 0.0,
+      "port_hint": "/dev/cu.usbmodem1101",
+      "enabled": false
+    },
+    "tx0": {
+      "role": "sender",
+      "chip": "ESP32-S3",
+      "mac": "1a:0c:12:00:00:00",
+      "x": 2.77,
+      "y": 1.84
+    },
+    "tx1": {
+      "role": "sender",
+      "chip": "ESP32-C5",
+      "mac": "1a:0c:12:00:00:01",
+      "x": 0.0,
+      "y": 1.84
+    }
+  },
+  "link_weights": {
+    "rx1<-01": 0.3
+  }
+}
