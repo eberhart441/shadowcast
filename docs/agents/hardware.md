@@ -22,7 +22,21 @@ The firmware lives in `firmware/` (stock `esp-csi` examples plus our edits). Bui
 
 ## Thresholds in a noisy room
 
-The room is never empty. Sample about 40 s of live link scores and set, per link, `max(median + 6 x 1.4826 x lower-half-spread, 3 x median)`, where lower-half-spread is the median of `(median - score)` over scores at or below the median. Movement only adds to the upper tail, so it cannot inflate the estimate. Apply with `POST /api/threshold`, then `POST /api/thresholds/save`.
+The room is never empty, so there are two ways to set per-link thresholds on a running dashboard. Both are on the HTTP API; neither is a substitute for checking the result against the room.
+
+**Formula: `scripts/calibrate.py`.** It polls `GET /api/state` about 4 times a second for `--seconds` (default 45) and sets nothing unless asked. Each poll gives each link one reading: its score, or an empty reading while the link is silent (NO_SIGNAL). Per link it computes `max(median + 6 x 1.4826 x lower-half-spread, 3 x median)`, where lower-half-spread is the median of `(median - score)` over the usable scores at or below the median. Movement mostly sits in the upper tail, and the spread ignores it, though it can still move the median. A link with fewer than half its readings usable, or fewer than 40 usable scores, gets no threshold and the script says why. The printed table shows samples, empty readings, median, spread, max and threshold per link.
+
+    .venv/bin/python scripts/calibrate.py                       # report only, default http://127.0.0.1:8000
+    .venv/bin/python scripts/calibrate.py --apply              # POST /api/threshold per link, then /api/thresholds/save
+    .venv/bin/python scripts/calibrate.py --apply --skip-bad-links
+
+`--apply` refuses, and changes nothing, while any link lacks a threshold, unless `--skip-bad-links` is given; links skipped that way keep whatever the dashboard has. The dashboard must stay running afterwards (see "Receivers re-baseline on reset").
+
+**Dashboard Calibrate button (`POST /api/calibrate`).** It counts down, records `clips` clips of `seconds` each with a `margin`, and sets the thresholds itself; the page shows the result and any skipped links with reasons. The default `noisy: true` takes the p97 x margin over every window and does not refuse for movement. `noisy: false` applies the quiet-room rules and refuses a clip that is mostly movement.
+
+**Evidence, 2026-11-07.** On the dashboard's Calibrate button (3 clips of 10 s, margin 1.25, recorded by the user as rejecting movement, which is the `noisy: false` rule), link rx2<-00 got 50.2. The formula gave 137.0 for the same link, on an ESP32-S3 receiver with a noisy diagonal, as recorded for that run. That is one link on one run. It does not show which threshold is right: neither was checked against labelled motion.
+
+**What each suited, as far as this shows.** The formula needs no countdown, so it can sample a room that cannot be cleared; it reports whether each link had enough usable readings. The button records fixed clips after a countdown; with `noisy: false` the room must be clear enough for its quiet-room rules, and it reports skipped links with reasons. On the one noisy-diagonal link above, the button's threshold was lower. Whether lower is better is open.
 
 ## Git
 
