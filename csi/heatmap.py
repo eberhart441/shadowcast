@@ -50,6 +50,13 @@ says which one drew the last frame. Both go through the same soft saturation and
 link keeps ``busy_link_weight`` of its weight: in the back-projection its footprint is scaled, in RTI its evidence
 and its confidence (the inverse of its noise variance in the fit) are.
 
+Room footprint: when the room has an outline polygon (room.json ``"footprint"``, csi/room.py), the cells whose
+centres lie outside it get no heat. The back-projection field is 0 there, RTI leaves them out of its unknowns
+(``mask`` in csi/rti.py: no weight, no prior coupling), the room's mean coverage that sets ``eps`` counts only the
+cells inside, and the displayed values stay 0 there. A link may still run outside (boards usually sit beyond the
+walls); only the cells of its band inside the room take heat. A rectangle room, or a footprint that holds every
+cell centre, is computed exactly as without one. A footprint that holds no cell centre at all is refused.
+
 Robust evidence (``evidence``): "ratio" is the log-ratio rule above. "robust_z" standardises each link against
 its own quiet baseline: ``z = (ln s - median ln s) / (1.4826 * MAD ln s)`` over the same quiet-only window, with
 the MAD floored at ``mad_floor`` (0.05, about a 5 % ripple, so a flat baseline does not make every flicker
@@ -68,7 +75,8 @@ Public API:
     segment_falloff(centres, a, b, sigma_m)         -> (cols*rows,) in 0..1
     Heatmap(room, ...)                              per-link footprints, baselines, veto, smoothing
         .advance(now, rows)   step the grid to host time ``now`` from link rows (LinkMonitor snapshot)
-        .values               current grid, flat row-major, 0..1
+        .values               current grid, flat row-major, 0..1 (0 outside the room footprint)
+        .room_mask            bool per cell: its centre is inside the room footprint (all True without one)
         .contributing         link labels that currently put heat on the grid
         .evidence             {label: 0..1} per link, from the last advance
         .baselines            {label: quiet baseline or None while in warm-up}
@@ -86,7 +94,7 @@ import numpy as np
 
 from . import rti
 from .links import LinkId
-from .room import Room, point_segment_distance
+from .room import Room, inside_mask, point_segment_distance
 
 COLS = 28
 ROWS = 18
@@ -253,6 +261,15 @@ class Heatmap:
             LinkId(rx.name, tx.mac).label: frozenset((rx.name, tx.name)) for rx, tx in room.links()}
         self._nodes = sorted(set().union(*self._ends.values())) if self._ends else []
         self._centres = cell_centres(cols, rows, room.width_m, room.depth_m)
+        # cells whose centre lies inside the room footprint; None when every cell does (a rectangle room)
+        self._inside: Optional[np.ndarray] = None
+        if room.footprint:
+            inside = inside_mask(self._centres, room.footprint)
+            if not inside.any():
+                raise ValueError("the room footprint holds none of the heatmap's cell centres: check its "
+                                 "coordinates (metres, origin at the room's top-left corner, y down)")
+            if not inside.all():
+                self._inside = inside
         self._falloff: dict[str, np.ndarray] = {}
         self._weighted: dict[str, np.ndarray] = {}
         self._build_falloff(falloff_m)
@@ -276,7 +293,8 @@ class Heatmap:
             self._falloff[label] = segment_falloff(self._centres, (rx.x, rx.y), (tx.x, tx.y), falloff_m)
             self._weighted[label] = self._weights.get(label, 1.0) * self._falloff[label]
         self._coverage = sum(self._weighted.values(), np.zeros(len(self._centres)))
-        self._eps = self.coverage_eps * float(np.mean(self._coverage)) if len(self._coverage) else 0.0
+        room_cells = self._coverage if self._inside is None else self._coverage[self._inside]
+        self._eps = self.coverage_eps * float(np.mean(room_cells)) if len(room_cells) else 0.0
 
     def set_params(self, **kwargs) -> None:
         """Change live tunables: sensitivity, rise_tau, decay_tau, falloff_m (attribute names).
@@ -300,6 +318,11 @@ class Heatmap:
     @property
     def known_labels(self) -> set[str]:
         return set(self._falloff)
+
+    @property
+    def room_mask(self) -> np.ndarray:
+        """Per cell (flat row-major), True when its centre is inside the room footprint; all True without one."""
+        return np.ones(len(self._centres), dtype=bool) if self._inside is None else self._inside.copy()
 
     def due(self, now: float) -> bool:
         return self._last_t is None or now - self._last_t >= self.step
@@ -369,6 +392,8 @@ class Heatmap:
             field = field + self.agreement * self._crossing_agreement(parts)
         if self.min_coverage > 0:
             field = field * np.clip(coverage / self.min_coverage - 1.0, 0.0, 1.0)
+        if self._inside is not None:
+            field = np.where(self._inside, field, 0.0)   # no heat outside the room footprint
         return field
 
     def projector(self) -> rti.RTIProjector:
@@ -378,7 +403,7 @@ class Heatmap:
             cell_area = (self._room.width_m / self.cols) * (self._room.depth_m / self.rows)
             self._rti = rti.RTIProjector(self._centres, segments, cell_area, excess_m=self.rti_excess_m,
                                          delta_m=self.rti_delta_m, alpha=self.rti_alpha,
-                                         min_coverage=self.min_coverage)
+                                         min_coverage=self.min_coverage, mask=self._inside)
         return self._rti
 
     def _choose_estimator(self, scores: Mapping[str, float]) -> str:
@@ -462,3 +487,5 @@ class Heatmap:
         tau = np.where(target > self.values, self.rise_tau, self.decay_tau)
         self.values = self.values + (target - self.values) * (1.0 - np.exp(-dt / tau))
         self.values = np.clip(self.values, 0.0, 1.0)
+        if self._inside is not None:
+            self.values[~self._inside] = 0.0             # the displayed cells outside the room footprint stay 0
