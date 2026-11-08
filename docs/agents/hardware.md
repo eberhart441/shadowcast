@@ -38,6 +38,12 @@ The room is never empty, so there are two ways to set per-link thresholds on a r
 
 **What each suited, as far as this shows.** The formula needs no countdown, so it can sample a room that cannot be cleared; it reports whether each link had enough usable readings. The button records fixed clips after a countdown; with `noisy: false` the room must be clear enough for its quiet-room rules, and it reports skipped links with reasons. On the one noisy-diagonal link above, the button's threshold was lower. Whether lower is better is open.
 
+## Person location (csi/locator.py)
+
+The page's person dot comes from `csi/locator.py`, not from the heatmap. It needs an empty-room reference: the Calibrate button sets it (keep the room empty, as for the thresholds) and Save writes it next to the thresholds as `<thresholds>.locator.json`, which the dashboard loads at start. Until then the page says "calibrate (room empty) to locate". Its states: `moving` (dot and 68% ellipse), `maybe_still` (after sustained motion stops: hollow ring at the last spot for 60 s, as a still person is mostly invisible), `empty`.
+
+`config/accuracy_map.json` is the measured error per spot from the accuracy run of 2026-11-08 (`scripts/accuracy_run.py` records, `scripts/accuracy_eval.py RUN --offset S` scores and writes the map; in-sample, one run). The ellipse never claims to be tighter than that. The run's data fit the boards mirrored left-right relative to `config/room.json`; the board map was confirmed, so the map was mirrored into the config's frame (its `frame_note`). Check on the rig: move right next to rx1 and the dot should come up on rx1's side. If it comes up on rx2's side, mirror `config/room.json` instead and regenerate the map unmirrored.
+
 ## Git
 
 Stay on `csi-sensing` in the main checkout and use `git worktree` for side branches. `data/` is gitignored on `csi-sensing` and tracked on `data/two-board-sessions`, so switching branches in the main checkout deletes it.

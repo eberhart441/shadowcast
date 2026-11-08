@@ -468,6 +468,18 @@ class DashboardServer(FrameServer):
         self._controls_on = controls_allowed(host, allow_control)
         self._replay = replay
         self._thresholds_path = Path(thresholds_path) if thresholds_path else Path(DEFAULT_THRESHOLDS_FILE)
+        accuracy_file = Path(__file__).resolve().parent.parent / "config" / "accuracy_map.json"
+        if accuracy_file.is_file():   # measured accuracy of the locator (scripts/accuracy_eval.py)
+            try:
+                self._state.locator.set_accuracy_map(json.loads(accuracy_file.read_text()))
+            except (OSError, ValueError, KeyError, TypeError):
+                pass
+        locator_file = self._locator_path()
+        if locator_file.is_file():   # the location reference saved with these thresholds
+            try:
+                self._state.locator.load(json.loads(locator_file.read_text()))
+            except (OSError, ValueError):
+                pass
         self._calib: Optional[CalibrationJob] = None
         self._calib_thread: Optional[threading.Thread] = None
         self._commands: deque[str] = deque(maxlen=COMMAND_LOG_MAX)
@@ -721,7 +733,8 @@ class DashboardServer(FrameServer):
         request = parse_request(body)
         self._calib = CalibrationJob(request, self._expected, now_mono=time.monotonic(),
                                      current=lambda: self._state.thresholds, apply=self._apply_threshold,
-                                     defer=self._defer_calibration)
+                                     defer=self._defer_calibration,
+                                     reference=self._state.locator.reference_from_clips)
         self._commands.append(f"calibrate: {request['clips']} clip(s) of {request['seconds']:g} s, margin "
                               f"{request['margin']:g}, lead-in {request['lead_s']:g} s, "
                               f"{'noisy room' if request['noisy'] else 'quiet room'}")
@@ -780,7 +793,15 @@ class DashboardServer(FrameServer):
         except OSError as e:
             return 500, {"error": f"cannot write {path}: {e.strerror or e}"}
         self._commands.append(f"saved {len(thresholds)} threshold(s) to {path}")
+        if self._state.locator.calibrated:
+            try:
+                self._state.locator.save(self._locator_path())
+            except OSError:
+                pass
         return 200, {"path": str(path), "thresholds": thresholds}
+
+    def _locator_path(self) -> Path:
+        return Path(str(self._thresholds_path) + ".locator.json")
 
     def _cmd_params(self, body: Mapping) -> tuple[int, dict]:
         unknown = sorted(set(body) - set(PARAM_RANGES))

@@ -88,10 +88,12 @@ class CalibrationJob:
 
     def __init__(self, request: Mapping, expected: Sequence[LinkId], *, now_mono: float,
                  current: Callable[[], Mapping[str, float]], apply: Callable[[str, float], None],
-                 defer: Optional[Callable[[Callable[[], object], Callable[[object], None]], None]] = None) -> None:
+                 defer: Optional[Callable[[Callable[[], object], Callable[[object], None]], None]] = None,
+                 reference: Optional[Callable[[list], bool]] = None) -> None:
         self.request = dict(request)
         self._expected = list(expected)
         self._current, self._apply, self._defer = current, apply, defer
+        self._reference = reference   # also learns the locator's empty-room reference from the same clips
         self.state = "countdown"
         self.message = ""
         self.result: dict[str, dict] = {}
@@ -209,11 +211,19 @@ class CalibrationJob:
                 self.result[label]["warning"] = cal.warning
         for label, value in applied.items():
             self._apply(label, value)
+        located = None
+        if applied and self._reference is not None:
+            try:
+                located = bool(self._reference(self._clips))
+            except Exception:   # the location reference is extra: it never fails the calibration
+                located = False
         if applied:
             self.state = "done"
             parts = [f"{len(applied)} link(s) calibrated"]
             if self.skipped:
                 parts.append(f"{len(self.skipped)} skipped")
+            if located is not None:
+                parts.append("location reference set" if located else "location reference failed")
             self.message = "; ".join(parts) + "."
         else:  # nothing usable: keep the per-link reasons visible
             self.state = "failed"

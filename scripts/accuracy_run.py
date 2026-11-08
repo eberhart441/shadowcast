@@ -81,9 +81,15 @@ class Run:
         self.stop = threading.Event()
 
     # ---- dashboard API
-    def get(self, path: str) -> dict:
-        with urllib.request.urlopen(self.url + path, timeout=5) as r:
-            return json.load(r)
+    def get(self, path: str, tries: int = 4) -> dict:
+        for attempt in range(tries):
+            try:
+                with urllib.request.urlopen(self.url + path, timeout=5) as r:
+                    return json.load(r)
+            except (OSError, ValueError):   # connection reset, timeout, half a body: try again
+                if attempt == tries - 1:
+                    raise
+                time.sleep(0.5)
 
     def post(self, path: str, body: dict) -> dict:
         req = urllib.request.Request(self.url + path, data=json.dumps(body).encode(),
@@ -93,6 +99,8 @@ class Run:
                 return json.load(r)
         except urllib.error.HTTPError as e:
             return {"http_error": e.code, "body": e.read().decode(errors="replace")[:500]}
+        except (OSError, ValueError) as e:   # the reply was lost on the way back; the command may have run
+            return {"lost_reply": str(e)}
 
     # ---- logging
     def label(self, event: str, **kw) -> None:
@@ -125,8 +133,16 @@ class Run:
     def calibrate(self, attempts: int = 3) -> dict:
         expected = {l["id"] for l in self.get("/api/state")["links"]}
         for attempt in range(1, attempts + 1):
-            self.prompt("cal_start" if attempt == 1 else "cal_retry", "calibration_start", attempt=attempt)
-            r = self.post("/api/calibrate", {"clips": 3, "seconds": 10, "margin": 1.25, "lead_s": 3, "noisy": True})
+            cal = self.get("/api/state")["status"].get("calibration") or {}
+            if cal.get("state") in ("countdown", "recording", "processing"):
+                self.label("calibration_already_running", attempt=attempt, state=cal.get("state"))
+                r = {}
+            else:
+                self.prompt("cal_start" if attempt == 1 else "cal_retry", "calibration_start", attempt=attempt)
+                r = self.post("/api/calibrate",
+                              {"clips": 3, "seconds": 10, "margin": 1.25, "lead_s": 3, "noisy": True})
+            if "lost_reply" in r:
+                self.label("calibration_reply_lost", detail=r["lost_reply"])
             if "http_error" in r:
                 self.label("calibration_error", response=r)
                 time.sleep(5)
@@ -150,10 +166,11 @@ class Run:
         self.voice.say("cal_done" if expected <= set(thresholds) else "cal_partial")
         return thresholds
 
-    def protocol(self) -> None:
+    def protocol(self, skip_intro: bool = False) -> None:
         threading.Thread(target=self.poll, daemon=True).start()
-        self.prompt("intro", "intro")
-        time.sleep(A.INTRO_S)
+        if not skip_intro:
+            self.prompt("intro", "intro")
+            time.sleep(A.INTRO_S)
         self.calibrate()
         time.sleep(4)
         self.prompt("empty", "empty_start")
@@ -195,6 +212,8 @@ def main() -> None:
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--silent", action="store_true", help="no voice (for a dry run)")
     ap.add_argument("--audio-check", action="store_true", help="only play one test prompt, then exit")
+    ap.add_argument("--skip-intro", action="store_true",
+                    help="resume: the room is already empty; go straight to (or wait for) the calibration")
     a = ap.parse_args()
     voice = Voice(a.out / "voice", a.silent)
     if a.audio_check:
@@ -204,7 +223,7 @@ def main() -> None:
     run = Run(a.url, a.out, voice)
     (a.out / "run.json").write_text(json.dumps({"started": time.time(), "url": a.url, "marks": A.MARKS,
                                                 "walk_route": A.WALK_ROUTE}, indent=2))
-    run.protocol()
+    run.protocol(skip_intro=a.skip_intro)
     print("run complete:", a.out)
 
 
