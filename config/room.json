@@ -7,24 +7,23 @@
   "nodes": {
     "rx2": {
       "role": "receiver",
-      "chip": "ESP32-C5",
+      "chip": "ESP32-S3",
       "x": 0.0,
       "y": 0.0,
-      "port_hint": "/dev/cu.usbmodem101"
+      "port_hint": "/dev/cu.usbmodem2101"
     },
     "rx1": {
       "role": "receiver",
       "chip": "ESP32-C5",
       "x": 2.77,
       "y": 0.0,
-      "port_hint": "/dev/cu.usbmodem2101"
+      "port_hint": "/dev/cu.usbmodem1101"
     },
     "rx3": {
       "role": "receiver",
       "chip": "ESP32-C5",
       "x": 1.385,
       "y": 0.0,
-      "port_hint": "/dev/cu.usbmodem1101",
       "enabled": false
     },
     "tx0": {
