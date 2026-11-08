@@ -1,9 +1,11 @@
-"""scripts/eval_log.py: scoring a labelled dashboard log (detection, latency, false alarms, localisation, scaling).
+"""scripts/eval_log.py: scoring a labelled dashboard log (detection, latency, false alarms, localisation, scaling,
+and the position error along labelled walks).
 
 The logs here are written in the dashboard's --log format: a header line, then one state payload per frame. Frames
 come every 0.25 s from T0, which binary floating point holds exactly, so every label boundary falls on a known frame.
 """
 import json
+import math
 import sys
 from pathlib import Path
 
@@ -86,6 +88,52 @@ WALK_LABELS = 'start_s,end_s,label,zone\n0,20,empty,\n20,40,walking,"0,0,2,1"\n4
 @pytest.fixture
 def walk(tmp_path):
     return score(tmp_path, walk_frames(), WALK_LABELS)
+
+
+COLD = [0.0] * 8
+WALK_PATH = "t_s,x,y\n10,0.5,0.5\n16,3.5,0.5\n"    # 10-16 s at 0.5 m/s along y = 0.5: frames 40-63
+ERRORS = (0.2, 0.7, 1.2, 1.7)                       # the tracked walk's track errors, frame after frame
+
+
+def warm(index, heat=0.9):
+    """A 4 x 2 map with one warm cell (row-major, row 0 at y = 0; cell centres at x 0.5..3.5, y 0.5 and 1.5)."""
+    cells = list(COLD)
+    cells[index] = heat
+    return cells
+
+
+def track(x, y, active=True, sx=0.3, sy=0.4):
+    """The tracker's payload key, as the track contract gives it (metres and seconds)."""
+    return {"active": active, "x": x, "y": y, "sx": sx, "sy": sy, "vx": 0.5, "vy": 0.0, "age_s": 1.0,
+            "last_seen_s": 0.0, "trail": [[0.0, x, y]]}
+
+
+def frame(rel, cells, mark=None, estimator="rti"):
+    """A payload ``rel`` s after T0 with link A and the room in MOTION, the map ``cells`` and the track ``mark``."""
+    p = payload(T0 + rel, [link_row(A, "MOTION")], "MOTION")
+    p["heatmap"].update(cells=list(cells), max=max(cells), estimator=estimator)
+    p["track"] = mark
+    return p
+
+
+def tracked_walk():
+    """20 s. The map has one warm cell, at (3.5, 1.5), throughout. During the walk the track is active from 11 s
+    (walk frame k = 4 on), ERRORS[k % 4] m from the person in y; before that the centroid is the estimate."""
+    frames = []
+    for i in range(80):
+        rel, k = i * STEP, i - 40
+        mark = track(0.5 + 0.5 * (rel - 10.0), 0.5 + ERRORS[k % 4]) if 11.0 <= rel < 16.0 else None
+        frames.append(frame(rel, warm(7), mark))
+    return frames
+
+
+def score_path(tmp_path, frames, path_text, labels=None, **kwargs):
+    """Write a log, a path file and optionally a labels file, and evaluate them."""
+    absolute = kwargs.get("absolute", False)
+    log = eval_log.read_log(write_log(tmp_path / "run.jsonl", frames))
+    walks = eval_log.read_path(write_labels(tmp_path / "walk.csv", path_text), absolute=absolute)
+    rows = None if labels is None else eval_log.read_labels(write_labels(tmp_path / "labels.csv", labels), absolute)
+    return eval_log.evaluate(log, rows, path=walks, **kwargs)
 
 
 # ---------------------------------------------------------------------------------------------- statistics
@@ -409,6 +457,204 @@ def test_the_log_format_is_the_one_the_dashboard_writes():
     assert eval_log.LOG_FORMAT == LOG_FORMAT
 
 
+# ---------------------------------------------------------------------------------------------- walks
+
+def test_a_walk_is_scored_from_the_track_while_it_is_active_and_from_the_centroid_before(tmp_path):
+    p = score_path(tmp_path, tracked_walk(), WALK_PATH)["path"]
+    assert (p["walks"], p["frames"], p["length_m"], p["walk_s"]) == (1, 24, 3.0, 6.0)
+    assert p["sources"] == {"track": 20, "centroid": 4, "none": 0}
+    est = p["estimate"]
+    assert est["frames"] == 24
+    assert [est["within"][key]["count"] for key in ("0.5", "1.0", "1.5")] == [5, 10, 15]
+    assert est["within"]["1.0"]["total"] == 24
+    centroid_errors = [math.hypot(d, 1.0) for d in (3.0, 2.875, 2.75, 2.625)]   # walk frames 0-3, cell (3.5, 1.5)
+    assert est["error_m"]["mean"] == pytest.approx((5 * sum(ERRORS) + sum(centroid_errors)) / 24, abs=1e-6)
+    assert est["error_m"]["median"] == pytest.approx(1.2, abs=1e-6)
+    # p90 of 24 errors: 0.7 of the way from the 21st smallest (h(2.625)) to the 22nd (h(2.75)), as numpy interpolates
+    assert est["error_m"]["p90"] == pytest.approx(centroid_errors[3] + 0.7 * (centroid_errors[2] - centroid_errors[3]),
+                                                  abs=1e-6)
+    trk = p["track"]
+    assert trk["frames"] == 20
+    assert (trk["error_m"]["mean"], trk["error_m"]["median"], trk["error_m"]["p90"]) == pytest.approx((0.95, 0.95, 1.7),
+                                                                                                    abs=1e-6)
+    assert trk["error_m"]["rms"] == pytest.approx(math.sqrt(sum(e * e for e in ERRORS) / 4), abs=1e-6)
+    assert trk["within"]["0.5"]["count"] == 5 and trk["within_when_present"]["0.5"]["rate"] == pytest.approx(0.25)
+    assert p["track_predicted_rms_m"] == pytest.approx(0.5, abs=1e-6)        # hypot(0.3, 0.4)
+    assert p["centroid"]["frames"] == 24
+    assert [p["centroid"]["within"][key]["count"] for key in ("0.5", "1.0", "1.5")] == [0, 0, 8]
+    assert p["hottest"]["error_m"]["mean"] == pytest.approx(p["centroid"]["error_m"]["mean"], abs=1e-6)
+    assert (p["track_availability"]["count"], p["track_availability"]["total"]) == (20, 24)
+    assert p["first_track_s"]["values"] == [1.0] and p["walks_tracked"]["count"] == 1
+    assert p["estimators"] == {"rti": 24}
+    (row,) = p["per_walk"]
+    assert (row["walk"], row["frames"], row["waypoints"], row["first_track_s"]) == ("1", 24, 2, 1.0)
+    assert row["estimate"]["error_m"]["median"] == pytest.approx(1.2, abs=1e-6) and row["track"]["count"] == 20
+
+
+def test_the_time_shift_that_best_fits_the_path_shows_the_estimates_lag(tmp_path):
+    """The track trails the person by exactly 1 s on a cold map, so the walk's first frames have no estimate."""
+    frames = [frame(i * STEP, COLD, track(0.5 + 0.5 * (i * STEP - 11.0), 0.5) if 11.0 <= i * STEP < 16.0 else None)
+              for i in range(80)]
+    p = score_path(tmp_path, frames, WALK_PATH)["path"]
+    assert p["sources"] == {"track": 20, "centroid": 0, "none": 4}
+    assert p["estimate"]["error_m"]["median"] == pytest.approx(0.5, abs=1e-6)
+    assert (p["estimate"]["within"]["1.0"]["count"], p["estimate"]["within"]["1.0"]["total"]) == (20, 24)
+    assert p["centroid"]["error_m"] is None and p["hottest"]["frames"] == 0
+    shift = p["shift"]
+    assert shift["best_s"] == 1.0 and shift["median_error_m"] == pytest.approx(0.0, abs=1e-6)
+    assert shift["unshifted_median_error_m"] == pytest.approx(0.5, abs=1e-6) and shift["unshifted_frames"] == 20
+    assert 4.0 not in [s for s, _, _ in shift["curve"]]       # 8 frames left at +4 s: fewer than half of 20
+
+
+def test_the_zone_table_counts_the_true_zone_against_the_zone_of_the_estimate(tmp_path):
+    """The person is in west for walk frames 0-11 and in east for 12-23. The track is in west for frames 0-7, in
+    east for 8-19 and off the map for 20-21; frames 22-23 have only an inactive track on a cold map: no estimate."""
+    frames = []
+    for i in range(80):
+        k = i - 40
+        mark = (track(1.0, 1.0) if 0 <= k < 8 else track(3.0, 1.0) if 8 <= k < 20 else
+                track(5.0, 1.0) if 20 <= k < 22 else track(1.0, 1.0, active=False) if 22 <= k < 24 else None)
+        frames.append(frame(i * STEP, COLD, mark))
+    zones = [("west", (0.0, 0.0, 1.9, 2.0)), ("east", (1.9, 0.0, 4.0, 2.0))]
+    result = score_path(tmp_path, frames, WALK_PATH, zones=zones)
+    p = result["path"]
+    assert p["sources"] == {"track": 22, "centroid": 0, "none": 2}            # the inactive track is no estimate
+    table = p["zones"]
+    assert table["columns"] == ["west", "east", "outside", "none"]
+    assert table["matrix"] == {"west": {"west": 8, "east": 4, "outside": 0, "none": 0},
+                               "east": {"west": 0, "east": 8, "outside": 2, "none": 2}}
+    assert (table["correct"]["count"], table["correct"]["total"]) == (16, 24)
+    assert (table["correct_when_estimated"]["count"], table["correct_when_estimated"]["total"]) == (16, 22)
+    assert table["per_zone"]["west"]["rate"] == pytest.approx(8 / 12)
+    text = eval_log.format_summary(result)
+    assert "zones: the zone the person was in" in text and "correct zone: 66.7%" in text
+    json.dumps(result, allow_nan=False)
+
+
+def test_a_log_from_before_the_tracker_scores_the_centroid_and_keeps_the_label_results(tmp_path, walk):
+    """walk_frames has no track key. The person sways at (0.5, 0.5) for 22-32 s, under the warm cell, then walks to
+    (3.5, 0.5) by 36 s while the warm cell sits at (3.5, 0.5)."""
+    result = score_path(tmp_path, walk_frames(), "t_s,x,y\n22,0.5,0.5\n32,0.5,0.5\n36,3.5,0.5\n", labels=WALK_LABELS)
+    p = result["path"]
+    assert p["sources"] == {"track": 0, "centroid": 56, "none": 0}
+    assert p["estimate"]["error_m"]["median"] == 0.0
+    assert [p["estimate"]["within"][key]["count"] for key in ("0.5", "1.0")] == [42, 45]   # 40 swaying + 2, + 5
+    assert p["track_availability"]["rate"] == 0.0 and p["first_track_s"] is None
+    assert p["walks_tracked"]["count"] == 0 and p["estimators"] == {"unspecified": 56}
+    assert any(note.startswith("the log's payloads have no track") for note in result["notes"])
+    for key in ("labels", "subjects", "episodes", "localisation", "scaling", "health"):
+        assert result[key] == walk[key]                    # the path adds to the result and changes nothing else
+    assert walk["path"] is None and walk["settings"]["labels_from_path"] is None
+    text = eval_log.format_summary(result)
+    assert "walks: -: 1 walk(s), 3.0 m in 14.0 s, 56 frames" in text and "no walk had an active track" in text
+
+
+def test_walks_outside_the_log_or_the_room_are_noted(tmp_path):
+    result = score_path(tmp_path, tracked_walk(), WALK_PATH + "\n18,0.5,0.5\n25,0.5,3.5\n\n30,0,0\n40,1,1\n")
+    notes = "\n".join(result["notes"])
+    assert "walk 2 (line 5: 18-25 s) reaches outside the log" in notes
+    assert "walk 2 (line 5: 18-25 s): waypoint (0.5, 3.5) is outside the room (4 x 2 m)" in notes
+    assert "walk 3 (line 8: 30-40 s) has no frames in the log" in notes
+    assert [row["frames"] for row in result["path"]["per_walk"]] == [24, 8, 0]
+    assert (result["path"]["walks"], result["path"]["scored_walks"]) == (3, 2)
+
+
+def test_walks_that_miss_the_log_suggest_the_other_time_base(tmp_path):
+    log = eval_log.read_log(write_log(tmp_path / "run.jsonl", walk_frames()))
+    host_times = eval_log.read_path(write_labels(tmp_path / "a.csv", f"{T0 + 10},0.5,0.5\n{T0 + 16},3.5,0.5\n"))
+    with pytest.raises(eval_log.EvalError, match="none of the walks overlaps the log.*pass --absolute"):
+        eval_log.evaluate(log, path=host_times)
+    labels = eval_log.read_labels(write_labels(tmp_path / "labels.csv", WALK_LABELS))
+    with pytest.raises(eval_log.EvalError, match="walk times host times"):
+        eval_log.evaluate(log, labels, path=host_times)
+
+
+def test_zones_need_a_path_with_distinct_names_and_something_must_be_scored(tmp_path):
+    log = eval_log.read_log(write_log(tmp_path / "run.jsonl", walk_frames()))
+    labels = eval_log.read_labels(write_labels(tmp_path / "labels.csv", WALK_LABELS))
+    walks = eval_log.read_path(write_labels(tmp_path / "walk.csv", "22,0.5,0.5\n36,3.5,0.5\n"))
+    zone = ("west", (0.0, 0.0, 2.0, 2.0))
+    with pytest.raises(eval_log.EvalError, match="zones need a path"):
+        eval_log.evaluate(log, labels, zones=[zone])
+    with pytest.raises(eval_log.EvalError, match="given twice"):
+        eval_log.evaluate(log, labels, path=walks, zones=[zone, zone])
+    with pytest.raises(eval_log.EvalError, match="nothing to score"):
+        eval_log.evaluate(log)
+
+
+def test_the_heatmap_centroid_weighs_the_cells_at_or_above_half_the_hottest_and_the_track_is_read():
+    heat = {"cols": 4, "rows": 2, "extents": {"x_min": 1.0, "y_min": 0.0, "x_max": 5.0, "y_max": 2.0},
+            "cells": [1.0, 0.5, 0.0, 0.0, 0.0, 0.25, 0.0, 0.0]}
+    # cells (1.5, 0.5) at 1.0 and (2.5, 0.5) at 0.5, exactly half: (1.0 * 1.5 + 0.5 * 2.5) / 1.5; 0.25 is left out
+    assert eval_log._centroid(heat, None) == pytest.approx((2.75 / 1.5, 0.5))
+    room = {"width_m": 2.0, "depth_m": 1.0}
+    assert eval_log._centroid({"cols": 2, "rows": 1, "cells": [0.0, 0.5]}, room) == (1.5, 0.5)   # no extents
+    assert eval_log._centroid({"cols": 2, "rows": 1, "cells": [0.0, 0.0]}, room) is None          # nothing above 0
+    assert eval_log._centroid({"cols": 2, "rows": 1, "cells": [0.0]}, room) is None               # malformed
+    assert eval_log._track({"x": 1, "y": 2}) == (1.0, 2.0, True, None)       # no 'active' key: active
+    inactive = eval_log._track(track(1.0, 2.0, active=False))
+    assert inactive[2] is False and inactive[3] == pytest.approx(0.5)         # predicted rms: hypot(0.3, 0.4)
+    assert eval_log._track(None) is None and eval_log._track({"active": True, "x": None, "y": 1.0}) is None
+
+
+def test_walks_are_split_by_blank_lines_and_a_plus_time_counts_from_the_previous_waypoint(tmp_path):
+    path = write_labels(tmp_path / "walk.csv",
+                        "# two walks\nt_s,x,y\n0,0.5,0.5\n+2,1.5,0.5\n+2,1.5,0.5\n\n\n10,0.5,1.5\n14,2.5,1.5\n")
+    first, second = eval_log.read_path(path)
+    assert (first.name, first.line, first.times, first.length_m) == ("1", 3, (0.0, 2.0, 4.0), 1.0)
+    assert first.points == ((0.5, 0.5), (1.5, 0.5), (1.5, 0.5))
+    assert first.at(1.0) == (1.0, 0.5) and first.at(3.0) == (1.5, 0.5) and first.at(-1.0) == (0.5, 0.5)
+    assert (second.name, second.line, second.times) == ("2", 8, (10.0, 14.0))
+    assert second.at(11.0) == (1.0, 1.5) and second.at(20.0) == (2.5, 1.5)
+
+
+def test_a_walk_column_names_the_walks_and_blank_lines_inside_them_are_ignored(tmp_path):
+    path = write_labels(tmp_path / "walk.csv", "Walk , T_S , X , Y , note\nA, 0, 0.5, 0.5, start\n\nA, 4, 2.5, 0.5,\n"
+                                               "B,10,0.5,1.5,\nB,12,1.5,1.5\n")
+    assert [(w.name, w.times, w.line) for w in eval_log.read_path(path)] == [("A", (0.0, 4.0), 2),
+                                                                            ("B", (10.0, 12.0), 5)]
+
+
+def test_walk_times_can_be_host_times_with_absolute(tmp_path):
+    path = write_labels(tmp_path / "walk.csv", "walk,t_s,x,y\n1,2023-11-14T22:13:20Z,0.5,0.5\n1,+5,1.5,0.5\n")
+    (walk,) = eval_log.read_path(path, absolute=True)
+    assert walk.times == (1_700_000_000.0, 1_700_000_005.0)
+    with pytest.raises(eval_log.EvalError, match="--absolute"):
+        eval_log.read_path(path)
+
+
+@pytest.mark.parametrize("text, message", [
+    ("t_s,x\n0,1\n", "y missing"),
+    ("0,0.5,0.5\n", "has one waypoint"),
+    ("0,0.5,0.5\n0,1.5,0.5\n", "line 2: t_s 0 is not after"),
+    ("0,0.5,0.5\n5,1.5,0.5\n\n4,0.5,0.5\n8,1,1\n", "overlap in time"),
+    ("+2,0.5,0.5\n4,1,1\n", "first of its walk"),
+    ("0,0.5,0.5\n+0,1,1\n", "above 0"),
+    ("0,a,0.5\n1,1,1\n", "must be numbers"),
+    ("0,0.5\n", "needs t_s, x and y"),
+    ("walk,t_s,x,y\nA,0,0,0\nA,1,1,0\nB,2,0,0\nB,3,1,0\nA,4,0,0\nA,5,1,0\n", "line 6: walk A appears again"),
+    ("walk,t_s,x,y\n,0,0,0\n", "walk column is empty"),
+    ("# nothing\n", "has no waypoints"),
+])
+def test_bad_path_files_are_refused_with_the_reason(tmp_path, text, message):
+    path = write_labels(tmp_path / "walk.csv", text)
+    with pytest.raises(eval_log.EvalError) as excinfo:
+        eval_log.read_path(path)
+    assert message in str(excinfo.value)
+    with pytest.raises(eval_log.EvalError, match="cannot read path"):
+        eval_log.read_path(tmp_path / "missing.csv")
+
+
+@pytest.mark.parametrize("text, message", [
+    ("west", "is not NAME=x0,y0,x1,y1"), ("=0,0,1,1", "is not NAME"), ("None=0,0,1,1", "is taken"),
+    ("a=0,0,1", "four numbers"),
+])
+def test_bad_named_zones_are_refused(text, message):
+    with pytest.raises(ValueError, match=message):
+        eval_log.parse_named_zone(text)
+    assert eval_log.parse_named_zone(" west = 1.9,2,0,0") == ("west", (0.0, 0.0, 1.9, 2.0))
+
+
 # ---------------------------------------------------------------------------------------------- command line
 
 def test_the_command_line_prints_a_summary_and_writes_the_json_result(tmp_path, capsys):
@@ -428,10 +674,39 @@ def test_the_command_line_reports_an_unusable_input_and_returns_1(tmp_path, caps
     assert capsys.readouterr().err.startswith("error: cannot read log")
 
 
-@pytest.mark.parametrize("option", [["--k", "0"], ["--k", "two"], ["--max-subsets", "0"], ["--min-heat", "1.5"]])
+@pytest.mark.parametrize("option", [["--k", "0"], ["--k", "two"], ["--max-subsets", "0"], ["--min-heat", "1.5"],
+                                    ["--zone", "west"]])
 def test_the_command_line_refuses_bad_options(option):
     with pytest.raises(SystemExit):
         eval_log.build_parser().parse_args(["--log", "run.jsonl", "--labels", "labels.csv", *option])
+
+
+def test_the_command_line_scores_walks_without_labels_and_prints_the_zone_table(tmp_path, capsys):
+    log = write_log(tmp_path / "run.jsonl", tracked_walk())
+    path = write_labels(tmp_path / "walk.csv", WALK_PATH)
+    out = tmp_path / "result.json"
+    assert eval_log.main(["--log", str(log), "--path", str(path), "--zone", "west=0,0,1.9,2", "--zone",
+                          "east=1.9,0,4,2", "--out", str(out)]) == 0
+    printed = capsys.readouterr().out
+    for text in ("labels: none; the walks of the path are the walking labels",
+                 f"walks: {path}: 1 walk(s), 3.0 m in 6.0 s, 24 frames", "track: active in 83.3%",
+                 "per walk (estimate):", "zones: the zone the person was in", "correct zone:"):
+        assert text in printed
+    result = json.loads(out.read_text(encoding="utf-8"))
+    assert result["path"]["file"] == str(path) and result["settings"]["labels_from_path"] == "walking"
+    assert result["path"]["zones"]["names"] == ["west", "east"] and "path" not in result["labels"]
+    room = result["subjects"]["room"]["motion"]["episodes_detected"]
+    assert (room["count"], room["total"]) == (1, 1)                    # the walk is scored as a walking label
+    assert any(note.startswith("no empty labels") for note in result["notes"])
+
+
+@pytest.mark.parametrize("argv", [
+    ["--log", "run.jsonl"],                                                      # neither labels nor a path
+    ["--log", "run.jsonl", "--labels", "labels.csv", "--zone", "west=0,0,1,1"],  # a zone without a path
+])
+def test_the_command_line_needs_labels_or_a_path_and_zones_need_a_path(argv):
+    with pytest.raises(SystemExit):
+        eval_log.main(argv)
 
 
 @pytest.mark.slow

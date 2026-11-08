@@ -1,10 +1,12 @@
 #!/usr/bin/env python
-"""Score a labelled dashboard run: detection, latency, false alarms, heatmap localisation and a scaling curve.
+"""Score a labelled dashboard run: detection, latency, false alarms, localisation, tracking error and a scaling curve.
 
     eval_log.py --log run.jsonl --labels labels.csv                  # readable summary on stdout
     eval_log.py --log run.jsonl --labels labels.csv --out run.json   # also the full result as JSON
     eval_log.py --log run.jsonl --labels labels.csv --absolute       # label times are host times
     eval_log.py --log night.jsonl --labels quiet.csv                 # quiet.csv: one row "0,,empty"
+    eval_log.py --log walk.jsonl --path walk.csv --absolute          # position error along labelled walks
+    eval_log.py --log walk.jsonl --path walk.csv --absolute --zone west=0,0,1.4,1.84 --zone east=1.4,0,2.77,1.84
 
 The log is a run recorded with scripts/dashboard.py --log run.jsonl: a header line, then one state payload per
 frame. The labels are a CSV file with the columns start_s,end_s,label and an optional zone (the header row is
@@ -38,6 +40,34 @@ Heatmap localisation, for motion labels with a zone: the share of their frames w
 inside the zone. A frame whose map is cold (hottest cell at or below --min-heat) has no hottest cell and counts
 as a miss; the share among the hot frames and the median distance from the hottest cell to the zone are given too.
 
+Walks (--path): a CSV of waypoints t_s,x,y, in the labels' time base and room coordinates. Between two waypoints the
+person is taken to move in a straight line at a steady pace, so a pause is two rows at the same spot. Walks are
+separated by a blank line, or named in a walk column (walk,t_s,x,y, each walk's rows together). A time written +s
+is s seconds after the walk's previous waypoint. In each frame from a walk's first waypoint to its last, the
+estimate is the payload's track while it is active, else the heatmap's weighted centroid (the cells at or above half
+the hottest cell, weighted by value); a frame with neither (no active track, and a map at or below --min-heat) is a
+miss. Reported: mean, median and 90th-percentile error; the share of walk frames (frames come at a steady rate, so
+a share of the walk time) within 0.5, 1.0 and 1.5 m; the share with an active track and the time from a walk's
+start to its first track; the same errors for the track, the centroid and the hottest cell alone; the time shift
+that best fits the estimate to the path (the estimate's lag, or walk times noted early); and, with --zone
+NAME=x0,y0,x1,y1 (repeat it; where zones overlap the first one given wins), a table of the zone the person was in
+against the zone of the estimate. Without --labels the walks are the walking labels, so detection is scored during
+them and false alarms are not.
+
+Walk protocol: start the dashboard with --log and keep the area empty for a minute. Lay tape marks every 1 m along
+the route and write down their x,y. Set a phone metronome to 60 bpm, one step per beat, and pass one mark every 2
+beats (0.5 m/s) at the same pace throughout. Stand on the first mark, start on a beat, and note the start time on
+the dashboard computer's clock. Write the start time, then +2 for each mark (+4 for a 4 s stop on a mark):
+
+    walk,t_s,x,y
+    1,2026-11-08T10:15:30,0.5,0.9
+    1,+2,1.5,0.9
+    1,+2,2.5,0.9
+    1,+4,2.5,0.9
+
+(date-times need --absolute). Walk each route at least three times, in both directions, and leave the area between
+walks so each walk's time to first track counts from no track.
+
 Scaling curve: for each number of links n, room MOTION is recomputed as "at least k of the n links in MOTION"
 (k capped at n) for every subset of n links, or for --max-subsets subsets drawn with a fixed seed when there are
 more, and the rates are averaged over the subsets. It votes over the logged link states without the room's hold
@@ -47,7 +77,8 @@ Intervals are Wilson 95% score intervals. A false-alarm rate's interval is the W
 decided frame, scaled to an hour, so zero alarms in H hours has an upper bound of about 3.8 / H per hour. Frames
 are not independent (the detectors smooth and debounce), so the intervals of frame shares are too narrow: quote
 the episode counts. --out writes everything as JSON: per subject, per episode (the room and each link), the
-localisation, every subset of the scaling curve, link health and notes. Standard library only.
+localisation, every subset of the scaling curve, link health, the walks (per walk, per source, the zone table and
+the time-shift curve) and notes. Standard library only.
 """
 from __future__ import annotations
 
@@ -90,6 +121,15 @@ GAIN_KEYS = ("agc_gain", "fft_gain")
 HEALTH_SAMPLE_S = 1.0        # at most one health sample per link per second of host time
 Z95 = 1.959963984540054      # two-sided 95% quantile of the normal distribution
 LABEL_COLUMNS = ("start_s", "end_s", "label", "zone")
+PATH_COLUMNS = ("t_s", "x", "y")
+WALK_COLUMNS = ("walk", "walk_id")   # optional column naming the walk of each waypoint
+CENTROID_CUT = 0.5           # the heatmap centroid weighs the cells at or above this share of the hottest cell
+WITHIN_M = (0.5, 1.0, 1.5)   # walks: shares of frames whose estimate is within these distances of the person
+SHIFTS_S = tuple(-2.0 + 0.25 * i for i in range(25))   # walks: time shifts tried between the estimate and the path
+PATH_SOURCES = ("estimate", "track", "centroid", "hottest")   # estimate: the active track, else the centroid
+OUTSIDE, NO_ESTIMATE = "outside", "none"   # zone table: a position in no zone; a frame without an estimate
+ROOM_SLACK_M = 0.05          # a waypoint further than this outside the room gets a note
+Rect = tuple[float, float, float, float]   # x0, y0, x1, y1 in metres with x0 < x1 and y0 < y1
 
 
 class EvalError(ValueError):
@@ -115,6 +155,13 @@ class Log:
     health: dict[str, dict[str, array]]  # link -> health key -> samples taken while the link had signal
     drops: dict[str, int]             # link -> its last cumulative drop count
     notes: list[str] = field(default_factory=list)
+    centroid: list[Optional[tuple[float, float]]] = field(default_factory=list)  # per frame: the map's weighted centre
+    track: list[Optional[tuple[float, float, bool, Optional[float]]]] = field(default_factory=list)
+    #                                 per frame: the payload's track as (x, y, active, predicted rms error), or None
+    estimator: list[Optional[str]] = field(default_factory=list)   # per frame: heatmap.estimator, None when absent
+    track_frames: int = 0             # frames with a "track" key (null or not), in the payload or its heatmap
+    room_m: Optional[tuple[float, float]] = None   # room width and depth, from the header or the first payload
+    centroid_cut: float = CENTROID_CUT
 
 
 def _is_number(value) -> bool:
@@ -127,8 +174,9 @@ def _code(state) -> int:
     return NO_MOTION if state in DECIDED else NO_DECISION
 
 
-def _hottest(heatmap, room) -> Optional[tuple[float, float, float]]:
-    """Centre (x, y) in metres and value of the hottest cell (the first in row-major order on a tie)."""
+def _grid(heatmap, room) -> Optional[tuple[int, int, list, float, float, float, float]]:
+    """(cols, rows, cells, x_min, y_min, x_max, y_max) of a heatmap payload, with the room's size for missing extents;
+    None when the payload has no usable grid."""
     if not isinstance(heatmap, dict):
         return None
     cols, rows, cells = heatmap.get("cols"), heatmap.get("rows"), heatmap.get("cells")
@@ -141,6 +189,15 @@ def _hottest(heatmap, room) -> Optional[tuple[float, float, float]]:
     x_max, y_max = ext.get("x_max", room.get("width_m")), ext.get("y_max", room.get("depth_m"))
     if not all(_is_number(v) for v in (x_min, y_min, x_max, y_max)):
         return None
+    return cols, rows, cells, x_min, y_min, x_max, y_max
+
+
+def _hottest(heatmap, room) -> Optional[tuple[float, float, float]]:
+    """Centre (x, y) in metres and value of the hottest cell (the first in row-major order on a tie)."""
+    grid = _grid(heatmap, room)
+    if grid is None:
+        return None
+    cols, rows, cells, x_min, y_min, x_max, y_max = grid
     try:
         value = max(cells)
         index = cells.index(value)
@@ -152,9 +209,58 @@ def _hottest(heatmap, room) -> Optional[tuple[float, float, float]]:
     return (x_min + (c + 0.5) * (x_max - x_min) / cols, y_min + (r + 0.5) * (y_max - y_min) / rows, float(value))
 
 
+def _centroid(heatmap, room, cut: float = CENTROID_CUT) -> Optional[tuple[float, float]]:
+    """Centre (x, y) in metres of the cells at or above ``cut`` times the hottest cell, each weighted by its value;
+    None without a usable map or when no cell is above 0."""
+    grid = _grid(heatmap, room)
+    if grid is None:
+        return None
+    cols, rows, cells, x_min, y_min, x_max, y_max = grid
+    try:
+        peak = max(cells)
+    except (TypeError, ValueError):
+        return None
+    if not _is_number(peak) or peak <= 0:
+        return None
+    level = cut * peak
+    total = col = row = 0.0
+    for index, value in enumerate(cells):
+        if value >= level:            # every cell compares with numbers (max worked); a NaN cell is never picked
+            r, c = divmod(index, cols)
+            total += value
+            col += value * c
+            row += value * r
+    return x_min + (col / total + 0.5) * (x_max - x_min) / cols, y_min + (row / total + 0.5) * (y_max - y_min) / rows
+
+
+def _track(track) -> Optional[tuple[float, float, bool, Optional[float]]]:
+    """(x, y, active, predicted rms error) of a payload's track, None without a track position. The predicted rms
+    error is hypot(sx, sy), None without them; a track without an 'active' key counts as active."""
+    if not isinstance(track, dict):
+        return None
+    x, y = track.get("x"), track.get("y")
+    if not (_is_number(x) and _is_number(y)):
+        return None
+    sx, sy = track.get("sx"), track.get("sy")
+    sigma = math.hypot(sx, sy) if _is_number(sx) and _is_number(sy) else None
+    return float(x), float(y), bool(track.get("active", True)), sigma
+
+
+def _room_size(room) -> Optional[tuple[float, float]]:
+    if isinstance(room, dict) and _is_number(room.get("width_m")) and _is_number(room.get("depth_m")):
+        return float(room["width_m"]), float(room["depth_m"])
+    return None
+
+
 class _LogBuilder:
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, centroid_cut: float = CENTROID_CUT) -> None:
         self.path = path
+        self.centroid_cut = centroid_cut
+        self.centroid: list[Optional[tuple[float, float]]] = []
+        self.track: list[Optional[tuple[float, float, bool, Optional[float]]]] = []
+        self.estimator: list[Optional[str]] = []
+        self.track_frames = 0
+        self.room_m: Optional[tuple[float, float]] = None
         self.header: Optional[dict] = None
         self.times: list[float] = []
         self.room = bytearray()
@@ -175,6 +281,7 @@ class _LogBuilder:
                 raise EvalError(f"{self.path} line {n} is not a dashboard log header (expected format "
                                 f"{LOG_FORMAT!r}); record a run with scripts/dashboard.py --log run.jsonl")
             self.header = obj
+            self.room_m = _room_size(obj.get("room"))
             return
         status = obj.get("status") if isinstance(obj, dict) else None
         rows = obj.get("links") if isinstance(obj, dict) else None
@@ -217,7 +324,16 @@ class _LogBuilder:
             values.append(levels.get(label, math.nan))
         self.motion.append(motion)
         self.decided.append(decided)
-        self.hot.append(_hottest(obj.get("heatmap"), obj.get("room")))
+        heatmap = obj.get("heatmap")
+        self.hot.append(_hottest(heatmap, obj.get("room")))
+        self.centroid.append(_centroid(heatmap, obj.get("room"), self.centroid_cut))
+        estimator = heatmap.get("estimator") if isinstance(heatmap, dict) else None
+        self.estimator.append(estimator if isinstance(estimator, str) else None)
+        holder = obj if "track" in obj or not isinstance(heatmap, dict) else heatmap   # the contract: payload.track
+        self.track.append(_track(holder.get("track")))
+        self.track_frames += "track" in holder
+        if self.room_m is None:
+            self.room_m = _room_size(obj.get("room"))
 
     def _sample_health(self, label: str, t: float, row: dict) -> None:
         last = self.sampled_at.get(label)
@@ -245,7 +361,7 @@ class _LogBuilder:
                 counter["absent"] += missing
         t0 = self.times[0]
         times, room, motion, decided, hot = self.times, bytes(self.room), self.motion, self.decided, self.hot
-        levels = self.levels
+        levels, centroid, track, estimator = self.levels, self.centroid, self.track, self.estimator
         late = sum(b < a for a, b in zip(times, times[1:]))
         if late:
             order = sorted(range(count), key=times.__getitem__)
@@ -254,17 +370,22 @@ class _LogBuilder:
             motion = [motion[i] for i in order]
             decided = [decided[i] for i in order]
             hot = [hot[i] for i in order]
+            centroid = [centroid[i] for i in order]
+            track = [track[i] for i in order]
+            estimator = [estimator[i] for i in order]
             levels = {label: array("d", (values[i] for i in order)) for label, values in levels.items()}
             notes.append(f"{late} frame(s) were out of time order; the frames were sorted by time")
         return Log(self.path, self.header, t0, times, room, list(self.links), motion, decided, levels, hot,
-                   self.states, self.health, self.drops, notes)
+                   self.states, self.health, self.drops, notes, centroid=centroid, track=track, estimator=estimator,
+                   track_frames=self.track_frames, room_m=self.room_m, centroid_cut=self.centroid_cut)
 
 
-def read_log(path) -> Log:
+def read_log(path, centroid_cut: float = CENTROID_CUT) -> Log:
     """Load a scripts/dashboard.py --log file. A corrupt last line (a run stopped mid-write) is skipped with a note;
-    any other unreadable line raises EvalError naming it."""
+    any other unreadable line raises EvalError naming it. ``centroid_cut``: the share of the hottest cell at or above
+    which a cell counts towards the map's weighted centroid."""
     path = Path(path)
-    builder = _LogBuilder(path)
+    builder = _LogBuilder(path, centroid_cut)
     bad: Optional[tuple[int, str]] = None
     try:
         with open(path, encoding="utf-8") as handle:
@@ -385,6 +506,157 @@ def _label_row(cells: list[str], columns: dict[str, int], zone_last: bool, absol
     return Label(start, end, cell("label"), zone, n)
 
 
+def parse_named_zone(text: str) -> tuple[str, Rect]:
+    """``"NAME=x0,y0,x1,y1"`` as (name, rectangle with its corners in order)."""
+    name, sep, rect = text.partition("=")
+    name = name.strip()
+    if not sep or not name:
+        raise ValueError(f"zone {text!r} is not NAME=x0,y0,x1,y1")
+    if name.lower() in (OUTSIDE, NO_ESTIMATE):
+        raise ValueError(f"zone name {name!r} is taken by the zone table (outside: in no zone, none: no estimate)")
+    return name, parse_zone(rect)
+
+
+# ---------------------------------------------------------------------------------------------- walks
+
+@dataclass(frozen=True)
+class Walk:
+    """A labelled walk: waypoints the person passed at known times, moving in a straight line at a steady pace
+    between consecutive ones."""
+    name: str                                   # the walk column's value, or the walk's number in the file from 1
+    times: tuple[float, ...]                    # strictly increasing, in the labels' time base
+    points: tuple[tuple[float, float], ...]     # (x, y) in metres, room coordinates
+    line: int = 0                               # line of its first waypoint in the path file
+
+    @property
+    def start(self) -> float:
+        return self.times[0]
+
+    @property
+    def end(self) -> float:
+        return self.times[-1]
+
+    @property
+    def length_m(self) -> float:
+        return math.fsum(math.dist(a, b) for a, b in zip(self.points, self.points[1:]))
+
+    def at(self, t: float) -> tuple[float, float]:
+        """Position at time ``t`` by linear interpolation between waypoints; the first or last waypoint outside them."""
+        times, points = self.times, self.points
+        if t <= times[0]:
+            return points[0]
+        if t >= times[-1]:
+            return points[-1]
+        k = bisect.bisect_right(times, t) - 1
+        (x0, y0), (x1, y1) = points[k], points[k + 1]
+        f = (t - times[k]) / (times[k + 1] - times[k])
+        return x0 + f * (x1 - x0), y0 + f * (y1 - y0)
+
+
+def read_path(path, absolute: bool = False) -> list[Walk]:
+    """Read a path CSV of waypoints (see the module doc), walks in file order. Raises EvalError naming the file and
+    line of a bad row."""
+    path = Path(path)
+    try:
+        text = path.read_text(encoding="utf-8-sig")
+    except OSError as e:
+        raise EvalError(f"cannot read path {path}: {e.strerror or e}") from e
+    except UnicodeDecodeError as e:
+        raise EvalError(f"cannot read path {path}: not UTF-8 text ({e})") from e
+    columns: Optional[dict[str, int]] = None
+    walk_at: Optional[int] = None     # index of the walk column; without one a blank line ends a walk
+    walks: list[Walk] = []
+    rows: list[tuple[float, float, float, int]] = []   # the current walk's waypoints: t, x, y, line
+    name: Optional[str] = None        # the current walk's value in the walk column
+    seen: set[str] = set()
+
+    def end_walk() -> None:
+        if rows:
+            walks.append(_walk(rows, name if name is not None else str(len(walks) + 1), path))
+            rows.clear()
+
+    for n, line in enumerate(text.splitlines(), start=1):
+        if not line.strip():
+            if walk_at is None:
+                end_walk()
+            continue
+        if line.lstrip().startswith("#"):
+            continue
+        cells = [cell.strip() for cell in next(csv.reader([line], skipinitialspace=True))]
+        names = [cell.lower() for cell in cells]
+        if columns is None:
+            columns = {column: i for i, column in enumerate(PATH_COLUMNS)}
+            if any(cell in PATH_COLUMNS + WALK_COLUMNS for cell in names):     # a header row
+                missing = [column for column in PATH_COLUMNS if column not in names]
+                if missing:
+                    raise EvalError(f"{path} line {n}: the header needs the columns t_s,x,y (and optionally walk); "
+                                    f"{', '.join(missing)} missing")
+                columns = {column: names.index(column) for column in PATH_COLUMNS}
+                walk_at = next((names.index(column) for column in WALK_COLUMNS if column in names), None)
+                continue
+        where = f"{path} line {n}"
+        if walk_at is not None:
+            walk = cells[walk_at] if walk_at < len(cells) else ""
+            if not walk:
+                raise EvalError(f"{where}: the walk column is empty")
+            if walk != name:
+                end_walk()
+                if walk in seen:
+                    raise EvalError(f"{where}: walk {walk} appears again after another walk; keep each walk's rows "
+                                    "together")
+                seen.add(walk)
+                name = walk
+        rows.append(_waypoint(cells, columns, rows, absolute, where, n))
+    end_walk()
+    if not walks:
+        raise EvalError(f"{path} has no waypoints: write rows of t_s,x,y")
+    ordered = sorted(walks, key=lambda w: w.start)
+    for a, b in zip(ordered, ordered[1:]):
+        if b.start < a.end:
+            raise EvalError(f"{path}: walk {a.name} (line {a.line}) and walk {b.name} (line {b.line}) overlap in time")
+    return walks
+
+
+def _waypoint(cells: list[str], columns: dict[str, int], rows: Sequence[tuple[float, float, float, int]],
+              absolute: bool, where: str, n: int) -> tuple[float, float, float, int]:
+    def cell(name: str) -> str:
+        i = columns[name]
+        return cells[i] if i < len(cells) else ""
+
+    if not all(cell(name) for name in PATH_COLUMNS):
+        raise EvalError(f"{where}: needs t_s, x and y, got {','.join(cells)!r}")
+    text = cell("t_s")
+    if text.startswith("+"):
+        if not rows:
+            raise EvalError(f"{where}: {text} counts from the previous waypoint, but this is the first of its walk; "
+                            "give the walk's start time")
+        try:
+            step = float(text[1:])
+        except ValueError:
+            step = math.nan
+        if not (math.isfinite(step) and step > 0):
+            raise EvalError(f"{where}: {text!r} is not + a number of seconds above 0")
+        t = rows[-1][0] + step
+    else:
+        t = _label_time(text, absolute, where)
+    try:
+        x, y = float(cell("x")), float(cell("y"))
+    except ValueError:
+        x = y = math.nan
+    if not (math.isfinite(x) and math.isfinite(y)):
+        raise EvalError(f"{where}: x {cell('x')!r} and y {cell('y')!r} must be numbers of metres")
+    if rows and not t > rows[-1][0]:
+        raise EvalError(f"{where}: t_s {text} is not after the walk's previous waypoint")
+    return t, x, y, n
+
+
+def _walk(rows: Sequence[tuple[float, float, float, int]], name: str, path: Path) -> Walk:
+    if len(rows) < 2:
+        raise EvalError(f"{path} line {rows[0][3]}: walk {name} has one waypoint; a walk needs a start and an end (a "
+                        "stop is two rows at the same spot)")
+    return Walk(name, tuple(r[0] for r in rows), tuple((r[1], r[2]) for r in rows), rows[0][3])
+
+
 # ---------------------------------------------------------------------------------------------- statistics
 
 def wilson(k: float, n: float, z: float = Z95) -> Optional[tuple[float, float]]:
@@ -439,6 +711,31 @@ def _median(values) -> Optional[float]:
 def _span(values: Iterable[float]) -> Optional[list[float]]:
     values = list(values)
     return [_r(min(values)), _r(max(values))] if values else None
+
+
+def _percentile(values: Sequence[float], q: float) -> float:
+    """The q-quantile (q in 0..1) of ``values``, interpolated linearly between the order statistics (numpy's default
+    method)."""
+    ordered = sorted(values)
+    pos = q * (len(ordered) - 1)
+    low = int(pos)
+    high = min(low + 1, len(ordered) - 1)
+    return ordered[low] + (pos - low) * (ordered[high] - ordered[low])
+
+
+def _errors(values: Sequence[float], frames: int) -> dict:
+    """Position errors of one source during the walks: how many frames it had a position in, the error statistics,
+    and the share of all ``frames`` within each WITHIN_M distance (a frame without a position is a miss), and of the
+    frames with a position."""
+    stats = None
+    if values:
+        stats = {"mean": _r(statistics.fmean(values)), "median": _r(statistics.median(values)),
+                 "p90": _r(_percentile(values, 0.9)), "max": _r(max(values)),
+                 "rms": _r(math.sqrt(math.fsum(v * v for v in values) / len(values)))}
+    near = {f"{d:.1f}": sum(v <= d for v in values) for d in WITHIN_M}
+    return {"frames": len(values), "error_m": stats,
+            "within": {key: proportion(count, frames) for key, count in near.items()},
+            "within_when_present": {key: proportion(count, len(values)) for key, count in near.items()}}
 
 
 def link_subsets(n_links: int, size: int, cap: int, seed: int = 0) -> tuple[list[tuple[int, ...]], bool]:
@@ -592,15 +889,16 @@ def _episodes(log: Log, labels: Sequence[Label], absolute: bool, motion: set[str
     return episodes, notes
 
 
-def _no_overlap_message(log: Log, absolute: bool, durations: Sequence[float]) -> str:
+def _no_overlap_message(log: Log, absolute: bool, durations: Sequence[float], what: str = "labels") -> str:
+    """``what``: "labels" or "walks"."""
     end = log.times[-1] + durations[-1]
     if absolute:
-        return (f"none of the labels overlaps the log, which covers host times {log.times[0]:.3f} to {end:.3f} "
-                f"({_local_time(log.times[0])} to {_local_time(end)}); are the label times seconds from the first "
-                "frame? then leave out --absolute")
-    return (f"none of the labels overlaps the log, which covers {_secs(log.times[0] - log.t0)} to "
+        return (f"none of the {what} overlaps the log, which covers host times {log.times[0]:.3f} to {end:.3f} "
+                f"({_local_time(log.times[0])} to {_local_time(end)}); are the {what[:-1]} times seconds from the "
+                "first frame? then leave out --absolute")
+    return (f"none of the {what} overlaps the log, which covers {_secs(log.times[0] - log.t0)} to "
             f"{_secs(end - log.t0)} s "
-            "from its first frame; are the label times host times? then pass --absolute")
+            f"from its first frame; are the {what[:-1]} times host times? then pass --absolute")
 
 
 def _subject(tally: _Tally, states: Counter, levels: Optional[tuple] = None) -> dict:
@@ -729,12 +1027,160 @@ def _health(log: Log, names: Sequence[str]) -> dict:
     return out
 
 
-def evaluate(log: Log, labels: Sequence[Label], *, absolute: bool = False,
+def _zone_of(point: tuple[float, float], zones: Sequence[tuple[str, Rect]]) -> str:
+    """The first zone that holds ``point`` (edges included), else OUTSIDE."""
+    x, y = point
+    for name, (x0, y0, x1, y1) in zones:
+        if x0 <= x <= x1 and y0 <= y <= y1:
+            return name
+    return OUTSIDE
+
+
+def _check_zones(zones: Sequence[tuple[str, Rect]]) -> None:
+    seen: set[str] = set()
+    for name, _ in zones:
+        if name.lower() in (OUTSIDE, NO_ESTIMATE):
+            raise EvalError(f"zone name {name!r} is taken by the zone table (outside: in no zone, none: no estimate)")
+        if name in seen:
+            raise EvalError(f"zone {name!r} is given twice")
+        seen.add(name)
+
+
+def _shift_fit(shifted: dict[float, list[float]]) -> Optional[dict]:
+    """The time shift whose median error is smallest, among the shifts with at least half the unshifted frames (a
+    long shift keeps only the end of each walk); the smaller shift on a tie."""
+    unshifted = shifted.get(0.0) or []
+    curve = [(shift, statistics.median(values), len(values)) for shift, values in shifted.items()
+             if values and 2 * len(values) >= len(unshifted)]
+    if not unshifted or not curve:
+        return None
+    best = min(curve, key=lambda point: (point[1], abs(point[0])))
+    return {"best_s": _r(best[0]), "median_error_m": _r(best[1]), "frames": best[2],
+            "unshifted_median_error_m": _r(statistics.median(unshifted)), "unshifted_frames": len(unshifted),
+            "curve": [[_r(shift), _r(median), count] for shift, median, count in curve]}
+
+
+def _path(log: Log, walks: Sequence[Walk], absolute: bool, zones: Sequence[tuple[str, Rect]], min_heat: float,
+          durations: Sequence[float]) -> tuple[dict, list[str]]:
+    """Position error along the walks of the estimate (the active track, else the heatmap's weighted centroid), and
+    of the track, the centroid and the hottest cell on their own."""
+    count = len(log.times)
+    centroid = log.centroid if len(log.centroid) == count else [None] * count
+    track = log.track if len(log.track) == count else [None] * count
+    estimator = log.estimator if len(log.estimator) == count else [None] * count
+    offset = 0.0 if absolute else log.t0
+    log_end = log.times[-1] + durations[-1]
+    errors: dict[str, list[float]] = {name: [] for name in PATH_SOURCES}
+    sources = {"track": 0, "centroid": 0, NO_ESTIMATE: 0}
+    shifted: dict[float, list[float]] = {shift: [] for shift in SHIFTS_S}
+    sigma2: list[float] = []              # squared predicted rms error of the active track, per frame
+    estimators: Counter = Counter()
+    matrix: dict[str, Counter] = {name: Counter() for name, _ in zones}   # true zone -> estimated zone -> frames
+    first_tracks: list[float] = []
+    per_walk: list[dict] = []
+    notes: list[str] = []
+    frames = active_frames = scored = 0
+    for index, walk in enumerate(walks, start=1):
+        start, end = walk.start + offset, walk.end + offset
+        i0, i1 = bisect.bisect_left(log.times, start), bisect.bisect_left(log.times, end)
+        title = f"walk {index}" if walk.name == str(index) else f"walk {index} ({walk.name})"
+        where = f"{title} (line {walk.line}: {_secs(walk.start)}-{_secs(walk.end)} s)"
+        if i0 == i1:
+            notes.append(f"{where} has no frames in the log: not scored")
+        elif start < log.times[0] or end > log_end:
+            notes.append(f"{where} reaches outside the log; only its frames inside the log are scored")
+        if log.room_m is not None:
+            width, depth = log.room_m
+            astray = [(x, y) for x, y in walk.points if not (-ROOM_SLACK_M <= x <= width + ROOM_SLACK_M
+                                                             and -ROOM_SLACK_M <= y <= depth + ROOM_SLACK_M)]
+            if astray:
+                notes.append(f"{where}: waypoint ({astray[0][0]:g}, {astray[0][1]:g}) is outside the room "
+                             f"({width:g} x {depth:g} m); are x and y the right way round?")
+        walk_errors: list[float] = []
+        walk_active = 0
+        first: Optional[float] = None
+        for i in range(i0, i1):
+            rel = log.times[i] - offset
+            truth = walk.at(rel)
+            hot, mark = log.hot[i], track[i]
+            warm = hot is not None and hot[2] > min_heat
+            active = mark is not None and mark[2]
+            positions = {"track": (mark[0], mark[1]) if active else None,
+                         "centroid": centroid[i] if warm else None,
+                         "hottest": (hot[0], hot[1]) if warm else None}
+            estimate = positions["estimate"] = positions["track"] or positions["centroid"]
+            sources["track" if active else "centroid" if estimate is not None else NO_ESTIMATE] += 1
+            for name, position in positions.items():
+                if position is not None:
+                    errors[name].append(math.dist(position, truth))
+            if active:
+                walk_active += 1
+                if first is None:
+                    first = log.times[i] - start
+                if mark[3] is not None:
+                    sigma2.append(mark[3] ** 2)
+            if estimate is not None:
+                walk_errors.append(errors["estimate"][-1])
+                for shift, values in shifted.items():
+                    if walk.start <= rel - shift <= walk.end:
+                        values.append(math.dist(estimate, walk.at(rel - shift)))
+            if zones:
+                guess = NO_ESTIMATE if estimate is None else _zone_of(estimate, zones)
+                matrix.setdefault(_zone_of(truth, zones), Counter())[guess] += 1
+            estimators[estimator[i] or "unspecified"] += 1
+        n = i1 - i0
+        frames += n
+        active_frames += walk_active
+        scored += n > 0
+        if first is not None:
+            first_tracks.append(first)
+        per_walk.append({"index": index, "walk": walk.name, "line": walk.line, "start_s": _r(walk.start),
+                         "end_s": _r(walk.end), "waypoints": len(walk.times), "length_m": _r(walk.length_m),
+                         "frames": n, "estimate": _errors(walk_errors, n), "track": proportion(walk_active, n),
+                         "first_track_s": _r(first)})
+    zone_table = None
+    if zones:
+        columns = [name for name, _ in zones] + [OUTSIDE, NO_ESTIMATE]
+        table = {true: {column: counts[column] for column in columns} for true, counts in matrix.items()}
+        correct = sum(row[true] for true, row in table.items())
+        estimated = frames - sum(row[NO_ESTIMATE] for row in table.values())
+        zone_table = {"names": [name for name, _ in zones], "rects": {name: list(rect) for name, rect in zones},
+                      "columns": columns, "matrix": table, "correct": proportion(correct, frames),
+                      "correct_when_estimated": proportion(correct, estimated),
+                      "per_zone": {true: proportion(row[true], sum(row.values())) for true, row in table.items()}}
+    if not log.track_frames:
+        notes.append("the log's payloads have no track (a log from before the tracker): the estimate is the heatmap's "
+                     "weighted centroid throughout")
+    if frames and not errors["estimate"]:
+        notes.append(f"no walk frame has an estimate (no active track, and the map at or below {min_heat:g}): "
+                     "nothing to localise")
+    result = {
+        "walks": len(walks), "scored_walks": scored, "frames": frames,
+        "walk_s": _r(math.fsum(w.end - w.start for w in walks)), "length_m": _r(math.fsum(w.length_m for w in walks)),
+        "min_heat": min_heat, "centroid_cut": log.centroid_cut, "within_m": list(WITHIN_M), "sources": sources,
+        **{name: _errors(errors[name], frames) for name in PATH_SOURCES},
+        "track_availability": proportion(active_frames, frames),
+        "first_track_s": _stats(first_tracks),
+        "walks_tracked": proportion(len(first_tracks), scored),
+        "track_predicted_rms_m": _r(math.sqrt(math.fsum(sigma2) / len(sigma2))) if sigma2 else None,
+        "shift": _shift_fit(shifted),
+        "estimators": dict(sorted(estimators.items())),
+        "zones": zone_table,
+        "per_walk": per_walk,
+    }
+    return result, notes
+
+
+def evaluate(log: Log, labels: Optional[Sequence[Label]] = None, *, absolute: bool = False,
              motion_labels: Iterable[str] = DEFAULT_MOTION_LABELS, empty_labels: Iterable[str] = DEFAULT_EMPTY_LABELS,
              ks: Iterable[int] = DEFAULT_K, max_subsets: int = DEFAULT_MAX_SUBSETS, seed: int = 0,
-             min_heat: float = DEFAULT_MIN_HEAT) -> dict:
-    """Score ``log`` against ``labels``; returns the JSON-serialisable result that format_summary prints."""
-    motion = {name.strip().lower() for name in motion_labels if name.strip()}
+             min_heat: float = DEFAULT_MIN_HEAT, path: Optional[Sequence[Walk]] = None,
+             zones: Iterable[tuple[str, Rect]] = ()) -> dict:
+    """Score ``log`` against ``labels`` and, with ``path``, the position estimate along its walks (with ``zones``,
+    named rectangles, also the zone table); returns the JSON-serialisable result that format_summary prints. Without
+    labels the walks are the labels, named after the first of ``motion_labels``."""
+    motion_names = [name.strip() for name in motion_labels if name.strip()]
+    motion = {name.lower() for name in motion_names}
     empty = {name.strip().lower() for name in empty_labels if name.strip()}
     if motion & empty:
         raise EvalError(f"label(s) {', '.join(sorted(motion & empty))} cannot be both motion and empty")
@@ -743,9 +1189,26 @@ def evaluate(log: Log, labels: Sequence[Label], *, absolute: bool = False,
         raise EvalError("k must be at least 1")
     if max_subsets < 1:
         raise EvalError("max_subsets must be at least 1")
+    zones = list(zones)
+    _check_zones(zones)
+    if zones and not path:
+        raise EvalError("zones need a path: the true zone comes from the walked path")
+    walk_label = None                 # the label the walks are scored as when there are no labels
+    if labels is None:
+        if not path:
+            raise EvalError("nothing to score: give labels, a path or both")
+        if not motion_names:
+            raise EvalError("without labels the walks are scored as motion labels, but no motion label is set")
+        walk_label = motion_names[0]
+        labels = [Label(walk.start, walk.end, walk_label, None, walk.line) for walk in path]
     frame_s = _frame_interval(log)
     durations = _durations(log.times, frame_s)
+    walked, path_notes = _path(log, path, absolute, zones, min_heat, durations) if path else (None, [])
+    if walked is not None and not walked["frames"]:
+        raise EvalError(_no_overlap_message(log, absolute, durations, "walks"))
     episodes, notes = _episodes(log, labels, absolute, motion, empty, durations)
+    if walk_label is not None:
+        notes = []                    # about the walks as labels: the walks' own notes say the same
     if all(ep.i0 == ep.i1 for ep in episodes):
         raise EvalError(_no_overlap_message(log, absolute, durations))
 
@@ -792,6 +1255,7 @@ def evaluate(log: Log, labels: Sequence[Label], *, absolute: bool = False,
             if gain and gain["changes"]:
                 notes.append(f"link {label}: {key} changed {gain['changes']} time(s) during the run (a receiver "
                              "reset re-rolls the gain and moves the link's scores; its threshold may no longer fit)")
+    notes += path_notes
     span = log.times[-1] - log.times[0]
     return {
         "log": {"path": str(log.path), "frames": len(log.times), "t0": log.t0, "span_s": _r(span),
@@ -801,11 +1265,13 @@ def evaluate(log: Log, labels: Sequence[Label], *, absolute: bool = False,
                    OTHER_KIND: kinds[OTHER_KIND]},
         "time_base": "absolute" if absolute else "relative",
         "settings": {"motion_labels": sorted(motion), "empty_labels": sorted(empty), "k": ks,
-                     "max_subsets": max_subsets, "seed": seed, "min_heat": min_heat, "confidence": 0.95},
+                     "max_subsets": max_subsets, "seed": seed, "min_heat": min_heat, "confidence": 0.95,
+                     "labels_from_path": walk_label},
         "links": names,
         "subjects": subjects,
         "episodes": episode_rows,
         "localisation": localisation,
+        "path": walked,
         "scaling": scaling,
         "health": health,
         "notes": notes,
@@ -870,6 +1336,71 @@ def _gain(value: Optional[dict]) -> str:
     return shown if not value["changes"] else f"{shown} ({value['changes']} changes)"
 
 
+def _pct(p: dict) -> str:
+    """``45.8%``, or ``-`` without a total."""
+    return "-" if p["rate"] is None else f"{100 * p['rate']:.1f}%"
+
+
+def _path_lines(p: dict) -> list[str]:
+    """The walks section of the summary: errors per source, track availability, timing, per walk, zone table."""
+    out = ["", f"walks: {p.get('file', '-')}: {p['walks']} walk(s), {p['length_m']:.1f} m in {p['walk_s']:.1f} s, "
+               f"{p['frames']} frames"]
+    out.append(f"  estimate = the track while it is active, else the heatmap's weighted centroid (cells at or above "
+               f"{100 * p['centroid_cut']:g}% of the hottest);")
+    out.append(f"  a frame with neither (no active track, map at or below {p['min_heat']:g}) is a miss. within: share "
+               "of all the walk frames")
+    keys = list(p["estimate"]["within"])
+    rows = []
+    for name, title in (("estimate", "estimate"), ("track", "track"), ("centroid", "centroid"),
+                        ("hottest", "hottest cell")):
+        errors = p[name]
+        stats = errors["error_m"] or {}
+        rows.append([title, f"{errors['frames']}/{p['frames']}", _num(stats.get("mean"), 2),
+                     _num(stats.get("median"), 2), _num(stats.get("p90"), 2),
+                     *(_pct(errors["within"][key]) for key in keys)])
+    out += _table(["position", "frames", "mean m", "median m", "p90 m", *(f"within {key} m" for key in keys)], rows)
+    first, tracked = p["first_track_s"], p["walks_tracked"]
+    if first is None:
+        first_text = "no walk had an active track"
+    else:
+        first_text = (f"first track {first['median']:.2f} s after a walk's start (median; at most {first['max']:.2f} "
+                      f"s), in {_count(tracked['count'])} of {_count(tracked['total'])} walk(s)")
+    out.append(f"  track: active in {_share(p['track_availability'])} of the walk frames; {first_text}")
+    if p["track_predicted_rms_m"] is not None and p["track"]["error_m"]:
+        out.append(f"  track uncertainty: predicted rms error {p['track_predicted_rms_m']:.2f} m, measured "
+                   f"{p['track']['error_m']['rms']:.2f} m")
+    shift = p["shift"]
+    if shift:
+        out.append(f"  timing: the estimate fits the path best {shift['best_s']:+.2f} s late (median error "
+                   f"{shift['median_error_m']:.2f} m against {shift['unshifted_median_error_m']:.2f} m unshifted); "
+                   "late: the estimate lags, or the walk times were noted early")
+    if p["estimators"]:
+        out.append("  heatmap estimator: " + ", ".join(f"{name} ({count} frames)"
+                                                       for name, count in p["estimators"].items()))
+    rows = []
+    for walk in p["per_walk"]:
+        errors = walk["estimate"]
+        stats = errors["error_m"] or {}
+        first = walk["first_track_s"]
+        rows.append([str(walk["index"]), walk["walk"], f"{_secs(walk['start_s'])}-{_secs(walk['end_s'])}",
+                     f"{walk['length_m']:.1f}", str(walk["frames"]), _num(stats.get("median"), 2),
+                     _num(stats.get("p90"), 2), _pct(errors["within"]["1.0"]), _pct(walk["track"]),
+                     "-" if first is None else f"{first:.2f} s"])
+    out += ["  per walk (estimate):"]
+    out += _table(["#", "walk", "start-end s", "m", "frames", "median m", "p90 m", "within 1.0 m", "track",
+                   "first track"], rows, indent="    ")
+    zones = p["zones"]
+    if zones:
+        out += ["", "zones: the zone the person was in (rows) against the zone of the estimate (outside: in no zone; "
+                    "none: no estimate)"]
+        out += _table(["true \\ estimated", *zones["columns"], "correct"],
+                      [[true, *(str(row[column]) for column in zones["columns"]), _pct(zones["per_zone"][true])]
+                       for true, row in zones["matrix"].items()])
+        out.append(f"  correct zone: {_share(zones['correct'])} of the walk frames, "
+                   f"{_share(zones['correct_when_estimated'])} of those with an estimate")
+    return out
+
+
 def format_summary(result: dict) -> str:
     """The readable report of an ``evaluate`` result."""
     log, subjects, out = result["log"], result["subjects"], []
@@ -882,7 +1413,10 @@ def format_summary(result: dict) -> str:
         out.append("  " + "; ".join(meta))
     labels, settings = result["labels"], result["settings"]
     base = "host times" if result["time_base"] == "absolute" else "seconds from the first frame"
-    out.append(f"labels: {labels.get('path', '-')} ({base})")
+    if settings.get("labels_from_path"):
+        out.append(f"labels: none; the walks of the path are the {settings['labels_from_path']} labels ({base})")
+    else:
+        out.append(f"labels: {labels.get('path', '-')} ({base})")
     out.append(f"  {labels[MOTION_KIND]} motion episode(s) (labels {', '.join(settings['motion_labels'])}), "
                f"{labels[EMPTY_KIND]} empty (labels {', '.join(settings['empty_labels'])}), "
                f"{labels[OTHER_KIND]} other")
@@ -947,6 +1481,9 @@ def format_summary(result: dict) -> str:
         out.append(f"  hottest cell in the zone: {_share(loc['in_zone'])} of all frames, "
                    f"{_share(loc['in_zone_when_hot'])} of the hot frames")
         out.append(f"  median distance from the hottest cell to the zone: {_num(loc['median_distance_m'], 2)} m")
+
+    if result.get("path"):
+        out += _path_lines(result["path"])
 
     for curve in result["scaling"]:
         out += ["", f"scaling, k={curve['k']}: room MOTION when at least k of the chosen links are in MOTION (k capped "
@@ -1023,15 +1560,29 @@ def _heat(text: str) -> float:
     return value
 
 
+def _named_zone(text: str) -> tuple[str, Rect]:
+    try:
+        return parse_named_zone(text)
+    except ValueError as e:
+        raise argparse.ArgumentTypeError(str(e)) from None
+
+
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--log", type=Path, required=True, metavar="run.jsonl",
                     help="a run written with scripts/dashboard.py --log")
-    ap.add_argument("--labels", type=Path, required=True, metavar="labels.csv",
-                    help="CSV rows of start_s,end_s,label[,zone]")
+    ap.add_argument("--labels", type=Path, metavar="labels.csv",
+                    help="CSV rows of start_s,end_s,label[,zone]; optional with --path, whose walks are then the "
+                         "walking labels")
+    ap.add_argument("--path", type=Path, metavar="walk.csv",
+                    help="CSV of waypoints t_s,x,y (and optionally walk): score the position estimate along the walks")
+    ap.add_argument("--zone", type=_named_zone, action="append", metavar="NAME=x0,y0,x1,y1",
+                    help="with --path: a named zone of the zone table (repeat for each zone; where zones overlap, the "
+                         "first one given wins)")
     ap.add_argument("--out", type=Path, metavar="result.json", help="also write the full result to this JSON file")
     ap.add_argument("--absolute", action="store_true",
-                    help="label times are host times (Unix seconds or ISO 8601), not seconds from the first frame")
+                    help="label and path times are host times (Unix seconds or ISO 8601), not seconds from the "
+                         "first frame")
     ap.add_argument("--motion-labels", type=_names, default=DEFAULT_MOTION_LABELS, metavar="A,B",
                     help=f"labels scored for detection (default {','.join(DEFAULT_MOTION_LABELS)})")
     ap.add_argument("--empty-labels", type=_names, default=DEFAULT_EMPTY_LABELS, metavar="A,B",
@@ -1050,17 +1601,26 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Optional[list[str]] = None) -> int:
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if args.labels is None and args.path is None:
+        parser.error("give --labels, --path or both")
+    if args.zone and args.path is None:
+        parser.error("--zone needs --path: the true zone comes from the walked path")
     try:
         log = read_log(args.log)
-        labels = read_labels(args.labels, absolute=args.absolute)
+        labels = read_labels(args.labels, absolute=args.absolute) if args.labels is not None else None
+        walks = read_path(args.path, absolute=args.absolute) if args.path is not None else None
         result = evaluate(log, labels, absolute=args.absolute, motion_labels=args.motion_labels,
                           empty_labels=args.empty_labels, ks=args.k, max_subsets=args.max_subsets, seed=args.seed,
-                          min_heat=args.min_heat)
+                          min_heat=args.min_heat, path=walks, zones=args.zone or ())
     except EvalError as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
-    result["labels"]["path"] = str(args.labels)
+    if args.labels is not None:
+        result["labels"]["path"] = str(args.labels)
+    if result["path"] is not None:
+        result["path"]["file"] = str(args.path)
     if args.out is not None:
         try:
             args.out.write_text(json.dumps(result, indent=2, allow_nan=False) + "\n", encoding="utf-8")
