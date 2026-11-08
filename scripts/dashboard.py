@@ -4,6 +4,7 @@
     dashboard.py --simulate-room                                   # a simulated person walks the room, no hardware
     dashboard.py --simulate-room --http-port 8000 --host 0.0.0.0   # reachable from the network (opt-in)
     dashboard.py --port rx1=/dev/cu.usbmodem2101 --port rx2=/dev/cu.usbmodem101   # fixed: links UNCALIBRATED until set
+    dashboard.py --auto-ports                                      # each receiver's port found by its serial (scripts/ports.py)
     dashboard.py --port rx1=/dev/cu.usbmodem2101 --thresholds data/links_cal1_m1.json   # fixed thresholds
     dashboard.py --port ... --auto-threshold                       # experimental auto mode, no calibration needed
     dashboard.py --simulate-room --log run.jsonl                   # also append the state stream to a file
@@ -15,13 +16,14 @@ Binds to 127.0.0.1 unless --host says otherwise. Mode: links are fixed by defaul
 simulated empty-room calibration with --simulate-room; without either, links show UNCALIBRATED until calibrated
 or set). --auto-threshold switches live sources to auto mode (experimental: each link learns its own baseline,
 see csi/adaptive.py) and ignores any thresholds file. A Set on a link makes it fixed.
-Ctrl+C stops the server and releases every port.
+Ctrl+C (or SIGTERM) stops the server and releases every port.
 A replay needs no serial port; when it has finished, the final state stays up (status.finished is true).
 """
 from __future__ import annotations
 
 import argparse
 import math
+import signal
 import sys
 import time
 from pathlib import Path
@@ -33,6 +35,7 @@ from csi.common import margin_arg  # noqa: E402
 from csi.detect import DEFAULT_MARGIN  # noqa: E402
 from csi.links import load_thresholds  # noqa: E402
 from csi.multisource import parse_port_specs  # noqa: E402
+from csi.ports import PortResolutionError, resolve_receiver_ports  # noqa: E402
 from csi.parser import Stream, serial_stream  # noqa: E402
 from csi.replay import ReplayError, ReplayServer, load_log, session_dashboard  # noqa: E402
 from csi.room import DEFAULT_ROOM_PATH, Room, load_room  # noqa: E402
@@ -74,6 +77,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="a simulated person walks a loop through the room in real time (no hardware)")
     g.add_argument("--port", action="append", metavar="[NAME=]PATH",
                    help="serial port of a csi_recv node; repeat for each receiver. Unnamed ports get rx1, rx2...")
+    g.add_argument("--auto-ports", action="store_true",
+                   help="find each enabled receiver's port by its USB serial (config/room.json \"serial\"); fails "
+                        "naming any receiver whose board is not connected. Same as --port for the rest")
     g.add_argument("--baud", type=int, default=921600)
     g.add_argument("--seed", type=int, default=0, help="simulator seed")
     g.add_argument("--sim-quiet-first", type=quiet_seconds, default=0.0, metavar="SECONDS",
@@ -118,13 +124,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 def check_source(args: argparse.Namespace) -> None:
     chosen = [flag for flag, on in (("--simulate-room", args.simulate_room), ("--port", bool(args.port)),
+                                    ("--auto-ports", args.auto_ports),
                                     ("--replay", args.replay is not None),
                                     ("--replay-session", args.replay_session is not None)) if on]
     if len(chosen) > 1:
         raise SystemExit(f"error: use one source, not {' and '.join(chosen)}")
     if not chosen:
         raise SystemExit("error: pass a source: --simulate-room, --port [NAME=]PATH (repeat for each receiver), "
-                         "--replay run.jsonl or --replay-session DIR")
+                         "--auto-ports, --replay run.jsonl or --replay-session DIR")
     replaying = args.replay is not None or args.replay_session is not None
     if args.speed is not None and not replaying:
         raise SystemExit("error: --speed applies to --replay and --replay-session only")
@@ -138,6 +145,21 @@ def check_source(args: argparse.Namespace) -> None:
         raise SystemExit("error: --thresholds does not apply to --replay: a log already holds its states")
     if args.auto_threshold and replaying:
         raise SystemExit("error: --auto-threshold applies to live sources (--port, --simulate-room) only")
+
+
+def resolve_auto_ports(room: Room) -> list[str]:
+    """--auto-ports: ``NAME=PATH`` for each enabled receiver, its port found by serial. Raises SystemExit if any is missing."""
+    from serial.tools import list_ports  # lazy, as serial_stream: --simulate-room needs no pyserial port
+
+    try:
+        ports = resolve_receiver_ports(room, list_ports.comports())
+    except PortResolutionError as e:
+        raise SystemExit(f"error: {e}")
+    return [f"{name}={path}" for name, path in ports.items()]
+
+
+def _stop_on_sigterm(signum, frame) -> None:
+    raise KeyboardInterrupt  # SIGTERM stops the server exactly as Ctrl+C does
 
 
 def load_link_thresholds(path: Optional[Path]) -> Optional[Mapping[str, float]]:
@@ -206,11 +228,14 @@ def build_server(args: argparse.Namespace) -> FrameServer:
 def main(argv: Optional[list[str]] = None) -> int:
     args = build_parser().parse_args(argv)
     check_source(args)
+    if args.auto_ports:
+        args.port = resolve_auto_ports(load_room(args.room))
     try:
         server = build_server(args)
         server.start()
     except (ReplayError, OSError) as e:
         raise SystemExit(f"error: {e}")
+    previous_sigterm = signal.signal(signal.SIGTERM, _stop_on_sigterm)
     print(f"dashboard at {server.url}  (listening on {server.address[0]})  Ctrl+C to stop", flush=True)
     if not controls_allowed(args.host, args.allow_control) and not args.replay and not args.replay_session:
         print("commands disabled: not bound to localhost (calibrate and tuning need --allow-control)", flush=True)
@@ -230,6 +255,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     except KeyboardInterrupt:
         pass
     finally:
+        signal.signal(signal.SIGTERM, previous_sigterm)
         server.stop()
     print("stopped", flush=True)
     return 0
