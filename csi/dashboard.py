@@ -54,7 +54,7 @@ class DashboardState:
         self._last_host = pkt.host_ts
         if self._heat.due(pkt.host_ts):
             self._heat.advance(pkt.host_ts, self._monitor.snapshot(pkt.host_ts))
-            self._track.update(pkt.host_ts, self._heat.values)
+            self._track.update(pkt.host_ts, self._heat.target)  # unsmoothed: no double smoothing
 
     @property
     def thresholds(self) -> dict[str, float]:
@@ -94,7 +94,7 @@ class DashboardState:
             now = self._last_host if self._last_host is not None else time.time()
         rows = self._monitor.snapshot(now)
         self._heat.advance(now, rows)
-        self._track.update(now, self._heat.values)
+        self._track.update(now, self._heat.target)
         links = [self._link_payload(row) for row in rows]
         return {
             "room": {"width_m": self._room.width_m, "depth_m": self._room.depth_m},

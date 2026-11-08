@@ -6,7 +6,12 @@ state (x, y, vx, vy) smooths those into one dot that moves continuously and coas
 Velocity decays towards zero with ``velocity_tau_s`` (people in a small room turn often), and the
 track is dropped after ``lost_s`` without a measurement. Measurement noise is fixed, not scaled by heat:
 on the rig the heat peaks low (median about 0.2), and heat-scaled noise left the dot trailing 0.26 m
-behind a walking person and taking 1.3 s to catch up after a jump; fixed 0.25 m trails 0.05 m, 0.5 s.
+behind a walking person and taking 1.3 s to catch up after a jump.
+
+The tracker reads the heatmap before its time smoothing (Heatmap.target): the filter smooths, so smoothing
+twice only added lag. On the simulator's demo walk the dot lagged the person by about 1.2 s with the first
+settings (sigma 0.25 m, accel 1.5, velocity tau 1.5 s), of which 0.65 s is the motion score itself; the
+current settings lag about 0.5 s with the same error and the same jitter (0.100 m per 0.2 s, the walk's own).
 
 Updates are rate-limited to one per ``min_step_s`` of host time, so the result does not depend on how
 often the page polls.
@@ -30,9 +35,9 @@ import numpy as np
 
 MIN_HEAT = 0.1          # hottest cell below this: no measurement
 HOT_FRACTION = 0.45     # cells at or above this share of the hottest cell make up the blob
-MEAS_SIGMA_M = 0.25     # measurement noise, metres
-ACCEL_SIGMA = 1.5       # walking: white acceleration noise, m/s^2
-VELOCITY_TAU_S = 1.5    # velocity decays with this time constant
+MEAS_SIGMA_M = 0.15     # measurement noise, metres
+ACCEL_SIGMA = 4.0       # white acceleration noise, m/s^2 (lets the dot turn with the person)
+VELOCITY_TAU_S = 0.5    # velocity decays with this time constant
 LOST_S = 3.0            # no measurement for this long: drop the track
 MIN_STEP_S = 0.1        # at most one update per this much host time
 MAX_SPEED_MPS = 2.0     # clamp, so a coasting dot never shoots off

@@ -28,6 +28,7 @@ Public API:
     Heatmap(room, ...)                              per-link falloff maps, baselines, smoothing
         .advance(now, rows)   step the grid to host time ``now`` from link rows (LinkMonitor snapshot)
         .values               current grid, flat row-major, 0..1
+        .target               the last advance's grid before time smoothing (what the tracker reads)
         .contributing         link labels that currently put heat on the grid
         .evidence             {label: 0..1} per link, from the last advance
         .baselines            {label: quiet baseline or None while in warm-up}
@@ -135,6 +136,7 @@ class Heatmap:
             for label in self._falloff}
         self._fed_until: dict[str, float] = {}
         self.values = np.zeros(cols * rows)
+        self.target = np.zeros(cols * rows)  # unsmoothed: the Kalman tracker does its own smoothing
         self._last_t: Optional[float] = None
         self.contributing: list[str] = []
         self.evidence: dict[str, float] = {}
@@ -193,6 +195,7 @@ class Heatmap:
             parts.append(self._weights.get(label, 1.0) * evidence * self._falloff[label])
         target = self._combine(parts)
         target = 1.0 - np.exp(-self.sensitivity * target)
+        self.target = target
         if self._last_t is None or now > self._last_t:
             dt = 0.0 if self._last_t is None else now - self._last_t
             self._smooth(target, dt)
