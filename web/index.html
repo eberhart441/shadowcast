@@ -215,7 +215,7 @@
   <section class="card" id="map-card">
     <h2>Room</h2>
     <canvas id="map" role="img" aria-label="Room map: heatmap of likely motion, with the room's links and nodes"></canvas>
-    <p class="caption" id="map-caption">Rough motion-likelihood estimate from 4 links, not a position track.</p>
+    <p class="caption" id="map-caption">Rough motion-likelihood estimate from 4 links (back-projection).</p>
     <p class="busy-note" id="busy-note" role="status" hidden></p>
     <p class="track-note" id="track-note" hidden></p>
     <label class="track-toggle"><input type="checkbox" id="track-show" checked> Show the person track</label>
@@ -396,8 +396,7 @@
     recordHistory(p);
     latest = p;
     // the count follows the payload, so a room with more links reads right
-    els.caption.textContent = "Rough motion-likelihood estimate from " + p.links.length +
-      " links, not a position track.";
+    els.caption.textContent = mapCaption(p);
     // A finished run must not reconnect: the server would replay the run from its log.
     if (p.status.finished) {
       finished = true;
@@ -517,6 +516,15 @@
     return tr;
   }
   // ---- track: pure (tested with node) end
+
+  // The caption under the map: how many links drew it and with which estimator (heatmap.estimator: "rti" or
+  // "backprojection", csi/heatmap.py). A log written before the RTI estimator has none and names no estimator.
+  function mapCaption(p) {
+    var est = p.heatmap ? p.heatmap.estimator : null;
+    var name = est === "rti" ? "RTI" : est === "backprojection" ? "back-projection" : null;
+    return "Rough motion-likelihood estimate from " + p.links.length + " links" + (name ? " (" + name + ")" : "") +
+      ".";
+  }
 
   // room x, y in metres -> css px; the frame b sets the scale and the offset, the room sits inside it
   function sizeMap(room, b) {

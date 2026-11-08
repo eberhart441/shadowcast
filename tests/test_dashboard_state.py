@@ -285,3 +285,22 @@ def test_links_and_the_room_report_seconds_since_their_last_motion():
     since = links_by_id(after)[RIGHT]["since_motion_s"]
     assert 5.0 < since <= 10.0              # its MOTION ended a second or two after the person left
     assert after["status"]["room"]["since_motion_s"] == since
+
+
+def test_heatmap_payload_names_the_estimator_that_drew_the_frame():
+    """heatmap.estimator (added with csi/rti.py) is the estimator of the frame and status.parameters.estimator the
+    configured one: the four-link rig under the default auto draws with the back-projection, and a forced RTI says so
+    in both places while the image keeps its format."""
+    auto = run(quiet_then(stand_near_wall(ROOM, "right"), 4)).snapshot()
+    assert auto["heatmap"]["estimator"] == "backprojection"
+    assert auto["status"]["parameters"]["estimator"] == "auto"
+
+    state = DashboardState(ROOM, calibrated_thresholds(), estimator="rti")
+    feed(state, quiet_then(stand_near_wall(ROOM, "right"), 4))
+    forced = state.snapshot()
+    heat = forced["heatmap"]
+    assert heat["estimator"] == "rti"
+    assert forced["status"]["parameters"]["estimator"] == "rti"
+    assert len(heat["cells"]) == heat["cols"] * heat["rows"]
+    assert all(0.0 <= v <= 1.0 for v in heat["cells"]) and heat["max"] == max(heat["cells"])
+    json.dumps(forced, allow_nan=False)

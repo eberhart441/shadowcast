@@ -22,7 +22,10 @@ from csi.server import DashboardServer
 from csi.simulate import simulate_room
 
 PAGE = Path(__file__).resolve().parents[1] / "web" / "index.html"
-CAPTION = "Rough motion-likelihood estimate from 4 links, not a position track."
+# Updated in the impl2 integration: the page now draws the one-person track (csi/tracker.py) over the map, so the
+# caption no longer says "not a position track"; it names the estimator that drew the heatmap instead (the
+# four-link rig's default under --estimator auto is the back-projection).
+CAPTION = "Rough motion-likelihood estimate from 4 links (back-projection)."
 ROOM = load_room()
 
 
@@ -450,3 +453,30 @@ def test_page_draws_a_track_a_coasting_track_and_a_last_seen_marker_and_still_re
     assert any(t.startswith("Person track coasting near (1.20, 0.80) m") for t in texts)
     assert any(t.startswith("Last seen 12 s ago at (1.20, 0.80) m") for t in texts)
     assert result["trackHidden"] == [False, False, False, True, True]
+
+
+# ---------------------------------------------------------------- the estimator in the caption (heatmap.estimator)
+
+def test_page_caption_names_the_heatmap_estimator_from_the_payload():
+    html = PAGE.read_text(encoding="utf-8")
+    assert "els.caption.textContent = mapCaption(p)" in html     # the caption follows each payload
+    assert "p.heatmap.estimator" in html
+    assert '"RTI"' in html and '"back-projection"' in html
+
+
+@pytest.mark.slow
+@needs_node
+def test_page_caption_says_which_estimator_drew_the_map_and_names_none_for_an_old_log(tmp_path):
+    base = DashboardState(load_room(FIVE)).snapshot(now=NOW)
+    assert base["heatmap"]["estimator"] == "backprojection"   # six links but none reporting yet: auto draws BP
+    rti = copy.deepcopy(base)
+    rti["heatmap"]["estimator"] = "rti"
+    old = copy.deepcopy(base)
+    del old["heatmap"]["estimator"]                           # a log written before the RTI estimator
+    result = render_payloads_with_stub(tmp_path, [base, rti, old])
+    assert result["errors"] == []
+    n = len(base["links"])
+    captions = [t for t in result["texts"] if t.startswith("Rough motion-likelihood estimate")]
+    assert captions == [f"Rough motion-likelihood estimate from {n} links (back-projection).",
+                        f"Rough motion-likelihood estimate from {n} links (RTI).",
+                        f"Rough motion-likelihood estimate from {n} links."]
