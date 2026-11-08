@@ -21,7 +21,7 @@ Today it runs on four boards in one room. The math doesn't care how many boards 
 As a person walks a loop through the room, the heat follows them, and each link flips between
 <b>Motion</b> (thick) and <b>Empty</b> (thin) as they cross it.</sub>
 
-<br><br>
+<br>
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/stats-dark.svg">
