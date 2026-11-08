@@ -15,7 +15,7 @@ What that means for any decision you make:
 
 ## Where things stand (2026-11-07)
 
-- All of issues #1-#15 (detection, calibration, dashboard, recording, replay, controls) are implemented, merged and closed. There are no open issues.
+- All of issues #1-#15 (detection, calibration, dashboard, recording, replay, controls) are implemented, merged and closed. Issues #16, #17 and #19-#21 (TDMA and multi-channel) are open.
 - `main` and `csi-sensing` are identical. `csi-sensing` is the working branch; work reaches `main` through a pull request (see the brief, "Landing on main").
 - **The rig:** four ESP32-C5 boards at 40 Hz on channel 6. Two receivers on USB (top left `rx2`, top right `rx1`), two senders off USB (bottom right `tx0` with `SENDER_ID` 0x00, bottom left `tx1` with 0x01). A third receiver `rx3` is defined and disabled in `config/room.json`. Thresholds live in the newest `data/links_cal*.json`; `data/` is gitignored.
 - **A known weak link:** `rx1<-01` (bottom-left sender to top-right receiver, the long diagonal) dropped to about 10 packets/s with RSSI -57 during the last calibration, so its threshold may be unreliable. Check packet rate and drops on its card before trusting it.
@@ -89,7 +89,7 @@ Where to start, by task:
 
 ## Doing the common things
 
-- **Check your work:** `scripts/check.sh` (ruff and the fast tests) before committing; `scripts/check.sh --full` before a merge. The full suite (437 tests when this was written) takes under a minute on a quiet machine. CI runs it once per commit on a pull request.
+- **Check your work:** `scripts/check.sh` (ruff and the fast tests) before committing; `scripts/check.sh --full` before a merge. The full suite (439 tests on 2026-11-08) takes under a minute on a quiet machine. CI runs it once per commit on a pull request.
 - **Run the dashboard with no hardware:** `python scripts/dashboard.py --simulate-room`.
 - **Run it on the rig:** `python scripts/dashboard.py --auto-ports`, then calibrate (`scripts/calibrate.py`, or the page's Calibrate button).
 - **Flash a board:** `scripts/flash.sh --dry-run ...` first; it checks the port's chip before writing and refuses a receiver while a dashboard answers on :8000.
@@ -98,9 +98,22 @@ Where to start, by task:
 
 ## Doc drift to know about
 
-- `GLOSSARY.md` and `docs/adr/` do not exist, although `CLAUDE.md` and `docs/agents/domain.md` mention them. The glossary and decisions above stand in for them until someone writes them.
-- The README's hardware table and the line about the "final rig" say `tx0` is an S3. It is now a C5; `config/room.json` is the source of truth.
-- The README roadmap says nothing is started and lists "Speed up the test suite", which is done (`scripts/check.sh`, markers, CI).
-- `config/room_c5_only.json` and some test fixtures still carry `port_hint`, which nothing reads.
-- The README's "Flashing the firmware" section still tells you to clone `esp-csi` and build there; the firmware lives in `firmware/` now.
-- `config/room.json` gives `rx1<-01` a heatmap weight of 0.3. The README says it was set when `rx1` was an ESP32-S3; `rx1` is a C5 now, so the weight may no longer be warranted. Nobody has measured that.
+Fixed on 2026-11-08 (`docs/presentation-polish`): `GLOSSARY.md` and `docs/adr/` now exist; the README is a
+short front page, and the operator detail moved to `docs/hardware.md` and `docs/operations.md`, which show
+`tx0` as a C5, build from `firmware/` with `scripts/flash.sh`, and document `scripts/calibrate.py` and
+`scripts/ports.py`. The math is in `docs/theory.md` and the engineering tour in `docs/architecture.md`.
+
+Still open:
+
+- `config/room_c5_only.json` and some test fixtures still carry `port_hint`, which nothing reads. The
+  fixtures `room_5node.json` and `room_star.json` still list some nodes as ESP32-S3.
+- `config/room.json` gives `rx1<-01` a heatmap weight of 0.3. It was set when `rx1` was an ESP32-S3; `rx1`
+  is a C5 now, so the weight may no longer be warranted. Nobody has measured that.
+- The `--margin` help text in `csi/common.py` says 1.25 "is the 99th percentile itself"; a margin of 1.0 is
+  the plain p99. The `QuietBaseline` docstring in `csi/heatmap.py` says "low percentile" but defaults to the
+  median. `csi/parser.py` hard-codes the C5 nulls (57-59) and otherwise ORs the first 20 packets, which the
+  older README described as "locked from the first valid packet".
+- `requirements.txt` lists `scipy` and `scikit-learn`, which nothing imports.
+- `web/ui-overhaul/index.html` requests `GET /api/floorplan`, which the server does not implement (the
+  page falls back to the plain room).
+- 33 tests need bash or POSIX signals and fail on native Windows; CI runs on Ubuntu.

@@ -2,7 +2,7 @@
 
 ESP32 firmware for the CSI rig: `csi_send` transmits packets, `csi_recv` measures channel state information (CSI) on them and streams it over USB serial to `scripts/dashboard.py`. Both are Espressif's stock `esp-csi` get-started examples with a few edits, vendored here so the repo is self-contained. Upstream: https://github.com/espressif/esp-csi at commit `8633d67`.
 
-Which board is which (chip, position, sender address, port hint) is in `config/room.json`. Read it there.
+Which board is which (chip, position, sender address, board serial) is in `config/room.json`. Read it there.
 
 ## Our edits to the stock examples
 
