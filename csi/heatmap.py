@@ -40,9 +40,30 @@ they do not paint a starburst across the map.
 Known limit: a person who stands still leaves their links EMPTY, so they are absorbed into the baseline
 within about half the window (about 30 s) and fade. The map shows change in the room, not standing presence.
 
+Estimators (``estimator``): "backprojection" is the coverage-normalised field above. "rti" is regularised
+radio tomographic imaging (csi/rti.py): ellipse link weights, a Tikhonov/MAP inverse with an exponential spatial
+prior, precomputed per set of reporting links. It explains all links at once, so two raised links that cross
+put the image at the crossing, quiet links that pass a cell hold it down, and a common rise on every link does
+not pile up at the nodes. "auto" (the default) uses RTI while at least ``rti_min_links`` (6) links that reach the
+grid can report, else the back-projection: a handful of links cannot localise by inversion. ``estimator_used``
+says which one drew the last frame. Both go through the same soft saturation and smoothing. In both a vetoed
+link keeps ``busy_link_weight`` of its weight: in the back-projection its footprint is scaled, in RTI its evidence
+and its confidence (the inverse of its noise variance in the fit) are.
+
+Robust evidence (``evidence``): "ratio" is the log-ratio rule above. "robust_z" standardises each link against
+its own quiet baseline: ``z = (ln s - median ln s) / (1.4826 * MAD ln s)`` over the same quiet-only window, with
+the MAD floored at ``mad_floor`` (0.05, about a 5 % ripple, so a flat baseline does not make every flicker
+infinite), mapped to 0..1 as ``(z - z_floor) / (z_full - z_floor)``. z_floor 2 is where a quiet link's
+heavy-tailed score still exceeds its median by chance a few percent of the time; z_full 6 (the low end of 6-8) lets
+a weak through-wall link that rises six of its own noise widths count as fully as a strong link; z = 4, where
+round-2 measured about 1 % false alarms per link window, gives 0.5, the near-node veto's level. "auto" (the
+default) uses robust_z with RTI and the ratio rule with the back-projection, so the four-link rig is unchanged.
+
 Public API:
     link_evidence(score, baseline, r_floor, r_full) -> float in 0..1
-    QuietBaseline(window_s, percentile, warmup_s)   rolling percentile of a link's quiet score
+    robust_z(score, median_ln, mad_ln, mad_floor)   -> standardised log score, None without a baseline
+    robust_link_evidence(score, median_ln, mad_ln, z_floor, z_full, mad_floor) -> float in 0..1
+    QuietBaseline(window_s, percentile, warmup_s)   rolling percentile (and log median/MAD) of a link's quiet score
     cell_centres(cols, rows, width_m, depth_m)      -> (cols*rows, 2) row-major
     segment_falloff(centres, a, b, sigma_m)         -> (cols*rows,) in 0..1
     Heatmap(room, ...)                              per-link footprints, baselines, veto, smoothing
@@ -52,6 +73,8 @@ Public API:
         .evidence             {label: 0..1} per link, from the last advance
         .baselines            {label: quiet baseline or None while in warm-up}
         .busy_nodes           names of the nodes the near-node veto holds now
+        .estimator            the configured estimator: "auto", "backprojection" or "rti"
+        .estimator_used       "backprojection" or "rti": the estimator of the last frame
 """
 from __future__ import annotations
 
@@ -61,6 +84,7 @@ from typing import Mapping, Optional, Sequence
 
 import numpy as np
 
+from . import rti
 from .links import LinkId
 from .room import Room, point_segment_distance
 
@@ -89,6 +113,13 @@ BUSY_HOLD_S = 1.0         # a node stays busy this long after the rule last held
 CONTRIBUTING_STATES = frozenset({"EMPTY", "MOTION"})
 BASELINE_STATES = frozenset({"EMPTY"})   # the baseline learns from quiet only, up to BASELINE_FREEZE_S
 LIVE_PARAMS = frozenset({"sensitivity", "rise_tau", "decay_tau", "falloff_m"})  # changeable while running
+ESTIMATORS = ("auto", "backprojection", "rti")
+EVIDENCE_MODES = ("auto", "ratio", "robust_z")
+RTI_MIN_LINKS = 6         # auto: RTI from this many reporting links that reach the grid, else back-projection
+Z_FLOOR = 2.0             # robust_z evidence: zero at or below this z (dead zone)
+Z_FULL = 6.0              # ... and full (1) at this z
+MAD_FLOOR = 0.05          # ... floor of the MAD of ln(score), so a flat quiet baseline does not blow z up
+MAD_SCALE = 1.4826        # MAD -> standard deviation for Gaussian data
 _TINY = 1e-9
 
 
@@ -103,6 +134,27 @@ def link_evidence(score: Optional[float], baseline: Optional[float], r_floor: fl
         return 0.0
     x = math.log(score / baseline / r_floor) / math.log(r_full / r_floor)
     return min(1.0, max(0.0, x))
+
+
+def robust_z(score: Optional[float], median_ln: Optional[float], mad_ln: Optional[float],
+             mad_floor: float = MAD_FLOOR) -> Optional[float]:
+    """``(ln score - median_ln) / (1.4826 * max(mad_ln, mad_floor))``; None without a score or a baseline."""
+    if score is None or median_ln is None or mad_ln is None or score <= 0:
+        return None
+    return (math.log(score) - median_ln) / (MAD_SCALE * max(mad_ln, mad_floor, _TINY))
+
+
+def robust_link_evidence(score: Optional[float], median_ln: Optional[float], mad_ln: Optional[float],
+                         z_floor: float = Z_FLOOR, z_full: float = Z_FULL, mad_floor: float = MAD_FLOOR) -> float:
+    """Evidence in 0..1 from the robust z of a link's score against its quiet log median and MAD.
+
+    Zero at or below ``z_floor``, one at ``z_full``, linear between. Zero when there is no score or no
+    baseline yet.
+    """
+    z = robust_z(score, median_ln, mad_ln, mad_floor)
+    if z is None:
+        return 0.0
+    return min(1.0, max(0.0, (z - z_floor) / max(z_full - z_floor, _TINY)))
 
 
 class QuietBaseline:
@@ -125,9 +177,22 @@ class QuietBaseline:
 
     def value(self) -> Optional[float]:
         """The baseline, or None until the window holds ``warmup_s`` of history."""
-        if not self._samples or self._samples[-1][0] - self._samples[0][0] < self._warmup_s:
+        if not self._warm():
             return None
         return float(np.percentile([s for _, s in self._samples], self._percentile))
+
+    def log_stats(self) -> Optional[tuple[float, float]]:
+        """(median, MAD) of ln(score) over the same window, or None in warm-up or without a positive score."""
+        if not self._warm():
+            return None
+        logs = np.log([s for _, s in self._samples if s > 0])
+        if not len(logs):
+            return None
+        median = float(np.median(logs))
+        return median, float(np.median(np.abs(logs - median)))
+
+    def _warm(self) -> bool:
+        return bool(self._samples) and self._samples[-1][0] - self._samples[0][0] >= self._warmup_s
 
 
 def cell_centres(cols: int, rows: int, width_m: float, depth_m: float) -> np.ndarray:
@@ -157,7 +222,22 @@ class Heatmap:
                  baseline_freeze_s: float = BASELINE_FREEZE_S,
                  rise_tau_s: float = RISE_TAU_S, decay_tau_s: float = DECAY_TAU_S,
                  step_s: float = STEP_S, busy_evidence: float = BUSY_EVIDENCE,
-                 busy_link_weight: float = BUSY_LINK_WEIGHT, busy_hold_s: float = BUSY_HOLD_S) -> None:
+                 busy_link_weight: float = BUSY_LINK_WEIGHT, busy_hold_s: float = BUSY_HOLD_S,
+                 estimator: str = "auto", evidence: str = "auto", rti_min_links: int = RTI_MIN_LINKS,
+                 z_floor: float = Z_FLOOR, z_full: float = Z_FULL, mad_floor: float = MAD_FLOOR,
+                 rti_excess_m: float = rti.EXCESS_M, rti_delta_m: float = rti.PRIOR_DELTA_M,
+                 rti_alpha: float = rti.ALPHA) -> None:
+        if estimator not in ESTIMATORS:
+            raise ValueError(f"unknown estimator {estimator!r}; expected one of {', '.join(ESTIMATORS)}")
+        if evidence not in EVIDENCE_MODES:
+            raise ValueError(f"unknown evidence {evidence!r}; expected one of {', '.join(EVIDENCE_MODES)}")
+        if not z_full > z_floor:
+            raise ValueError(f"z_full ({z_full!r}) must be above z_floor ({z_floor!r})")
+        self.estimator, self.evidence_mode, self.rti_min_links = estimator, evidence, rti_min_links
+        self.z_floor, self.z_full, self.mad_floor = z_floor, z_full, mad_floor
+        self.rti_excess_m, self.rti_delta_m, self.rti_alpha = rti_excess_m, rti_delta_m, rti_alpha
+        self.estimator_used = "rti" if estimator == "rti" else "backprojection"
+        self._rti: Optional[rti.RTIProjector] = None   # built on first use
         self.cols, self.rows = cols, rows
         self.falloff_m, self.sensitivity, self.agreement = falloff_m, sensitivity, agreement
         self.coverage_eps, self.min_coverage = coverage_eps, min_coverage
@@ -229,7 +309,7 @@ class Heatmap:
         self.contributing = []
         self.evidence = {}
         self.baselines = {}
-        live: dict[str, float] = {}   # evidence of the links that can report now
+        scores: dict[str, float] = {}   # score of the links that can report now
         for row in rows:
             label = row["id"]
             if label not in self._falloff:
@@ -238,13 +318,24 @@ class Heatmap:
             self.baselines[label] = baseline
             if row["state"] not in CONTRIBUTING_STATES or row["score"] is None or baseline is None:
                 continue
-            evidence = link_evidence(row["score"], baseline, self.r_floor, self.r_full)
+            scores[label] = row["score"]
+        self.estimator_used = self._choose_estimator(scores)
+        robust = self.evidence_mode == "robust_z" or (self.evidence_mode == "auto" and self.estimator_used == "rti")
+        live: dict[str, float] = {}   # evidence of the links that can report now
+        for label, score in scores.items():
+            if robust:
+                stats = self._baselines[label].log_stats()
+                median_ln, mad_ln = stats if stats is not None else (None, None)
+                evidence = robust_link_evidence(score, median_ln, mad_ln, self.z_floor, self.z_full, self.mad_floor)
+            else:
+                evidence = link_evidence(score, self.baselines[label], self.r_floor, self.r_full)
             self.evidence[label] = evidence
             live[label] = evidence
             if evidence > 0:
                 self.contributing.append(label)
         self.busy_nodes = self._update_busy(now, live)
-        target = 1.0 - np.exp(-self.sensitivity * self._combine(live))
+        field = self._rti_field(live) if self.estimator_used == "rti" else self._combine(live)
+        target = 1.0 - np.exp(-self.sensitivity * field)
         if self._last_t is None or now > self._last_t:
             dt = 0.0 if self._last_t is None else now - self._last_t
             self._smooth(target, dt)
@@ -279,6 +370,42 @@ class Heatmap:
         if self.min_coverage > 0:
             field = field * np.clip(coverage / self.min_coverage - 1.0, 0.0, 1.0)
         return field
+
+    def projector(self) -> rti.RTIProjector:
+        """The RTI weights and projections for the room's links over this grid (built on first use)."""
+        if self._rti is None:
+            segments = {LinkId(rx.name, tx.mac).label: ((rx.x, rx.y), (tx.x, tx.y)) for rx, tx in self._room.links()}
+            cell_area = (self._room.width_m / self.cols) * (self._room.depth_m / self.rows)
+            self._rti = rti.RTIProjector(self._centres, segments, cell_area, excess_m=self.rti_excess_m,
+                                         delta_m=self.rti_delta_m, alpha=self.rti_alpha,
+                                         min_coverage=self.min_coverage)
+        return self._rti
+
+    def _choose_estimator(self, scores: Mapping[str, float]) -> str:
+        """The configured estimator; for "auto", RTI while ``rti_min_links`` links that reach the grid report."""
+        if self.estimator != "auto":
+            return self.estimator
+        if len(scores) < self.rti_min_links:   # cheap test first: never builds the projector for a small rig
+            return "backprojection"
+        projector = self.projector()
+        informative = sum(1 for label in scores
+                          if projector.informative(label) and self._weights.get(label, 1.0) > 0)
+        return "rti" if informative >= self.rti_min_links else "backprojection"
+
+    def _rti_field(self, live: Mapping[str, float]) -> np.ndarray:
+        """The RTI image of the live links' evidence (see csi/rti.py), before the soft saturation.
+
+        A link's confidence is its room weight; a busy node's links keep ``busy_link_weight`` of both their
+        confidence and their evidence, as the back-projection scales their whole footprint.
+        """
+        busy = set(self.busy_nodes)
+        evidence: dict[str, float] = {}
+        confidence: dict[str, float] = {}
+        for label, value in live.items():
+            scale = self.busy_link_weight if self._ends[label] & busy else 1.0
+            evidence[label] = value * scale
+            confidence[label] = self._weights.get(label, 1.0) * scale
+        return self.projector().image(evidence, confidence)
 
     def _crossing_agreement(self, parts: Sequence[tuple[str, np.ndarray]]) -> np.ndarray:
         """Per cell, the largest geometric mean of two raised links' parts, over pairs that share no node.

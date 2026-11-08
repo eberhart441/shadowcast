@@ -5,6 +5,7 @@ one response from a running server.
 """
 import copy
 import json
+import math
 import re
 import shutil
 import subprocess
@@ -328,6 +329,7 @@ let stream = null;
 function FakeEventSource() { this.close = noop; stream = this; }
 const errors = [];
 const busyHidden = [];
+const trackHidden = [];
 try {
   // no /api/state: the page goes straight to the event stream, which this stub drives payload by payload
   new Function("window", "document", "fetch", "EventSource", "setTimeout", "clearTimeout", script)(
@@ -341,8 +343,9 @@ try {
       stream.onmessage({ data: JSON.stringify(payload) });   // render errors surface here, not in a promise
     } catch (err) { errors.push(String((err && err.stack) || err)); }
     busyHidden.push(elements["busy-note"] ? elements["busy-note"].hidden : null);
+    trackHidden.push(elements["track-note"] ? elements["track-note"].hidden : null);
   }
-  console.log(JSON.stringify({ calls: mapLog, texts, errors, busyHidden }));
+  console.log(JSON.stringify({ calls: mapLog, texts, errors, busyHidden, trackHidden }));
 })();
 """
 
@@ -385,3 +388,65 @@ def test_page_shows_link_health_last_motion_and_activity_near_a_node_and_still_r
     assert any(t.startswith("activity near tx0") for t in texts)      # the note under the map
     assert any(c[0] == "fillText" and c[1] == "activity near tx0" for c in result["calls"])   # and on the map
     assert result["busyHidden"] == [False, True]                      # the old payload has no busy node
+
+
+# ---------------------------------------------------------------- the person track (payload.track, csi/tracker.py)
+
+TRACK_BEGIN = "// ---- track: pure (tested with node) begin"
+TRACK_END = "// ---- track: pure (tested with node) end"
+NOW = 1_700_000_000.0
+ACTIVE_TRACK = {"active": True, "x": 1.2, "y": 0.8, "sx": 0.3, "sy": 0.2, "rho": 0.4, "vx": 0.5, "vy": -0.1,
+                "age_s": 8.0, "last_seen_s": 0.0,
+                "trail": [[NOW - 2.0, 0.6, 0.9], [NOW - 1.0, 0.9, 0.85], [NOW, 1.2, 0.8]]}
+
+
+def test_page_draws_the_track_over_the_heatmap_with_a_toggle_and_tolerates_no_track():
+    html = PAGE.read_text(encoding="utf-8")
+    assert TRACK_BEGIN in html and TRACK_END in html
+    assert "usableTrack(p.track)" in html                 # a missing or null track draws nothing
+    assert re.search(r'<input[^>]*id="track-show"[^>]*checked', html)   # shown by default, can be hidden
+    assert "drawHeat(p.heatmap, g)" in html               # the heatmap stays
+    assert "last seen" in html and "ctx.ellipse(" in html
+
+
+@pytest.mark.slow
+@needs_node
+def test_sigma_ellipse_axes_and_rotation_follow_the_covariance(tmp_path):
+    html = PAGE.read_text(encoding="utf-8")
+    block = html[html.index(TRACK_BEGIN):html.index(TRACK_END)]
+    script = tmp_path / "ellipse_harness.js"
+    script.write_text(block + """
+var cases = JSON.parse(require("fs").readFileSync(0, "utf8"));
+console.log(JSON.stringify(cases.map(function (c) { return sigmaEllipse(c[0], c[1], c[2]); })));
+""", encoding="utf-8")
+    cases = [[0.3, 0.1, 0.0], [0.1, 0.3, 0.0], [0.2, 0.2, 0.9], [0.2, 0.2, -0.9]]
+    proc = subprocess.run(["node", str(script)], input=json.dumps(cases), capture_output=True, text=True, timeout=30)
+    assert proc.returncode == 0, proc.stderr
+    wide, tall, down_right, up_right = json.loads(proc.stdout)
+    assert (wide["rx"], wide["ry"], wide["angle"]) == (pytest.approx(0.3), pytest.approx(0.1), pytest.approx(0.0))
+    assert tall["rx"] == pytest.approx(0.3) and tall["angle"] == pytest.approx(math.pi / 2)
+    # y runs down on the map as in the room: positive correlation leans the ellipse down to the right
+    assert down_right["angle"] == pytest.approx(math.pi / 4) and down_right["rx"] > down_right["ry"]
+    assert up_right["angle"] == pytest.approx(3 * math.pi / 4)
+
+
+@pytest.mark.slow
+@needs_node
+def test_page_draws_a_track_a_coasting_track_and_a_last_seen_marker_and_still_renders_without_one(tmp_path):
+    base = DashboardState(load_room(FIVE)).snapshot(now=NOW)
+    assert "track" in base and base["track"] is None      # no track until one is confirmed
+    active = {**copy.deepcopy(base), "track": dict(ACTIVE_TRACK)}
+    coasting = {**copy.deepcopy(base), "track": {**ACTIVE_TRACK, "last_seen_s": 1.5}}
+    lost = {**copy.deepcopy(base), "track": {**ACTIVE_TRACK, "active": False, "vx": 0.0, "vy": 0.0,
+                                             "last_seen_s": 12.4}}
+    old = copy.deepcopy(base)
+    del old["track"]                                       # a log written before the tracker
+    result = render_payloads_with_stub(tmp_path, [active, coasting, lost, old, copy.deepcopy(base)])
+    assert result["errors"] == []
+    calls, texts = result["calls"], result["texts"]
+    assert sum(c[0] == "ellipse" for c in calls) == 3      # one 1-sigma ellipse per drawn track
+    assert any(c[0] == "fillText" and c[1] == "last seen 12 s ago" for c in calls)
+    assert any(t.startswith("Person track at (1.20, 0.80) m") for t in texts)
+    assert any(t.startswith("Person track coasting near (1.20, 0.80) m") for t in texts)
+    assert any(t.startswith("Last seen 12 s ago at (1.20, 0.80) m") for t in texts)
+    assert result["trackHidden"] == [False, False, False, True, True]

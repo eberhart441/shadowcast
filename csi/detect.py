@@ -3,8 +3,9 @@
 Motion score: per subcarrier, the slow component (below about 1 Hz, which covers
 breathing) is removed with a cascade of device-time high-pass stages; the score is
 the variance of that residual over a 2 s window (windowed by device timestamps, so
-drops do not stretch it), averaged across subcarriers. So chest movement does not
-read as motion, and motion means gross movement. Motion is declared above a
+drops do not stretch it), averaged across subcarriers (optionally weighted by each
+subcarrier's learned quiet noise: ``ScorerConfig.noise_weight``, off by default). So chest
+movement does not read as motion, and motion means gross movement. Motion is declared above a
 threshold, with a short debounce so the state does not flicker.
 
 The scorer's parameters are one ``ScorerConfig``. ``LIVE_SCORER`` is built from the module constants below and
@@ -53,6 +54,11 @@ HIGHPASS_TAU_S = 0.32   # time constant of each slow-component stage (device tim
 HIGHPASS_STAGES = 3     # cascade: breathing is attenuated ~17 dB at 0.3 Hz, ~26 dB at 0.2 Hz
 TRAPEZOID = True        # stage output x - (s_prev + s_new) / 2: unit high-frequency gain at any packet rate
 MEDIAN3 = False         # optional 3-tap per-subcarrier median before the high-pass (see ScorerConfig)
+NOISE_WEIGHT = 0.0      # per-subcarrier weights ~ quiet noise ** -NOISE_WEIGHT; 0 = off, equal weights (ScorerConfig)
+# The noise tracker behind noise_weight (unused while it is 0):
+NOISE_TAU_S = 60.0      # quiet-noise running mean, device time; a cumulative mean until it has that much data
+NOISE_GATE = 2.0        # the noise learns only while the score <= this x its expected quiet value (not from motion)
+NOISE_FLOOR = 0.25      # a subcarrier's noise counts as at least this x the median one, which caps its weight
 
 
 @dataclass(frozen=True)
@@ -67,6 +73,14 @@ class ScorerConfig:
     rate: thresholds calibrated at 25, 40 and 90 pkt/s agree within about 5% (25-30% without it). ``median3`` removes
     single-sample spikes; with the 2 s window it added only 0.3-0.5 dB of margin on those links and raised hw3's
     held-out false alarms at 90 pkt/s (0.5% to 1.8%), so it stays off until it is A/B tested on the rig.
+    ``noise_weight`` p > 0 replaces the plain mean over subcarriers by a weighted mean, weights proportional to
+    noise_k ** -p, where noise_k is the subcarrier's quiet noise learned online (see ``MotionScorer``); 1 normalises
+    every subcarrier by its noise. It stays off (0): on the same recordings, all 114 subcarriers, it helped the weak
+    hw3 link (walking median / empty p99 1.90 -> 2.05 at p = 1 and 2.21 at p = 2, 25 pkt/s) but not the strong hw5
+    link (on hw5 the noise grows with the subcarrier's amplitude, so the weights also mute responsive subcarriers):
+    at 20 pkt/s hw5's ratio fell from 6.31 to 6.05 (p = 1 or 2), and with the walking scaled to 0.35x its detection
+    at a 1% held-out false-alarm rate fell from 90% to 84%. p = 2 was also fragile when calibrated on a fresh scorer
+    (hw3 walking detection 59-74%). If it is tried on the rig, use p = 1 and recalibrate.
     Thresholds from one configuration do not fit another: the scale differs (1.5-4x between legacy and live).
     """
     window_s: float = WINDOW_S
@@ -74,11 +88,18 @@ class ScorerConfig:
     stages: int = HIGHPASS_STAGES
     trapezoid: bool = TRAPEZOID
     median3: bool = MEDIAN3
+    noise_weight: float = NOISE_WEIGHT
+
+    def __post_init__(self) -> None:
+        if not 0.0 <= self.noise_weight < float("inf"):  # also rejects NaN
+            raise ValueError(f"noise_weight must be a finite number >= 0, got {self.noise_weight!r}")
 
     def describe(self) -> str:
         """Short human-readable form, e.g. ``window 2 s, tau 0.32 s x3, trapezoid``."""
         parts = [f"window {self.window_s:g} s", f"tau {self.tau_s:g} s x{self.stages}"]
         parts += [name for name, on in (("trapezoid", self.trapezoid), ("median-3", self.median3)) if on]
+        if self.noise_weight > 0:
+            parts.append(f"noise-weight {self.noise_weight:g}")
         return ", ".join(parts)
 
     def as_dict(self) -> dict:
@@ -86,10 +107,13 @@ class ScorerConfig:
 
     @classmethod
     def from_dict(cls, data: Mapping) -> "ScorerConfig":
-        """A configuration from ``as_dict`` output (e.g. a thresholds file). Raises ValueError if unusable."""
+        """A configuration from ``as_dict`` output (e.g. a thresholds file). Raises ValueError if unusable.
+
+        Keys added after the first record default to off, which is what an older file was calibrated with."""
         try:
             return cls(window_s=float(data["window_s"]), tau_s=float(data["tau_s"]), stages=int(data["stages"]),
-                       trapezoid=bool(data["trapezoid"]), median3=bool(data.get("median3", False)))
+                       trapezoid=bool(data["trapezoid"]), median3=bool(data.get("median3", False)),
+                       noise_weight=float(data.get("noise_weight", 0.0)))
         except (KeyError, TypeError, ValueError) as e:
             raise ValueError(f"not a scorer configuration: {data!r}") from e
 
@@ -194,21 +218,33 @@ class MotionScorer:
     ``trapezoid`` subtracts the average of the mean before and after its update, which keeps the stage's
     high-frequency gain at 1 whatever the packet rate (update-then-subtract loses a rate-dependent share of it).
     ``median3`` first replaces each value by the median of it and the two before it, per subcarrier.
+    ``noise_weight`` p > 0 scores the weighted mean of the subcarrier variances, weights proportional to
+    noise_k ** -p (normalised to sum 1). noise_k is subcarrier k's quiet noise: the running mean of its squared
+    residual (a cumulative mean for the first NOISE_TAU_S of data, then an exponential one), seeded by the first full
+    window, which is scored with equal weights. It learns only while the score is at most NOISE_GATE times the score
+    the learned noise predicts, so motion freezes it, and it counts as at least NOISE_FLOOR times the median noise,
+    so a dead or quantised subcarrier cannot take all the weight. A receiver reboot relearns it.
     The defaults are ``LIVE_SCORER``; ``from_config`` builds a scorer from any ``ScorerConfig``.
     """
 
     def __init__(self, window_s: float = WINDOW_S, tau_s: float = HIGHPASS_TAU_S,
-                 stages: int = HIGHPASS_STAGES, trapezoid: bool = TRAPEZOID, median3: bool = MEDIAN3) -> None:
-        self.config = ScorerConfig(float(window_s), float(tau_s), int(stages), bool(trapezoid), bool(median3))
+                 stages: int = HIGHPASS_STAGES, trapezoid: bool = TRAPEZOID, median3: bool = MEDIAN3,
+                 noise_weight: float = NOISE_WEIGHT) -> None:
+        self.config = ScorerConfig(float(window_s), float(tau_s), int(stages), bool(trapezoid), bool(median3),
+                                   float(noise_weight))
         self._window_us = window_s * 1e6
         self._tau_s = tau_s
         self._stages = stages
         self._trapezoid = trapezoid
         self._median3 = median3
+        self._noise_weight = self.config.noise_weight
         self._buf: deque[tuple[int, np.ndarray]] = deque()
         self._raw: deque[np.ndarray] = deque(maxlen=2)  # the two previous amplitude vectors, for median3
         self._slow: Optional[np.ndarray] = None  # (stages, subcarriers) running means
         self._last_t: Optional[int] = None       # device time (us) of the last accepted packet
+        self._noise: Optional[np.ndarray] = None    # per-subcarrier quiet noise (noise_weight > 0 only)
+        self._noise_n = 0                           # samples behind it (the cumulative-mean start)
+        self._weights: Optional[np.ndarray] = None  # weights from the current noise, cached until it changes
         self._score: Optional[float] = None
         self._clock = DeviceClock()  # unwraps the 32-bit counter; a reboot restarts the window
         self.dropped = 0                         # out-of-order or repeated packets, not applied
@@ -216,14 +252,16 @@ class MotionScorer:
 
     @classmethod
     def from_config(cls, config: ScorerConfig = LIVE_SCORER) -> "MotionScorer":
-        return cls(config.window_s, config.tau_s, config.stages, config.trapezoid, config.median3)
+        return cls(config.window_s, config.tau_s, config.stages, config.trapezoid, config.median3,
+                   config.noise_weight)
 
     def _restart(self) -> None:
-        """Forget the window and the filter state (a receiver reboot)."""
+        """Forget the window, the filter state and the noise profile (a receiver reboot re-rolls the gain)."""
         self._buf.clear()
         self._raw.clear()
         self._slow = None
         self._last_t = None
+        self._noise, self._noise_n, self._weights = None, 0, None
         self.restarts += 1
 
     def _prefilter(self, x: np.ndarray) -> np.ndarray:
@@ -261,16 +299,38 @@ class MotionScorer:
         if self._last_t is not None and t <= self._last_t:
             self.dropped += 1
             return self._score
-        self._buf.append((t, self._highpass(self._prefilter(np.asarray(pkt.amplitude, dtype=np.float64)), t)))
+        dt_s = 0.0 if self._last_t is None else (t - self._last_t) / 1e6
+        residual = self._highpass(self._prefilter(np.asarray(pkt.amplitude, dtype=np.float64)), t)
+        self._buf.append((t, residual))
         while t - self._buf[0][0] > self._window_us:
             self._buf.popleft()
         full = t - self._buf[0][0] >= 0.9 * self._window_us
         if len(self._buf) < MIN_WINDOW_PACKETS or not full:
             self._score = None
         else:
-            window = np.stack([r for _, r in self._buf])
-            self._score = float(window.var(axis=0).mean())
+            var = np.stack([r for _, r in self._buf]).var(axis=0)
+            self._score = self._weighted(var, residual, dt_s) if self._noise_weight > 0 else float(var.mean())
         return self._score
+
+    def _weighted(self, var: np.ndarray, residual: np.ndarray, dt_s: float) -> float:
+        """The noise-weighted mean of the window variances ``var``; ``residual`` (the newest one) teaches the noise
+        profile while the score is not elevated."""
+        if self._noise is None:
+            # The first full window seeds the profile, counted as the packets it holds, and is scored unweighted.
+            self._noise, self._noise_n, self._weights = var.copy(), len(self._buf), None
+            return float(var.mean())
+        if self._weights is None:
+            noise = np.maximum(self._noise, max(NOISE_FLOOR * float(np.median(self._noise)), 1e-12))
+            w = (noise / noise.min()) ** -self._noise_weight  # each in (0, 1]: no overflow at any exponent
+            self._weights = w / w.sum()
+        score = float(self._weights @ var)
+        if score <= NOISE_GATE * float(self._weights @ self._noise):  # quiet: learn; elevated: freeze
+            self._noise_n += 1
+            # One packet is one sample however long the gap before it: a stall counts as at most 1 s.
+            alpha = max(1.0 / self._noise_n, 1.0 - float(np.exp(-min(dt_s, 1.0) / NOISE_TAU_S)))
+            self._noise += alpha * (residual * residual - self._noise)
+            self._weights = None
+        return score
 
 
 class _Debouncer:
