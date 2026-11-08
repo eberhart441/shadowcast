@@ -17,9 +17,8 @@ What that means for any decision you make:
 
 - All of issues #1-#15 (detection, calibration, dashboard, recording, replay, controls) are implemented, merged and closed. There are no open issues.
 - `main` and `csi-sensing` are identical. `csi-sensing` is the working branch; work reaches `main` through a pull request (see the brief, "Landing on main").
-- **The rig:** four ESP32-C5 boards at 40 Hz on channel 6. Two receivers on USB (top left `rx2`, top right `rx1`), two senders off USB (bottom right `tx0` with `SENDER_ID` 0x00, bottom left `tx1` with 0x01). A third receiver `rx3` is defined and disabled in `config/room.json`. Thresholds live in the newest `data/links_cal*.json`; `data/` is gitignored.
+- **The rig:** four ESP32-C5 boards at 40 Hz on channel 6: receivers `rx2` (top left) and `rx1` (top right), senders `tx0` (`SENDER_ID` 0x00, bottom right) and `tx1` (0x01, bottom middle). The receivers are wireless: they forward to a gateway board on the dashboard host (see `hardware.md`, "Wireless receivers"). Positions and board serials are in `config/room.json`; a third receiver `rx3` is defined there and disabled. Thresholds live in the newest `data/links_cal*.json`; `data/` is gitignored.
 - **A known weak link:** `rx1<-01` (bottom-left sender to top-right receiver, the long diagonal) dropped to about 10 packets/s with RSSI -57 during the last calibration, so its threshold may be unreliable. Check packet rate and drops on its card before trusting it.
-- **Receivers stay wired for now** (decided 2026-11-07). The wireless estimate is in "Decisions" below.
 - **Not ours:** the remote branches `origin/fix/scaling-and-accuracy` and `origin/siv/turn-taking` belong to teammates. Leave them alone.
 - **Little data:** the repo has two single-link recordings (branch `data/two-board-sessions`) and no labelled recording of the four-link rig, so there are no accuracy figures for the current rig. Say so rather than quoting numbers from the single-link recordings.
 
@@ -72,7 +71,8 @@ Where to start, by task:
 - **Firmware is vendored** in `firmware/` (stock `esp-csi` plus our edits) so the repo is self-contained.
 - **Boards are found by serial**, not port name (`scripts/ports.py`, `--auto-ports`).
 - **A calibration's report is computed off the server lock**, so requests and frames keep flowing while it runs.
-- **Wireless receivers: not now (2026-11-07).** Estimated, never prototyped: forwarding over UDP works about 85-90% likely; detection quality holding without retuning only about 50-60%, because a receiver's own uploads would share channel 6 with the senders. A half-day spike would settle it and needs a router pinned to channel 6 and power for each receiver. Field use would also need a portable access point and authenticated or encrypted UDP.
+- **Wireless receivers over ESP-NOW, not UDP (2026-11-08).** Each receiver forwards its CSI lines to a gateway board on the dashboard host's USB, so no router or access point is needed. This replaced the 2026-11-07 "not now" estimate, which assumed UDP over WiFi. See `hardware.md`, "Wireless receivers".
+- **Plug and play: no per-layout training.** Locating motion uses only the room geometry in `config/room.json` and live link scores, so moving, restarting or replacing a board needs at most a recalibration. A locator trained by walking to marked points was built and reverted on 2026-11-08 (`ac4f0f5`): its empty-room reference went stale whenever boards moved, restarted or lost power, and live it did worse than the Kalman track it was meant to improve.
 
 ## What bites
 

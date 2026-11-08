@@ -18,7 +18,7 @@ Single-context: one `GLOSSARY.md` + `docs/adr/` at the repo root. See `docs/agen
 
 ### Hardware and live rig
 
-Boards, ports, flashing, thresholds and dashboard restarts: read `docs/agents/hardware.md` first.
+Which board is on which port: `python scripts/ports.py` (matches USB serials to `config/room.json`, flags unknown boards). Boards, flashing, wireless receivers, thresholds and dashboard restarts: read `docs/agents/hardware.md` first.
 
 ### Subagents
 
