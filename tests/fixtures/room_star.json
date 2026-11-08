@@ -1,0 +1,47 @@
+{
+  "comment": "Test fixture: the room_5node rig with rx3 moved 1.5 m beyond the top wall (y = -1.5, outside the room rectangle). Same senders and room as the committed room config.",
+  "room": {
+    "width_m": 2.77,
+    "depth_m": 1.84
+  },
+  "nodes": {
+    "rx2": {
+      "role": "receiver",
+      "chip": "ESP32-C5",
+      "x": 0.0,
+      "y": 0.0,
+      "port_hint": "/dev/cu.usbmodem101"
+    },
+    "rx1": {
+      "role": "receiver",
+      "chip": "ESP32-S3",
+      "x": 2.77,
+      "y": 0.0,
+      "port_hint": "/dev/cu.usbmodem2101"
+    },
+    "rx3": {
+      "role": "receiver",
+      "chip": "ESP32-S3",
+      "x": 1.385,
+      "y": -1.5,
+      "port_hint": ""
+    },
+    "tx0": {
+      "role": "sender",
+      "chip": "ESP32-S3",
+      "mac": "1a:00:00:00:00:00",
+      "x": 2.77,
+      "y": 1.84
+    },
+    "tx1": {
+      "role": "sender",
+      "chip": "ESP32-C5",
+      "mac": "1a:00:00:00:00:01",
+      "x": 0.0,
+      "y": 1.84
+    }
+  },
+  "link_weights": {
+    "rx1<-01": 0.3
+  }
+}

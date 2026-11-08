@@ -1,0 +1,239 @@
+#!/usr/bin/env python
+"""Dashboard server: the multi-link pipeline plus a small HTTP interface (JSON state, SSE events, a page).
+
+    dashboard.py --simulate-room                                   # a simulated person walks the room, no hardware
+    dashboard.py --simulate-room --http-port 8000 --host 0.0.0.0   # reachable from the network (opt-in)
+    dashboard.py --port rx1=/dev/cu.usbmodem2101 --port rx2=/dev/cu.usbmodem101   # fixed: links UNCALIBRATED until set
+    dashboard.py --port rx1=/dev/cu.usbmodem2101 --thresholds data/links_cal1_m1.json   # fixed thresholds
+    dashboard.py --port ... --auto-threshold                       # experimental auto mode, no calibration needed
+    dashboard.py --simulate-room --log run.jsonl                   # also append the state stream to a file
+    dashboard.py --replay run.jsonl --speed 8                      # serve a logged run (1 = original pace, max = fastest)
+    dashboard.py --replay-session data/hw5 --speed 8 [--margin X | --thresholds links.json]
+
+Endpoints: GET /  (page), GET /api/state  (one payload), GET /api/events  (SSE, ~5 Hz).
+Binds to 127.0.0.1 unless --host says otherwise. Mode: links are fixed by default (--thresholds file, or the
+simulated empty-room calibration with --simulate-room; without either, links show UNCALIBRATED until calibrated
+or set). --auto-threshold switches live sources to auto mode (experimental: each link learns its own baseline,
+see csi/adaptive.py) and ignores any thresholds file. A Set on a link makes it fixed.
+Ctrl+C stops the server and releases every port.
+A replay needs no serial port; when it has finished, the final state stays up (status.finished is true).
+"""
+from __future__ import annotations
+
+import argparse
+import math
+import sys
+import time
+from pathlib import Path
+from typing import Mapping, Optional
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from csi.common import margin_arg  # noqa: E402
+from csi.detect import DEFAULT_MARGIN  # noqa: E402
+from csi.links import load_thresholds  # noqa: E402
+from csi.multisource import parse_port_specs  # noqa: E402
+from csi.parser import Stream, serial_stream  # noqa: E402
+from csi.replay import ReplayError, ReplayServer, load_log, session_dashboard  # noqa: E402
+from csi.room import DEFAULT_ROOM_PATH, Room, load_room  # noqa: E402
+from csi.server import DEFAULT_HOST, DEFAULT_PORT, DEFAULT_THRESHOLDS_FILE, DashboardServer, FrameServer, \
+    controls_allowed, \
+    default_walk, looping_room_streams, simulated_thresholds  # noqa: E402
+
+TICK_S = 0.5
+
+
+def speed_arg(text: str) -> float:
+    """--speed: a positive factor (1 is the original pace), or 'max' for as fast as possible."""
+    if text == "max":
+        return math.inf
+    try:
+        value = float(text)
+    except ValueError:
+        value = 0.0
+    if not value > 0 or math.isinf(value):
+        raise argparse.ArgumentTypeError(f"speed must be a positive number or 'max', got {text!r}")
+    return value
+
+
+def quiet_seconds(text: str) -> float:
+    """--sim-quiet-first: a non-negative number of seconds."""
+    try:
+        value = float(text)
+    except ValueError:
+        value = -1.0
+    if not value >= 0 or math.isinf(value):
+        raise argparse.ArgumentTypeError(f"seconds must be a number >= 0, got {text!r}")
+    return value
+
+
+def build_parser() -> argparse.ArgumentParser:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    g = ap.add_argument_group("packet source")
+    g.add_argument("--simulate-room", action="store_true",
+                   help="a simulated person walks a loop through the room in real time (no hardware)")
+    g.add_argument("--port", action="append", metavar="[NAME=]PATH",
+                   help="serial port of a csi_recv node; repeat for each receiver. Unnamed ports get rx1, rx2...")
+    g.add_argument("--baud", type=int, default=921600)
+    g.add_argument("--seed", type=int, default=0, help="simulator seed")
+    g.add_argument("--sim-quiet-first", type=quiet_seconds, default=0.0, metavar="SECONDS",
+                   help="with --simulate-room: the simulated room is empty for SECONDS before the walk starts, "
+                        "so Calibrate can run in the demo (the default calibration takes about 45 s; default 0)")
+    r = ap.add_argument_group("replay (no hardware)")
+    r.add_argument("--replay", type=Path, metavar="run.jsonl",
+                   help="serve a run written with --log: the same states, at the logged pace")
+    r.add_argument("--replay-session", type=Path, metavar="DIR",
+                   help="feed a recorded session (scripts/record.py) through the live pipeline, paced by its "
+                        "recorded host times; with one-link recordings the heatmap has one link")
+    r.add_argument("--speed", type=speed_arg, default=None, metavar="1|N|max",
+                   help="replay speed: 1 is the original pace, N is N times faster, max as fast as possible "
+                        "(default 1)")
+    r.add_argument("--margin", type=margin_arg, default=None, metavar="X",
+                   help=f"with --replay-session and no --thresholds: calibration margin, threshold = X x p99 of "
+                        f"the session's empty recording (default {DEFAULT_MARGIN:g})")
+    ap.add_argument("--log", type=Path, metavar="run.jsonl",
+                    help="append the state stream to this file: a header line (room, thresholds, start time) and "
+                         "then one payload per line, the same as /api/events")
+    ap.add_argument("--room", type=Path, default=DEFAULT_ROOM_PATH, help="room configuration (default config/room.json)")
+    ap.add_argument("--thresholds", metavar="links.json",
+                    help="per-link fixed thresholds from links_live.py --calibrate. With --simulate-room the default is "
+                         "a calibration on a simulated empty room; with --replay-session the default is one "
+                         "calibrated on the session's first empty recording.")
+    ap.add_argument("--auto-threshold", action="store_true",
+                    help="experimental auto mode: each link adapts to its own noise baseline (about 10 s of quiet at "
+                         "start; a person still for about 25 s is absorbed; walking is detected less sensitively, since "
+                         "the room needs two links to agree). Ignores --thresholds. Live sources only")
+    s = ap.add_argument_group("server")
+    s.add_argument("--http-port", type=int, default=DEFAULT_PORT, help=f"HTTP port (default {DEFAULT_PORT})")
+    s.add_argument("--host", default=DEFAULT_HOST,
+                   help=f"address to listen on (default {DEFAULT_HOST}, localhost only; 0.0.0.0 for the network)")
+    s.add_argument("--allow-control", action="store_true",
+                   help="allow calibrate, threshold, save and parameter commands when --host is not localhost "
+                        "(there is no authentication: only on a network you trust)")
+    s.add_argument("--save-thresholds", type=Path, default=None, metavar="PATH",
+                   help=f"where POST /api/thresholds/save writes (default: --thresholds, else "
+                        f"{DEFAULT_THRESHOLDS_FILE} in the working directory)")
+    return ap
+
+
+def check_source(args: argparse.Namespace) -> None:
+    chosen = [flag for flag, on in (("--simulate-room", args.simulate_room), ("--port", bool(args.port)),
+                                    ("--replay", args.replay is not None),
+                                    ("--replay-session", args.replay_session is not None)) if on]
+    if len(chosen) > 1:
+        raise SystemExit(f"error: use one source, not {' and '.join(chosen)}")
+    if not chosen:
+        raise SystemExit("error: pass a source: --simulate-room, --port [NAME=]PATH (repeat for each receiver), "
+                         "--replay run.jsonl or --replay-session DIR")
+    replaying = args.replay is not None or args.replay_session is not None
+    if args.speed is not None and not replaying:
+        raise SystemExit("error: --speed applies to --replay and --replay-session only")
+    if args.sim_quiet_first and not args.simulate_room:
+        raise SystemExit("error: --sim-quiet-first applies to --simulate-room only")
+    if args.margin is not None and args.replay_session is None:
+        raise SystemExit("error: --margin applies to --replay-session only")
+    if args.replay is not None and args.log is not None:
+        raise SystemExit("error: --log records a live run; it cannot be combined with --replay")
+    if args.replay is not None and args.thresholds is not None:
+        raise SystemExit("error: --thresholds does not apply to --replay: a log already holds its states")
+    if args.auto_threshold and replaying:
+        raise SystemExit("error: --auto-threshold applies to live sources (--port, --simulate-room) only")
+
+
+def load_link_thresholds(path: Optional[Path]) -> Optional[Mapping[str, float]]:
+    if path is None:
+        return None
+    try:
+        return load_thresholds(path)
+    except (OSError, ValueError) as e:
+        raise SystemExit(f"error: cannot read thresholds {path}: {e}")
+
+
+def server_mode(args: argparse.Namespace) -> str:
+    """"fixed" by default; "auto" only with --auto-threshold (live sources).
+
+    Replays are always fixed (from the log, or a calibration on the session's first empty recording).
+    """
+    if args.replay is not None or args.replay_session is not None:
+        return "fixed"
+    return "auto" if args.auto_threshold else "fixed"
+
+
+def build_sources(args: argparse.Namespace, room: Room) -> tuple[dict[str, Stream], Optional[Mapping[str, float]]]:
+    """Named (host_ts, line) streams and the per-link fixed thresholds for them (None in auto mode).
+    Serial ports open on first read."""
+    fixed = server_mode(args) == "fixed"
+    if args.simulate_room:
+        thresholds = None
+        if fixed:
+            thresholds = load_link_thresholds(args.thresholds)
+            if thresholds is None:
+                print("calibrating the simulated empty room...", flush=True)
+                thresholds = simulated_thresholds(room)
+        quiet = looping_room_streams(room, default_walk(room), seed=args.seed, quiet_first_s=args.sim_quiet_first)
+        return quiet, thresholds
+    sources = {name: serial_stream(path, args.baud) for name, path in parse_port_specs(args.port)}
+    return sources, load_link_thresholds(args.thresholds) if fixed else None
+
+
+def build_server(args: argparse.Namespace) -> FrameServer:
+    """The server for the chosen source, not yet started. Raises ReplayError for unusable replay inputs."""
+    speed = 1.0 if args.speed is None else args.speed
+    if args.replay is not None:
+        return ReplayServer(load_log(args.replay), speed=speed, host=args.host, port=args.http_port)
+    room = load_room(args.room)
+    if args.replay_session is not None:
+        thresholds = load_link_thresholds(args.thresholds)
+        source = f"loaded from {args.thresholds}" if thresholds is not None else None
+        return session_dashboard(args.replay_session, room, speed=speed,
+                                 margin=DEFAULT_MARGIN if args.margin is None else args.margin,
+                                 thresholds=thresholds, thresholds_source=source,
+                                 host=args.host, port=args.http_port, log=args.log)
+    sources, thresholds = build_sources(args, room)
+    source = "simulate-room" if args.simulate_room else "ports " + ", ".join(n for n, _ in parse_port_specs(args.port))
+    save_to = args.save_thresholds or args.thresholds
+    mode = server_mode(args)
+    if mode == "auto":
+        thresholds_source = "none (auto mode)"
+    else:
+        thresholds_source = (f"loaded from {args.thresholds}" if args.thresholds else
+                             ("simulated empty room" if args.simulate_room else "none"))
+    return DashboardServer(room, sources, thresholds, host=args.host, port=args.http_port, log=args.log,
+                           allow_control=args.allow_control, thresholds_path=save_to, mode=mode,
+                           log_meta={"source": source, "thresholds_source": thresholds_source})
+
+
+def main(argv: Optional[list[str]] = None) -> int:
+    args = build_parser().parse_args(argv)
+    check_source(args)
+    try:
+        server = build_server(args)
+        server.start()
+    except (ReplayError, OSError) as e:
+        raise SystemExit(f"error: {e}")
+    print(f"dashboard at {server.url}  (listening on {server.address[0]})  Ctrl+C to stop", flush=True)
+    if not controls_allowed(args.host, args.allow_control) and not args.replay and not args.replay_session:
+        print("commands disabled: not bound to localhost (calibrate and tuning need --allow-control)", flush=True)
+    if server_mode(args) == "auto":
+        print("auto mode (--auto-threshold, experimental): each link learns its own baseline "
+              "(WARMUP for the first 10 s, no calibration needed)", flush=True)
+    elif args.port and args.thresholds is None:
+        print("no thresholds: every link shows UNCALIBRATED until calibrated (see links_live.py --calibrate)",
+              flush=True)
+    announced = False
+    try:
+        while True:
+            if not announced and server.wait_finished(timeout=0):
+                print("replay finished: serving the final state (Ctrl+C to stop)", flush=True)
+                announced = True
+            time.sleep(TICK_S)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.stop()
+    print("stopped", flush=True)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
