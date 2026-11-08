@@ -18,7 +18,7 @@ usage, calibration and measured results, see the [README](../README.md). The sco
 | Time model | State advances on timestamps carried by the packets, not on wall-clock time, so replays and seeded simulations are reproducible |
 | Scaling | The links are every enabled receiver paired with every enabled sender in `config/room.json`. Adding a board is a configuration change, not a code change |
 | Web stack | `http.server.ThreadingHTTPServer` with no web framework. The pages are single files with no network assets and no build step |
-| Quality | 446 tests across 50 modules, with more lines of tests (6,871) than of `csi/` (4,803). Ruff and the fast tier run before every push; CI runs ruff and the full suite on every pull request |
+| Quality | 447 tests across 50 modules, with more lines of tests (6,919) than of `csi/` (4,803). Ruff and the fast tier run before every push; CI runs ruff and the full suite on every pull request |
 
 Contents: [1. System diagram](#1-system-diagram) · [2. Module map](#2-module-map) ·
 [3. Design principles](#3-design-principles) · [4. Concurrency model](#4-concurrency-model) ·
@@ -392,8 +392,8 @@ Any other path gets 404.
 
 **Numbers.** These come from `python -m pytest --collect-only -q`.
 
-- **446 tests in 50 modules.** 69 are marked `slow`, so the fast tier has 377.
-- **6,871 lines of tests**, against 4,803 lines in `csi/`.
+- **447 tests in 50 modules.** 69 are marked `slow`, so the fast tier has 378.
+- **6,919 lines of tests**, against 4,803 lines in `csi/`.
 - **Run times.** With `-n auto` on a 16-thread machine, the full suite takes 47 s and the fast tier about 22 s. On
   GitHub Actions the full suite is about four times slower: its test step took 193.8 s (3 m 14 s) for PR #26
   ([run 42471421015](https://github.com/CodeMetalForge-Hackathon/Team-12/actions/runs/42471421015)).
@@ -445,7 +445,7 @@ Run the checks yourself:
 ```bash
 pip install -r requirements.txt && pip install -e .
 scripts/check.sh            # ruff + fast tier
-scripts/check.sh --full     # ruff + all 446 tests
+scripts/check.sh --full     # ruff + all 447 tests
 ```
 
 ---
