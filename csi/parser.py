@@ -30,6 +30,7 @@ C5_HEADER = (
     "type,seq,mac,rssi,rate,noise_floor,fft_gain,agc_gain,channel,"
     "local_timestamp,sig_len,rx_format,len,first_word,data"
 )
+MAX_LINE_BYTES = 16384
 KNOWN_HEADERS = (DEFAULT_HEADER, C5_HEADER)
 # Subcarriers that are always null for a given raw int count, measured on hardware.
 # Deriving them from one packet is unreliable: at low CSI gain most values are 0/+-1,
@@ -262,14 +263,40 @@ def parse_stream(stream: Stream, parser: Optional[CSIParser] = None) -> Iterator
 def serial_stream(port: str, baud: int = 921600, timeout: float = 1.0) -> Iterator[tuple[float, Optional[str]]]:
     """Yield (time.time(), line) from a serial port until closed/interrupted.
 
+    The port is read in chunks (everything waiting, or 1 byte with ``timeout``), not a byte at a time, and the
+    complete lines of a chunk share the time the chunk arrived. Lines come without their line ending.
     A read that times out with no data yields (time.time(), None), a heartbeat: a consumer can then check its
     stop flag at least every ``timeout`` seconds, and closing the generator closes the port. parse_stream and
     MultiSource skip heartbeats, so they see only lines.
+
+    DTR and RTS drive reset and boot mode on the ESP32 boards' auto-reset circuit: DTR released while RTS is
+    asserted holds the chip in reset, and a receiver that resets re-rolls its forced gain. The OS asserts both
+    lines when a port opens, so the port opens with pyserial's defaults (both asserted) and then releases RTS
+    before DTR: both, then DTR only, then neither, never the reset state. Releasing them in the other order, or
+    setting both off before the open (pyserial then applies DTR first), passes through it. This should keep
+    opening a port (e.g. restarting the dashboard) from resetting the board; it is not yet confirmed on the rig.
     """
     import serial  # imported lazily so --simulate works without a port
 
-    with serial.Serial(port, baud, timeout=timeout) as ser:
+    ser = serial.Serial()  # unopened, so the settings below are in place when it opens
+    ser.port, ser.baudrate, ser.timeout = port, baud, timeout
+    ser.open()                 # pyserial's defaults: DTR and RTS asserted, as the OS leaves them on open
+    try:
+        ser.rts = False        # RTS first: DTR asserted with RTS released does not reset the board
+        ser.dtr = False
         ser.reset_input_buffer()
+        pending = b""
         while True:
-            raw = ser.readline()
-            yield time.time(), (raw.decode("utf-8", errors="replace") if raw else None)
+            chunk = ser.read(ser.in_waiting or 1)
+            now = time.time()
+            if not chunk:
+                yield now, None
+                continue
+            *lines, pending = (pending + chunk).split(b"\n")
+            if len(pending) > MAX_LINE_BYTES:  # no newline in far too long: not CSI, hand it on
+                lines.append(pending)
+                pending = b""
+            for raw in lines:
+                yield now, raw.rstrip(b"\r").decode("utf-8", errors="replace")
+    finally:
+        ser.close()

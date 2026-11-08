@@ -51,6 +51,8 @@
 
 #if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(6, 0, 0)
 #define ESP_IF_WIFI_STA ESP_MAC_WIFI_STA
+#define WIFI_BW_HT20 WIFI_BW20   /* enums renamed in IDF 6.0 */
+#define WIFI_BW_HT40 WIFI_BW40
 #endif
 
 static const uint8_t CONFIG_CSI_SEND_MAC[] = {0x1a, 0x00, 0x00, 0x00, 0x00, 0x00};
@@ -164,7 +166,8 @@ static void wifi_csi_rx_cb(void *ctx, wifi_csi_info_t *info)
 #endif
     }
     esp_csi_gain_ctrl_get_gain_compensation(&compensate_gain, agc_gain, fft_gain);
-    ESP_LOGI(TAG, "compensate_gain %f, agc_gain %d, fft_gain %d", compensate_gain, agc_gain, fft_gain);
+    /* Debug, not info: printed per packet it doubled the lines each receiver sends over its serial budget. */
+    ESP_LOGD(TAG, "compensate_gain %f, agc_gain %d, fft_gain %d", compensate_gain, agc_gain, fft_gain);
 #endif
 
     uint32_t rx_id = *(uint32_t *)(info->payload + 15);
