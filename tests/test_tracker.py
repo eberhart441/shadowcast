@@ -67,6 +67,25 @@ def test_the_track_follows_a_moving_blob():
     assert s["vx"] > 0.2 and abs(s["vy"]) < 0.2
 
 
+def test_a_faint_blob_is_followed_as_closely_as_a_bright_one():
+    """The rig's heat peaks around 0.2; the dot must not lag more because the heat is faint."""
+    xs = np.linspace(0.3, 2.5, 45)  # 0.5 m/s
+    trails = {}
+    for heat in (0.2, 0.8):
+        tr = Tracker(W, D, CENTRES)
+        run(tr, [blob(x, 0.9, heat=heat) for x in xs])
+        trails[heat] = xs[-1] - tr.state()["x"]
+    assert trails[0.2] < 0.12
+    assert abs(trails[0.2] - trails[0.8]) < 0.03
+
+
+def test_the_track_catches_up_with_a_jump_within_a_second():
+    tr = Tracker(W, D, CENTRES)
+    t = run(tr, [blob(0.6, 0.9, heat=0.2)] * 20)
+    run(tr, [blob(2.1, 0.9, heat=0.2)] * 10, t=t)  # 1 s at the new spot
+    assert dist(tr.state(), 2.1, 0.9) < 0.2
+
+
 def test_the_track_is_dropped_after_the_map_stays_cold():
     tr = Tracker(W, D, CENTRES)
     t = run(tr, [blob(1.0, 1.0)] * 10)

@@ -4,8 +4,9 @@ Each heatmap step gives at most one measurement: the heat-weighted centroid of t
 ``hot_fraction`` of the hottest cell, when the hottest cell reaches ``min_heat``. A Kalman filter with
 state (x, y, vx, vy) smooths those into one dot that moves continuously and coasts through short gaps.
 Velocity decays towards zero with ``velocity_tau_s`` (people in a small room turn often), and the
-track is dropped after ``lost_s`` without a measurement. Measurement noise grows as the heat falls, so
-a faint blob pulls the dot less than a bright one.
+track is dropped after ``lost_s`` without a measurement. Measurement noise is fixed, not scaled by heat:
+on the rig the heat peaks low (median about 0.2), and heat-scaled noise left the dot trailing 0.26 m
+behind a walking person and taking 1.3 s to catch up after a jump; fixed 0.25 m trails 0.05 m, 0.5 s.
 
 Updates are rate-limited to one per ``min_step_s`` of host time, so the result does not depend on how
 often the page polls.
@@ -27,9 +28,9 @@ from typing import Optional
 
 import numpy as np
 
-MIN_HEAT = 0.15         # hottest cell below this: no measurement
+MIN_HEAT = 0.1          # hottest cell below this: no measurement
 HOT_FRACTION = 0.45     # cells at or above this share of the hottest cell make up the blob
-MEAS_SIGMA_M = 0.6      # measurement noise at full heat, metres; scales with 1 / sqrt(heat)
+MEAS_SIGMA_M = 0.25     # measurement noise, metres
 ACCEL_SIGMA = 1.5       # walking: white acceleration noise, m/s^2
 VELOCITY_TAU_S = 1.5    # velocity decays with this time constant
 LOST_S = 3.0            # no measurement for this long: drop the track
@@ -81,7 +82,7 @@ class Tracker:
                 self.x = self.P = None
             return
         mx, my, heat = m
-        r = self.meas_sigma_m ** 2 / heat
+        r = self.meas_sigma_m ** 2
         if self.x is None:
             self.x = np.array([mx, my, 0.0, 0.0])
             self.P = np.diag([r, r, 0.5, 0.5])

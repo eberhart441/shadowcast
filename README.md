@@ -116,10 +116,10 @@ Every receiver hears every sender, so there are four links, named
 `receiver<-last octet of sender MAC`: `rx1<-00` (right wall), `rx1<-01` (long diagonal),
 `rx2<-00` (C5 diagonal) and `rx2<-01` (left wall). Each runs at 36 to 38 packets/s with about 5% loss.
 
-`link_weights` in `config/room.json` currently holds one entry, `"rx1<-01": 0.3`, which
-multiplies that link's heatmap evidence by 0.3. It was set when `rx1` was an ESP32-S3
-receiver and its long-diagonal link false-alarmed. It has not been re-measured with `rx1`
-as a C5, so it may now be stronger than it needs to be.
+`link_weights` in `config/room.json` is empty, so every link counts fully on the heatmap. It used to
+hold `"rx1<-01": 0.3`, set when `rx1` was an ESP32-S3 receiver whose long-diagonal link false-alarmed.
+With `rx1` a C5, that link was the cleanest on the rig (2026-11-08, on the Pi: -45 dBm, 38 packets/s,
+no evidence at its median score, full evidence when someone moved), so the down-weighting was removed.
 
 Placement tips:
 
@@ -456,9 +456,11 @@ hottest one, smoothed over time; it fades as its confidence (the blob's heat) dr
 the map goes cold. Like the heatmap it shows where change is, not where a person is: it assumes one moving
 person, and with four links it is drawn towards the link lines and where they cross.
 
-On the simulator (`python scripts/track_eval.py`, the demo walk at 0.5 m/s, 37 Hz) the dot is a median 0.54 m
-from the true position (p90 0.79 m), against 0.91 m for the hottest cell, and moves about as much as the
-person does. No track appeared in a simulated empty room. Not yet measured on the rig.
+On the simulator (`python scripts/track_eval.py`, the demo walk at 0.5 m/s, 37 Hz) the dot is a median 0.59 m
+from the true position (p90 0.86 m), against 0.91 m for the hottest cell. No track appeared in a simulated
+empty room. On the rig the heat peaks low (median about 0.2), so the filter's measurement noise is fixed
+rather than scaled down with the heat: the dot trails a walking person by about 0.05 m and catches up with a
+jump in about 0.5 s, at any heat. It appears once the hottest cell reaches 0.1.
 
 ### Dashboard options
 

@@ -43,7 +43,5 @@
       "serial": "38:44:BE:A5:33:9C"
     }
   },
-  "link_weights": {
-    "rx1<-01": 0.3
-  }
+  "link_weights": {}
 }

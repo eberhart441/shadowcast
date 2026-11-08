@@ -103,4 +103,4 @@ Where to start, by task:
 - The README roadmap says nothing is started and lists "Speed up the test suite", which is done (`scripts/check.sh`, markers, CI).
 - `config/room_c5_only.json` and some test fixtures still carry `port_hint`, which nothing reads.
 - The README's "Flashing the firmware" section still tells you to clone `esp-csi` and build there; the firmware lives in `firmware/` now.
-- `config/room.json` gives `rx1<-01` a heatmap weight of 0.3. The README says it was set when `rx1` was an ESP32-S3; `rx1` is a C5 now, so the weight may no longer be warranted. Nobody has measured that.
+- `config/room.json` used to give `rx1<-01` a heatmap weight of 0.3 (from when `rx1` was an ESP32-S3). Removed on 2026-11-08 after a rig sample showed it was the cleanest link; see README "The hardware rig".
