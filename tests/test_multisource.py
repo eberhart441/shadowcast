@@ -92,3 +92,17 @@ def test_close_stops_every_reader_and_closes_every_port():
     assert not ms.alive()
     assert all(p.closed for p in ports.values())
     assert ms.status() == {"rx1": "stopped", "rx2": "stopped"}
+
+
+def test_receiver_stats_give_each_receivers_status_and_parser_counters():
+    lines = list(simulate_link_streams(senders=SENDER_MACS, receivers=("rx1",),
+                                       scenario=[Segment("empty", 1)], seed=4)["rx1"])
+    lines.insert(30, (lines[30][0], "CSI_DATA,1,2"))       # one damaged line, as a dropped byte would leave
+    ms = MultiSource({"rx1": iter(lines)})
+    ms.start()
+    got = drain_until_finished(ms)
+    stats = ms.receiver_stats()["rx1"]
+    assert stats["status"] == "done" == ms.status()["rx1"]
+    assert stats["malformed"] == 1 and stats["layout_skipped"] == 0
+    assert stats["parsed"] == len(got) == ms.parser_stats("rx1").parsed
+    assert stats["lines"] == len(lines)

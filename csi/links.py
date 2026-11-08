@@ -195,6 +195,11 @@ class LinkMonitor:
 
         ``threshold`` is the fixed threshold, or in auto mode the adaptive enter level (None while warming up).
         ``level`` is score relative to that threshold (>= 1 at or above it); ``elevated`` is True in MOTION.
+
+        Link health (csi/health.py), each None when unknown: ``seq_loss`` (0..1, from the sender's packet counter:
+        the loss to trust; ``drops`` assumes a send rate), ``seq_rate`` (packets/s the sender really sends) and
+        ``clip_pct`` (0..1 of raw I/Q values at the int8 rails), all three None while the link is silent; and the
+        newest packet's ``agc_gain``, ``fft_gain`` and ``noise_floor`` as the receiver printed them.
         """
         now = time.time() if now is None else now
         rows = []
@@ -222,6 +227,12 @@ class LinkMonitor:
                 "rssi": link.rssi,
                 "age_s": age,
                 "packets": link.health.packets,
+                "seq_loss": None if silent else link.health.seq_loss(),
+                "seq_rate": None if silent else link.health.seq_rate(),
+                "clip_pct": None if silent else link.health.clip_fraction(),
+                "agc_gain": link.health.agc_gain,
+                "fft_gain": link.health.fft_gain,
+                "noise_floor": link.health.noise_floor,
             })
         return rows
 

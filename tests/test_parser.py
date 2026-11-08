@@ -5,11 +5,12 @@ from csi.parser import DEFAULT_HEADER, WARMUP_PACKETS, CSIParser, parse_header, 
 from csi.simulate import N_SUBCARRIERS, NULL_SUBCARRIERS, Segment, simulate_packets, simulate_stream
 
 
-def line(rssi=-40, channel=6, ts=1000, values=None, length=None):
+def line(rssi=-40, channel=6, ts=1000, values=None, length=None, **columns):
+    """A CSI_DATA line in the S3/ESP32 (DEFAULT_HEADER) layout; ``columns`` sets other columns by name (default 0)."""
     values = values if values is not None else [3, 4, 0, 0, 6, 8]
     cols = DEFAULT_HEADER.split(",")[:-1]
     v = {"type": "CSI_DATA", "rssi": rssi, "channel": channel, "local_timestamp": ts,
-         "len": length if length is not None else len(values)}
+         "len": length if length is not None else len(values), **columns}
     prefix = ",".join(str(v.get(c, 0)) for c in cols)
     return f'{prefix},"[{",".join(map(str, values))}]"'
 
@@ -174,3 +175,60 @@ def test_known_c5_length_locks_immediately_without_warm_up():
     ps = CSIParser()
     pkt = ps.parse_line(line(values=[1] * 234), host_ts=1.0)  # 117 subcarriers, 3 known nulls
     assert pkt is not None and len(pkt.amplitude) == 114 and ps.stats.lines == 1
+
+
+# --- health fields: the sender's packet counter, receiver gains, noise floor, clipping ---
+
+def test_c5_line_carries_the_counter_gains_noise_floor_and_raw_count():
+    ps = CSIParser()
+    warm_up(ps, C5_LINE)
+    pkt = ps.parse_line(C5_LINE, host_ts=1.0)
+    # C5_HEADER order: seq, mac, rssi, rate, noise_floor, fft_gain, agc_gain, ...
+    assert (pkt.seq, pkt.noise_floor, pkt.fft_gain, pkt.agc_gain) == (3320, -97, -10, 0)
+    assert (pkt.n_raw, pkt.clipped) == (8, 0)
+
+
+def test_s3_layout_reads_the_counter_from_id_and_prints_no_gains():
+    ps = CSIParser()
+    warm_up(ps)
+    pkt = ps.parse_line(line(id=41, noise_floor=-92), host_ts=1.0)
+    assert (pkt.seq, pkt.noise_floor) == (41, -92)
+    assert pkt.agc_gain is None and pkt.fft_gain is None
+
+
+def test_a_counter_printed_negative_reads_back_as_uint32():
+    # the firmware prints the uint32 counter with %d: past 2**31 it reads negative
+    ps = CSIParser()
+    warm_up(ps)
+    assert ps.parse_line(line(id=-2147483648), host_ts=1.0).seq == 2 ** 31
+    assert ps.parse_line(line(id=-1), host_ts=1.0).seq == 2 ** 32 - 1
+
+
+def test_a_bad_value_in_a_health_column_gives_none_and_the_line_still_parses():
+    ps = CSIParser()
+    warm_up(ps)
+    pkt = ps.parse_line(line(id="x", noise_floor="nan"), host_ts=1.0)
+    assert pkt is not None and ps.stats.malformed == 0
+    assert pkt.seq is None and pkt.noise_floor is None
+
+
+def test_a_header_without_health_columns_gives_none():
+    ps = CSIParser()
+    ps.parse_line("type,local_timestamp,channel,rssi,len,data")
+    text = 'CSI_DATA,777,11,-55,4,"[3,4,6,8]"'
+    warm_up(ps, text)
+    pkt = ps.parse_line(text, host_ts=1.0)
+    assert (pkt.seq, pkt.agc_gain, pkt.fft_gain, pkt.noise_floor) == (None, None, None, None)
+    assert (pkt.n_raw, pkt.clipped) == (4, 0)
+
+
+def test_clipped_counts_raw_values_at_the_int8_rails():
+    ps = CSIParser()
+    warm_up(ps)
+    pkt = ps.parse_line(line(values=[127, -128, -127, 126, 0, 5]), host_ts=1.0)
+    assert (pkt.clipped, pkt.n_raw) == (3, 6)
+
+
+def test_simulated_lines_carry_a_contiguous_counter():
+    pkts = list(parse_stream(simulate_stream(scenario=[Segment("empty", 1)], seed=1)))
+    assert [p.seq for p in pkts] == list(range(100))

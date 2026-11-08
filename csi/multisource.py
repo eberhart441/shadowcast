@@ -8,6 +8,7 @@ another's. A source that raises is recorded in ``errors()`` and the others keep 
     ms = MultiSource({"rx1": serial_stream("/dev/cu.usbmodem2101"), "rx2": serial_stream("/dev/cu.usbserial-0001")})
     ms.start()
     for name, pkt in ms.drain(timeout=0.5): ...
+    ms.receiver_stats()   # {name: {status, lines, parsed, malformed, layout_skipped, ...}}
     ms.close()        # stops every reader and closes every port
 
 ``parse_port_specs`` turns ``--port`` values into (name, path) pairs: ``rx1=/dev/...`` is named, a bare
@@ -17,6 +18,7 @@ from __future__ import annotations
 
 import queue
 import threading
+from dataclasses import asdict
 from typing import Mapping, Optional, Sequence
 
 from .parser import CSIPacket, CSIParser, ParserStats, Stream
@@ -135,6 +137,13 @@ class MultiSource:
 
     def parser_stats(self, name: str) -> ParserStats:
         return self._parsers[name].stats
+
+    def receiver_stats(self) -> dict[str, dict]:
+        """Per receiver: its ``status`` plus its parser's counters (lines, parsed, malformed, layout_skipped,
+        ignored, relocks). Many malformed lines point at the serial link or the host; RF loss shows as
+        ``seq_loss`` on the receiver's links instead (csi/health.py)."""
+        status = self.status()
+        return {name: {"status": status[name], **asdict(self._parsers[name].stats)} for name in self._sources}
 
     def alive(self) -> bool:
         return any(t.is_alive() for t in self._threads.values())
