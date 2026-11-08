@@ -51,6 +51,27 @@ Use `esp32s3` instead of `esp32c5` for an S3 board. Changing `SENDER_ID` in an e
 
 `scripts/flash.sh <receiver|sender> <esp32c5|esp32s3> <port> [sender_id]` does the build, the check that the port holds the named chip, and the flash for one board, in `build_<chip>` (or `build_<chip>_id<NN>` for a sender). It needs `IDF_PATH` (source `export.sh` first). It refuses a receiver while a dashboard answers on port 8000, unless `--force` is given. `--dry-run` prints every command and runs none.
 
+## Wireless receivers (no USB per receiver)
+
+Two build flags on `csi_recv`, both off by default (off is the wired receiver above):
+
+- `CSI_FORWARD=1`: a receiver sends each CSI line over ESP-NOW (v2, up to 1470 bytes) to the gateway instead of
+  printing it, prefixed `RX,<its USB serial>,`. It stays on the sensing channel with the same radio settings, so
+  the CSI is unchanged. Its own address becomes `1a:00:00:00:01:<last serial byte>`, so no receiver mistakes it
+  for a sender. Power it from any USB charger or battery.
+- `CSI_GATEWAY=1`: the one board on the Pi's USB. It measures nothing; it writes every forwarded line to USB
+  (address `1a:00:00:00:02:00`).
+
+```
+cd firmware/csi_recv
+idf.py -B build_c5_fwd -DCSI_FORWARD=1 set-target esp32c5 && idf.py -B build_c5_fwd build   # every receiver
+idf.py -B build_c5_gw -DCSI_GATEWAY=1 set-target esp32c5 && idf.py -B build_c5_gw build     # the gateway
+python scripts/dashboard.py --gateway <GATEWAY_PORT> --thresholds links.json
+```
+
+The dashboard tells receivers apart by the `serial` of each receiver in `config/room.json`, so every enabled
+receiver needs one. Senders are unchanged.
+
 ## Serial output
 
 The receiver prints one `CSI_DATA` line per packet at 921600 baud (set in `csi_recv/sdkconfig.defaults`; `csi/parser.py` `serial_stream` opens ports at the same rate). The column layout is `C5_HEADER` in `csi/parser.py`, which the receiver also prints once at boot. If you change the printed columns, change the parser and its tests with it.

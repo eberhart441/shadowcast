@@ -11,15 +11,15 @@ What that means for any decision you make:
 - **A missed person is the costly error; a false alarm is cheap.** When a tradeoff pits fewer false alarms against fewer misses, say which way you went and why. Do not default to quieter output.
 - **Motion is the reliable output. Stillness is not.** Breathing detection (STILL_PRESENT) false-fires on empty rooms and is off by default. A person who stays still for about 30 s fades into the baseline. The README's "Decision support, not a guarantee" note and its "Limits" are the authoritative wording: decision support, never the only check that a room is empty.
 - **The room is never empty** in practice, so detection and calibration must tolerate noise and people.
-- **What exists today is a bench prototype:** a 2.77 x 1.84 m room, four wired boards, one moving person, zone-level accuracy. Do not describe it as more than that.
+- **What exists today is a bench prototype:** a 2.77 x 1.84 m room, four boards, one moving person, zone-level accuracy. Do not describe it as more than that.
 
 ## Where things stand
 
 - **Branches:** `git fetch`, then `git log --oneline --left-right --no-merges origin/main...origin/csi-sensing` (`<` is only on `main`, `>` only on `csi-sensing`; `--no-merges` hides the PR merge commits `main` always has). `csi-sensing` is the working branch; work reaches `main` through a pull request (see the brief, "Landing on main").
 - **Open issues:** `gh issue list --state open`.
-- **The rig, beyond `config/room.json`:** the receivers are on USB and the senders are not, and the live thresholds are in the newest `data/links_cal*.json`, which is not in git (`data/` is gitignored).
-- **A known weak link:** `rx1<-01` (bottom-left sender to top-right receiver, the long diagonal) dropped to about 10 packets/s with RSSI -57 in the 2026-11-07 calibration, so its threshold may be unreliable. Check packet rate and drops on its card before trusting it.
-- **Receivers stay wired for now** (decided 2026-11-07). The wireless estimate is in `docs/adr/0004-wired-receivers-wireless-deferred.md`.
+- **The rig, beyond `config/room.json`:** the receivers are wireless and forward to a gateway board on the dashboard host's USB (see `hardware.md`, "Wireless receivers"); the senders run from battery or USB; the live thresholds are in the newest `data/links_cal*.json`, which is not in git (`data/` is gitignored).
+- **Check a link before trusting its threshold:** in the 2026-11-07 calibration `rx1<-01` dropped to about 10 packets/s with RSSI -57; on 2026-11-08 every link ran at 37 to 40 packets/s. Look at the packet rate and drops on the link's card.
+- **Receivers are wireless** since 2026-11-08: `docs/adr/0019-wireless-receivers-over-esp-now.md` supersedes the "wired for now" record 0004.
 - **Not ours:** the remote branches `origin/fix/scaling-and-accuracy` and `origin/siv/turn-taking` belong to teammates. Leave them alone.
 - **Little data:** the repo has two single-link recordings (branch `data/two-board-sessions`) and no labelled recording of the four-link rig, so there are no accuracy figures for the current rig. Say so rather than quoting numbers from the single-link recordings.
 

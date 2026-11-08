@@ -1,7 +1,12 @@
-"""A silent serial port: the reader keeps checking its stop flag, and closing the sources releases the port quickly.
+"""serial_stream against a fake port: chunked reads, heartbeats on silence, a port that opens without resetting
+the board, and closing the sources releases the port quickly.
 
-pyserial is replaced by a fake that never returns data (readline waits out its timeout and returns b""), so no
-hardware is touched. The fake records close(), which is what releases a real port.
+pyserial is replaced by a fake, so no hardware is touched. Like ``serial.Serial()`` the fake is created unopened
+and records its settings when opened. It also records every (DTR, RTS) state the port's lines pass through, from
+the open on: the OS asserts both as the port opens, then pyserial applies DTR and then RTS, and a change made on
+the open port takes effect at once. It serves scripted chunks: ``in_waiting`` is the size of the next chunk and
+``read`` returns it. With no chunk left it sends nothing: ``read`` waits out its timeout and returns b"", as
+pyserial does. The fake records close(), which is what releases a real port.
 """
 import sys
 import threading
@@ -11,31 +16,69 @@ import types
 import pytest
 
 from csi.multisource import MultiSource
-from csi.parser import CSIParser, parse_stream, serial_stream
+from csi.parser import MAX_LINE_BYTES, CSIParser, parse_stream, serial_stream
 
 
-class SilentPort:
-    """A serial.Serial stand-in that sends nothing; readline blocks for its timeout, as pyserial does."""
+class FakePort:
+    """A serial.Serial stand-in (see the module docstring). ``FakePort.script`` is what the next port sends."""
 
     opened: list = []
+    script: list = []
 
-    def __init__(self, port, baud, timeout):
-        self.timeout = timeout
+    def __init__(self, *args, **kwargs):
+        self.created_with = (args, kwargs)
+        self.port, self.baudrate, self.timeout = None, 9600, None
+        self._dtr = self._rts = True        # pyserial asserts both at open unless they are set otherwise first
+        self.is_open = False
+        self.settings_at_open = None
+        self.line_states = []               # (dtr, rts) on the wire after each change, from the open on
         self.closed = False
-        SilentPort.opened.append(self)
+        self._chunks = list(FakePort.script)
+        FakePort.opened.append(self)
 
-    def __enter__(self):
-        return self
+    @property
+    def dtr(self):
+        return self._dtr
 
-    def __exit__(self, *exc):
-        self.close()
+    @dtr.setter
+    def dtr(self, value):
+        self._dtr = bool(value)
+        if self.is_open:
+            self.line_states.append((self._dtr, self.line_states[-1][1]))
+
+    @property
+    def rts(self):
+        return self._rts
+
+    @rts.setter
+    def rts(self, value):
+        self._rts = bool(value)
+        if self.is_open:
+            self.line_states.append((self.line_states[-1][0], self._rts))
+
+    def open(self):
+        self.settings_at_open = {"port": self.port, "baudrate": self.baudrate, "timeout": self.timeout,
+                                 "dtr": self._dtr, "rts": self._rts}
+        self.is_open = True
+        self.line_states.append((True, True))                # the OS asserts both lines as the port opens
+        self.line_states.append((self._dtr, True))           # then pyserial applies DTR ...
+        self.line_states.append((self._dtr, self._rts))      # ... and then RTS
 
     def reset_input_buffer(self):
         pass
 
-    def readline(self):
-        time.sleep(self.timeout)
-        return b""
+    @property
+    def in_waiting(self):
+        return len(self._chunks[0]) if self._chunks else 0
+
+    def read(self, size=1):
+        if not self._chunks:
+            time.sleep(self.timeout)
+            return b""
+        chunk = self._chunks.pop(0)
+        if size < len(chunk):
+            self._chunks.insert(0, chunk[size:])
+        return chunk[:size]
 
     def close(self):
         self.closed = True
@@ -43,11 +86,11 @@ class SilentPort:
 
 @pytest.fixture
 def fake_serial(monkeypatch):
-    SilentPort.opened = []
+    FakePort.opened, FakePort.script = [], []
     module = types.ModuleType("serial")
-    module.Serial = SilentPort
+    module.Serial = FakePort
     monkeypatch.setitem(sys.modules, "serial", module)
-    return SilentPort
+    return FakePort
 
 
 def next_items(stream, n: int, within_s: float) -> list:
@@ -63,6 +106,15 @@ def next_items(stream, n: int, within_s: float) -> list:
     if not done.wait(within_s):
         pytest.fail(f"only {len(out)} of {n} items within {within_s} s: a silent port yields nothing")
     return out
+
+
+def lines_from(script: list, n: int) -> list:
+    """The first ``n`` items a port sending ``script`` yields (then it is silent: heartbeats)."""
+    FakePort.script = script
+    stream = serial_stream("/dev/cu.fake", timeout=0.05)
+    items = next_items(stream, n, within_s=5.0)
+    stream.close()
+    return items
 
 
 @pytest.mark.slow
@@ -101,3 +153,55 @@ def test_heartbeats_never_reach_the_parser_as_lines(fake_serial):
     assert all(line is None for _, line in beats)
     assert list(parse_stream(beats, parser)) == []
     assert parser.stats.lines == 0 and parser.stats.ignored == 0
+    assert fake_serial.opened[0].closed is True
+
+
+def test_opening_the_port_never_passes_through_the_reset_state_and_leaves_both_lines_released(fake_serial):
+    # On the ESP32 auto-reset circuit, DTR released while RTS is asserted holds the chip in reset, and a receiver
+    # that resets re-rolls its forced gain. Setting both off before the open used to pass through that state.
+    stream = serial_stream("/dev/cu.fake", baud=921600, timeout=0.05)
+    next_items(stream, 1, within_s=5.0)
+    stream.close()
+
+    port = fake_serial.opened[0]
+    assert port.created_with == ((), {})               # created unopened: the settings are in place at the open
+    assert port.settings_at_open["port"] == "/dev/cu.fake"
+    assert (port.settings_at_open["baudrate"], port.settings_at_open["timeout"]) == (921600, 0.05)
+    assert (False, True) not in port.line_states       # (dtr, rts): never DTR released while RTS is asserted
+    assert port.line_states[-1] == (False, False)      # both released while the port is read
+    assert port.closed is True
+
+
+def test_a_line_split_across_chunks_arrives_once_whole_without_its_line_ending(fake_serial):
+    items = lines_from([b"CSI_DA", b"TA,1,2\r", b"\nnext li", b"ne\r\n"], 3)
+
+    assert [line for _, line in items] == ["CSI_DATA,1,2", "next line", None]   # then silence: a heartbeat
+
+
+def test_several_lines_in_one_chunk_keep_their_order_and_share_the_chunk_time(fake_serial):
+    items = lines_from([b"a\r\nb\nc\r\n", b"d\n"], 4)
+
+    assert [line for _, line in items] == ["a", "b", "c", "d"]
+    assert items[0][0] == items[1][0] == items[2][0] <= items[3][0]
+
+
+def test_undecodable_bytes_are_replaced_not_raised(fake_serial):
+    (_, line), = lines_from([b"ok \xff\xfe\n"], 1)
+
+    assert line == "ok ��"
+
+
+def test_an_overlong_run_without_a_newline_is_handed_on_not_buffered_forever(fake_serial):
+    items = lines_from([b"x" * (MAX_LINE_BYTES + 1), b"CSI_DATA,1\n"], 2)
+
+    assert [len(line) for _, line in items] == [MAX_LINE_BYTES + 1, len("CSI_DATA,1")]
+
+
+def test_a_c5_line_split_across_chunks_parses_as_if_it_came_whole(fake_serial):
+    text = ('CSI_DATA,7,1a:0c:12:00:00:01,-40,11,-97,2,30,6,123456,47,2,234,0,"['
+            + ",".join(["5"] * 234) + ']"\r\n').encode()
+    items = lines_from([text[:12], text[12:300], text[300:]], 1)
+
+    pkt, = parse_stream(items, CSIParser())
+    assert (pkt.mac, pkt.device_ts) == ("1a:0c:12:00:00:01", 123456)
+    assert len(pkt.amplitude) == 114

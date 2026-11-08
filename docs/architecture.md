@@ -116,13 +116,14 @@ The diagram has two seams.
 
 ## 2. Module map
 
-`csi/` holds 21 modules plus an empty `__init__.py`. Each responsibility below comes from the module's docstring.
+`csi/` holds 25 modules plus an empty `__init__.py`. Each responsibility below comes from the module's docstring.
 
 | Layer | Module | Responsibility | Key public types and functions |
 |---|---|---|---|
 | Ingest | [`parser.py`](../csi/parser.py) | Parses `CSI_DATA` serial lines into per-packet amplitude vectors. Infers the column layout of each chip and masks null subcarriers. Never raises on bad input; counts it instead | `Stream`, `CSIPacket`, `CSIParser` (`feed`, `parse_line`, `stats`), `ParserStats`, `parse_stream`, `serial_stream`, `DEFAULT_HEADER`, `C5_HEADER` |
 | Ingest | [`multisource.py`](../csi/multisource.py) | Reads several receivers at once into one queue of `(receiver, CSIPacket)`, one thread and parser per receiver | `MultiSource` (`start`, `drain`, `status`, `errors`, `finished`, `close`), `parse_port_specs` |
 | Ingest | [`ports.py`](../csi/ports.py) | Finds each board by its USB serial (its base MAC address), not by its port name. Never opens a port | `resolve_receiver_ports`, `match_ports`, `PortReport`, `PortResolutionError`, `normalise_serial` |
+| Ingest | [`gateway.py`](../csi/gateway.py) | Wireless receivers: splits the gateway board's one serial stream back into one stream per receiver, named by its serial in `config/room.json` | `split_gateway`, `gateway_streams` |
 | Signal | [`clock.py`](../csi/clock.py) | Turns the ESP32's 32-bit microsecond counter into time that always moves forward, and classifies each backward jump as a counter wrap or a receiver reboot | `DeviceClock.advance` → `(t_us, event)`, events `NORMAL`, `WRAP`, `RESET` |
 | Signal | [`health.py`](../csi/health.py) | Per-link packet rate and drops, inferred from gaps in device time | `LinkHealth` (`observe`, `rate_hz`, `packet_rate`, `drops`, `reboots`, `wraps`) |
 | Signal | [`detect.py`](../csi/detect.py) | Motion score (cascaded high-pass filter, variance over 1 s of device time), debounced detector, empty-room calibration | `MotionScorer`, `detect`, `detect_packets`, `calibrate`, `calibrate_clips`, `Calibration`, `CalibrationError`, `classify`, `validate_margin` |
@@ -131,6 +132,7 @@ The diagram has two seams.
 | Model | [`room.py`](../csi/room.py) | Room geometry from the configuration file. The links are every receiver paired with every sender. Also models a simulated person's position | `load_room`, `Room` (`links()`, `wall_point`), `Node`, `Walk`, `Stand`, `link_responses`, `DEFAULT_ROOM_PATH` |
 | Model | [`links.py`](../csi/links.py) | Splits tagged packets out by link, one detector per link, and calibrates several links at once | `LinkId`, `LinkMonitor`, `calibrate_links`, `calibrate_links_report`, `LinkCalibration`, `save_thresholds`, `load_thresholds` |
 | Model | [`heatmap.py`](../csi/heatmap.py) | Heatmap of where motion is likely, in the style of RF tomography. Each link's evidence is measured against its own quiet baseline and spread along the line between its two boards | `Heatmap` (`advance`, `set_params`, `values`, `contributing`), `link_evidence`, `QuietBaseline`, `segment_falloff` |
+| Model | [`tracker.py`](../csi/tracker.py) | The motion track: a Kalman filter following the heatmap's hot blob | `Tracker`, `heat_measurement` |
 | Model | [`dashboard.py`](../csi/dashboard.py) | Builds the single JSON payload the page renders from | `DashboardState` (`push`, `snapshot`, `set_threshold`, `set_params`, `parameters`) |
 | Serving | [`server.py`](../csi/server.py) | HTTP server: frame log, SSE stream, guarded commands, and the reordering pump | `FrameServer`, `DashboardServer`, `FrameLog`, `controls_allowed`, `is_loopback`, `simulated_thresholds`, `looping_room_streams` |
 | Serving | [`live_calibration.py`](../csi/live_calibration.py) | Calibration inside the dashboard, run on the live stream: countdown, recording, processing, then done or failed | `CalibrationJob`, `parse_request`, `RequestError` |
@@ -141,6 +143,8 @@ The diagram has two seams.
 | Offline | [`simulate.py`](../csi/simulate.py) | Seeded fake CSI for development without hardware, written as real `CSI_DATA` text | `simulate_room`, `simulate_room_links`, `simulate_link_streams`, `simulate_stream`, `packet_to_line`, `Segment` |
 | Tools | [`common.py`](../csi/common.py) | Command-line plumbing shared by the single-port tools (`--simulate`, `--port`, `--rate`, `--margin`, thresholds) | `add_source_args`, `add_threshold_args`, `resolve_threshold`, `open_source`, `SenderWatch` |
 | Tools | [`viewer.py`](../csi/viewer.py) | Rolling buffers for the matplotlib viewer: data only, no plotting | `LiveView` |
+| Tools | [`rawlog.py`](../csi/rawlog.py) | Raw CSI recording: every line a receiver delivers, with its host time, for exact offline replays | `tee_sources`, `read_raw` |
+| Tools | [`accuracy.py`](../csi/accuracy.py) | The guided accuracy run: marks, the protocol, and ground truth from its prompts | `Segment`, `segments_from_labels`, `twin` |
 
 **Entry points** (`scripts/`):
 

@@ -16,9 +16,22 @@ Resets come from: any `esptool` command (including `chip-id`), flashing, replugg
 
 Use ESP32-C5 receivers. ESP32-S3 receivers were much noisier (35-65% false MOTION in a quiet room against 4-16% for a C5 receiver), and an S3 third receiver cut the other receivers' packet rate. The original ESP32 was noisy as receiver and as sender. ESP32-S3 and ESP32-C5 senders both work.
 
+## Wireless receivers (gateway)
+
+The receivers run `csi_recv` built with `CSI_FORWARD=1` and send each CSI line over ESP-NOW to a gateway board (`CSI_GATEWAY=1`) on the dashboard host's USB. The gateway prints `RX,<receiver serial>,<line>`; `scripts/dashboard.py --gateway PATH` names each receiver by its `serial` in `config/room.json`. Build flags are in `firmware/README.md`.
+
+- **List every receiver's serial in `config/room.json`.** The dashboard drops lines from a serial it does not know, without a message, so a replaced receiver looks dead until its new serial is there.
+- **Place every receiver at least 1 m from the gateway.** A receiver locks its gain about 1 s after boot (see "Receivers re-baseline on reset"); with the gateway a few centimetres away, the gateway's acknowledgements then swamp it and its forwards fail. Its console shows `cb_ok` only in the first second, then `send_err` with `ESP_ERR_ESPNOW_NO_MEM` every second.
+- **Fit the external antenna on Seeed XIAO ESP32-C5 boards**, pressed until it clicks. Without it a sender is barely heard and a receiver hears little.
+- **Read a receiver's console** by plugging it into a spare USB port on the dashboard host and reading its `/dev/serial/by-id/` port; the dashboard opens only the gateway's port and keeps running. The `FWD 1s` line counts `built` (lines made from sender packets), `sent` and `send_err` (hand-offs to ESP-NOW), and `cb_ok` and `cb_fail` (acknowledged by the gateway or not).
+- **Read the gateway directly** to see what reaches it: stop the dashboard (on the demo Pi, `team12-watch.timer` first, or the watchdog restarts it), read the gateway's port, then start both again. Expect `RX,` lines from each listed receiver and `GW 1s: received N`, with N about 38.5 per sender per receiver.
+- **A reboot of the dashboard host resets only the gateway.** A wireless board resets only when it is replugged.
+
 ## Firmware
 
 The firmware lives in `firmware/` (stock `esp-csi` examples plus our edits). Build and flash commands, the `SENDER_ID` build flag and the pre-flash cautions are in `firmware/README.md`; read it before touching a board. ESP-IDF 5.5.6 stays outside the repo, at `~/esp/esp-idf`.
+
+`csi_recv` also builds with ESP-IDF 6.0; `csi_send` does not yet. IDF 6.0 renamed `WIFI_BW_HT40` and `WIFI_BW_HT20` to `WIFI_BW40` and `WIFI_BW20`, and only `csi_recv` carries the compatibility defines, so build `csi_send` with 6.0 from a copy with those two names replaced. On Windows, build in a short path: object paths past 260 characters fail.
 
 ## Thresholds in a noisy room
 

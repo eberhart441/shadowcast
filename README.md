@@ -134,7 +134,8 @@ python -m pytest -q -n auto      # 447 tests, ~1 min on a 16-thread laptop, 3-6 
 scripts/check.sh                 # ruff + the fast tier, run before every commit
 ```
 
-On real hardware: `python scripts/dashboard.py --auto-ports` finds the receivers by USB serial, then
+On real hardware: `python scripts/dashboard.py --auto-ports` finds wired receivers by USB serial, and
+`python scripts/dashboard.py --gateway <GATEWAY_PORT>` reads wireless ones through the gateway board. Then
 calibrate with the page's **Calibrate** button or `scripts/calibrate.py`. See
 [docs/operations.md](docs/operations.md).
 
@@ -307,11 +308,12 @@ the first item on the roadmap below.
   |                                                        |
   |       4 links: rx2<-00  rx2<-01  rx1<-00  rx1<-01      |
   |                                                        |
-  | tx1  ESP32-C5 sender              tx0  ESP32-C5 sender |
+  |                       tx1 sender  tx0  ESP32-C5 sender |
   +--------------------------------------------------------+  y = 1.84
 ```
 
-A 2.77 m × 1.84 m room with receivers on USB and senders on battery or USB. A third receiver (`rx3`, top
+A 2.77 m × 1.84 m room. The receivers forward over ESP-NOW to a gateway board on a Raspberry Pi, and the
+senders run on battery or USB. A third receiver (`rx3`, top
 middle) is defined and disabled in [`config/room.json`](config/room.json). Wiring, flashing and scaling
 are in [docs/hardware.md](docs/hardware.md).
 
@@ -323,19 +325,21 @@ We would rather you hear these from us:
   heatmap's rolling baseline absorbs someone who stays in one place for about 30 s.
 - **One mover, zone-level.** The heatmap shows *where change is*, not where a person is. It does not count or
   separate people.
-- **Bench prototype.** One 2.77 × 1.84 m room, four wired boards, one moving person.
+- **Bench prototype.** One 2.77 × 1.84 m room, four boards, one moving person.
 - **Thresholds go stale on a receiver reset**, because the gain baseline moves. Recalibrate after one.
 - **Shared channel.** More senders mean more collisions; with three senders, drop to ~30 Hz.
 - **Local demo security.** There is no authentication. Commands are loopback-only by default.
 
 ## Roadmap
 
+**Merged for the demo** (2026-11-08): the Kalman motion track that follows the heatmap's hot blob, and wireless
+receivers that forward CSI over ESP-NOW to one Raspberry Pi gateway, with a guided accuracy protocol (spoken
+prompts, raw CSI recording, replay scoring). See [ADR 0019](docs/adr/0019-wireless-receivers-over-esp-now.md).
+
 **In flight on feature branches** (not yet merged to `main`):
 
 | Branch | What it adds |
 |---|---|
-| `feat/kalman-tracker` | A Kalman filter that tracks the heatmap's hot blob over time, plus `rx3` enabled for 6 links |
-| `feat/wireless-receivers` | Receivers forward CSI over ESP-NOW to one Raspberry Pi gateway, plus a guided accuracy protocol (spoken prompts, raw CSI recording, replay scoring) |
 | `UI-Overhaul` | An operations view with the room in 3D on the building floor plan |
 | `fix/scaling-and-accuracy` | An offline accuracy tuner that replays logged walks under other heatmap and tracker settings, plus room-footprint masking |
 | `siv/turn-taking` | Senders take turns on the shared channel, to cut collisions |

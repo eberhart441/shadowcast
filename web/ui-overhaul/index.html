@@ -3591,6 +3591,24 @@
 
     if (layers.links) drawLinks(p, at, g, focus);
     drawPucks(p, frame, g, focus);
+    drawTrack(p.track, g);
+  }
+
+  // The motion track (csi/tracker.py): the Kalman-smoothed dot on the heatmap's hot blob, fading with its
+  // confidence, as on the old page.
+  function drawTrack(t, g) {
+    if (!t || !Number.isFinite(t.x) || !Number.isFinite(t.y)) return;
+    var k = mapScale();
+    ctx.save();
+    ctx.globalAlpha = Math.min(1, Math.max(0.6, 0.5 + (t.confidence || 0)));
+    ctx.beginPath();
+    ctx.arc(g.X(t.x), g.Y(t.y), 11 * k, 0, 2 * Math.PI);
+    ctx.fillStyle = "#ffffff";   // white with the accent ring: stands out on every heat colour, like the old page's dot
+    ctx.fill();
+    ctx.strokeStyle = PAL.accent;
+    ctx.lineWidth = 3.5 * k;
+    ctx.stroke();
+    ctx.restore();
   }
 
   function drawWaiting(text) {

@@ -28,6 +28,7 @@ Public API:
     Heatmap(room, ...)                              per-link falloff maps, baselines, smoothing
         .advance(now, rows)   step the grid to host time ``now`` from link rows (LinkMonitor snapshot)
         .values               current grid, flat row-major, 0..1
+        .target               the last advance's grid before time smoothing (what the tracker reads)
         .contributing         link labels that currently put heat on the grid
         .evidence             {label: 0..1} per link, from the last advance
         .baselines            {label: quiet baseline or None while in warm-up}
@@ -53,7 +54,7 @@ R_FULL = 3.0              # score / baseline at which a link's evidence reaches 
 BASELINE_WINDOW_S = 60.0  # host-time span of the quiet baseline
 BASELINE_PERCENTILE = 50.0
 BASELINE_WARMUP_S = 10.0  # history needed before a link's baseline is trusted
-RISE_TAU_S = 0.3          # time constant of a cell heating up
+RISE_TAU_S = 0.05         # time constant of a cell heating up (0.05 s: the team's pick on the rig)
 DECAY_TAU_S = 0.3         # time constant of a cell cooling down
 STEP_S = 0.1              # host-time step between smoothing updates while packets arrive
 CONTRIBUTING_STATES = frozenset({"EMPTY", "MOTION"})
@@ -127,7 +128,7 @@ class Heatmap:
         self.rise_tau, self.decay_tau, self.step = rise_tau_s, decay_tau_s, step_s
         self._weights: Mapping[str, float] = dict(room.link_weights)
         self._room = room
-        self._centres = cell_centres(cols, rows, room.width_m, room.depth_m)
+        self.centres = cell_centres(cols, rows, room.width_m, room.depth_m)
         self._falloff: dict[str, np.ndarray] = {}
         self._build_falloff(falloff_m)
         self._baselines: dict[str, QuietBaseline] = {
@@ -135,6 +136,7 @@ class Heatmap:
             for label in self._falloff}
         self._fed_until: dict[str, float] = {}
         self.values = np.zeros(cols * rows)
+        self.target = np.zeros(cols * rows)  # unsmoothed: the Kalman tracker does its own smoothing
         self._last_t: Optional[float] = None
         self.contributing: list[str] = []
         self.evidence: dict[str, float] = {}
@@ -143,7 +145,7 @@ class Heatmap:
     def _build_falloff(self, falloff_m: float) -> None:
         for rx, tx in self._room.links():
             label = LinkId(rx.name, tx.mac).label
-            self._falloff[label] = segment_falloff(self._centres, (rx.x, rx.y), (tx.x, tx.y), falloff_m)
+            self._falloff[label] = segment_falloff(self.centres, (rx.x, rx.y), (tx.x, tx.y), falloff_m)
 
     def set_params(self, **kwargs) -> None:
         """Change live tunables: sensitivity, rise_tau, decay_tau, falloff_m (attribute names).
@@ -193,6 +195,7 @@ class Heatmap:
             parts.append(self._weights.get(label, 1.0) * evidence * self._falloff[label])
         target = self._combine(parts)
         target = 1.0 - np.exp(-self.sensitivity * target)
+        self.target = target
         if self._last_t is None or now > self._last_t:
             dt = 0.0 if self._last_t is None else now - self._last_t
             self._smooth(target, dt)

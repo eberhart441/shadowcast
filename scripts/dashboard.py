@@ -36,6 +36,8 @@ from csi.common import margin_arg  # noqa: E402
 from csi.detect import DEFAULT_MARGIN  # noqa: E402
 from csi.links import load_thresholds  # noqa: E402
 from csi.multisource import parse_port_specs  # noqa: E402
+from csi.gateway import gateway_streams  # noqa: E402
+from csi.rawlog import tee_sources  # noqa: E402
 from csi.ports import PortResolutionError, resolve_receiver_ports  # noqa: E402
 from csi.parser import Stream, serial_stream  # noqa: E402
 from csi.replay import ReplayError, ReplayServer, load_log, session_dashboard  # noqa: E402
@@ -81,6 +83,9 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--auto-ports", action="store_true",
                    help="find each enabled receiver's port by its USB serial (config/room.json \"serial\"); fails "
                         "naming any receiver whose board is not connected. Same as --port for the rest")
+    g.add_argument("--gateway", metavar="PATH",
+                   help="serial port of the gateway board for wireless receivers (csi_recv built with CSI_GATEWAY=1); "
+                        "receivers are told apart by their \"serial\" in config/room.json")
     g.add_argument("--baud", type=int, default=921600)
     g.add_argument("--seed", type=int, default=0, help="simulator seed")
     g.add_argument("--sim-quiet-first", type=quiet_seconds, default=0.0, metavar="SECONDS",
@@ -98,6 +103,9 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--margin", type=margin_arg, default=None, metavar="X",
                    help=f"with --replay-session and no --thresholds: calibration margin, threshold = X x p99 of "
                         f"the session's empty recording (default {DEFAULT_MARGIN:g})")
+    ap.add_argument("--raw-log", type=Path, default=None, metavar="raw.tsv",
+                    help="also append every CSI line the receivers deliver, with its host time, to this file "
+                         "(host_ts, receiver, line; for exact offline replays: scripts/accuracy_eval.py)")
     ap.add_argument("--log", type=Path, metavar="run.jsonl",
                     help="append the state stream to this file: a header line (room, thresholds, start time) and "
                          "then one payload per line, the same as /api/events")
@@ -129,6 +137,7 @@ def build_parser() -> argparse.ArgumentParser:
 def check_source(args: argparse.Namespace) -> None:
     chosen = [flag for flag, on in (("--simulate-room", args.simulate_room), ("--port", bool(args.port)),
                                     ("--auto-ports", args.auto_ports),
+                                    ("--gateway", args.gateway is not None),
                                     ("--replay", args.replay is not None),
                                     ("--replay-session", args.replay_session is not None)) if on]
     if len(chosen) > 1:
@@ -203,8 +212,15 @@ def build_sources(args: argparse.Namespace, room: Room) -> tuple[dict[str, Strea
                 print("calibrating the simulated empty room...", flush=True)
                 thresholds = simulated_thresholds(room)
         quiet = looping_room_streams(room, default_walk(room), seed=args.seed, quiet_first_s=args.sim_quiet_first)
+        if args.raw_log is not None:
+            quiet = tee_sources(quiet, args.raw_log)
         return quiet, thresholds
-    sources = {name: serial_stream(path, args.baud) for name, path in parse_port_specs(args.port)}
+    if args.gateway is not None:
+        sources = gateway_streams(args.gateway, room, args.baud)
+    else:
+        sources = {name: serial_stream(path, args.baud) for name, path in parse_port_specs(args.port)}
+    if args.raw_log is not None:
+        sources = tee_sources(sources, args.raw_log)
     return sources, load_link_thresholds(args.thresholds) if fixed else None
 
 
@@ -226,7 +242,12 @@ def build_server(args: argparse.Namespace) -> FrameServer:
             server._web_index = page  # session_dashboard takes no web_index; the page is read on each GET /
         return server
     sources, thresholds = build_sources(args, room)
-    source = "simulate-room" if args.simulate_room else "ports " + ", ".join(n for n, _ in parse_port_specs(args.port))
+    if args.simulate_room:
+        source = "simulate-room"
+    elif args.gateway is not None:
+        source = f"gateway {args.gateway}"
+    else:
+        source = "ports " + ", ".join(n for n, _ in parse_port_specs(args.port))
     save_to = args.save_thresholds or args.thresholds
     mode = server_mode(args)
     if mode == "auto":

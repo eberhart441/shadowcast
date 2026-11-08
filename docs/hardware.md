@@ -54,8 +54,9 @@ behind them.
 
 ## The rig
 
-Four ESP32-C5 boards at the corners of a 2.77 m x 1.84 m room: two receivers along the top wall, on USB
-to the laptop, and two senders along the bottom wall, on battery or USB. Coordinates are in metres, x
+Four ESP32-C5 boards around a 2.77 m x 1.84 m room: two receivers in the top corners, forwarding over
+ESP-NOW to a gateway board on the dashboard host's USB, and two senders on the bottom wall, on battery or
+USB. Coordinates are in metres, x
 left to right and y top to bottom, with the origin at the top-left corner. The rig runs on channel 6 and
 each sender transmits at 40 Hz.
 
@@ -69,7 +70,7 @@ each sender transmits at 40 Hz.
   |            2.77 m x 1.84 m room                        |
   |                                                        |
   |                                                        |
-  | tx1  ESP32-C5 sender              tx0  ESP32-C5 sender |
+  |                       tx1 sender  tx0  ESP32-C5 sender |
   +--------------------------------------------------------+  y = 1.84
 ```
 
@@ -77,10 +78,14 @@ each sender transmits at 40 Hz.
 
 | Node | Role | Chip | Position (x, y), m | Sender address | Power |
 |---|---|---|---|---|---|
-| `rx2` | receiver | ESP32-C5 | (0, 0), top-left | n/a | USB to laptop |
-| `rx1` | receiver | ESP32-C5 | (2.77, 0), top-right | n/a | USB to laptop |
-| `tx0` | sender | ESP32-C5 | (2.77, 1.84), bottom-right | `1a:00:00:00:00:00` (`SENDER_ID` 0x00) | battery or USB |
-| `tx1` | sender | ESP32-C5 | (0, 1.84), bottom-left | `1a:00:00:00:00:01` (`SENDER_ID` 0x01) | battery or USB |
+| `rx2` | receiver | ESP32-C5 | (0, 0), top-left | n/a | any USB supply; wireless through the gateway |
+| `rx1` | receiver | ESP32-C5 (Seeed XIAO) | (2.77, 0), top-right | n/a | any USB supply; wireless through the gateway |
+| `tx0` | sender | ESP32-C5 (Seeed XIAO) | (2.77, 1.84), bottom-right | `1a:00:00:00:00:00` (`SENDER_ID` 0x00) | battery or USB |
+| `tx1` | sender | ESP32-C5 | (1.385, 1.84), bottom-middle | `1a:00:00:00:00:01` (`SENDER_ID` 0x01) | battery or USB |
+
+The Seeed XIAO boards need their external antenna, pressed on until it clicks. Keep every receiver at least
+1 m from the gateway; the reason, and how to read a receiver's or the gateway's output, are in
+`docs/agents/hardware.md`, "Wireless receivers".
 
 Each node also carries `"serial"`: the board's USB serial, which equals its base MAC (for example
 `38:44:BE:A5:18:B0`). That is how `scripts/ports.py` and the dashboard's `--auto-ports` recognise a board.
@@ -88,7 +93,8 @@ Read the values in `config/room.json`.
 
 A third receiver, `rx3` (ESP32-C5, top-middle at (1.385, 0)), is defined in `config/room.json` with
 `"enabled": false`. It is not part of the rig and is ignored everywhere until you set it to `true` (see
-[Adding a receiver](#adding-a-receiver)). It has no `serial` yet.
+[Adding a receiver](#adding-a-receiver)). It has no `serial` yet. It was tried as a fifth node on
+2026-11-08 and taken out again; its board (`10:BD:A3:CB:E6:4C`) is now the gateway.
 
 ### Links
 
@@ -98,22 +104,23 @@ Every enabled receiver hears every enabled sender, so the rig has four links. A 
 | Link | Path across the room | Notes |
 |---|---|---|
 | `rx1<-00` | right wall | |
-| `rx1<-01` | diagonal, top-right to bottom-left | Called the "long diagonal" in older notes. Known weak link (below). Heatmap weight 0.3. |
+| `rx1<-01` | diagonal, top-right to bottom-middle | Called the "long diagonal" in older notes, from when `tx1` sat bottom-left. |
 | `rx2<-00` | diagonal, top-left to bottom-right | Called the "C5 diagonal" in older notes. |
-| `rx2<-01` | left wall | |
+| `rx2<-01` | diagonal, top-left to bottom-middle | |
 
-Measured on the four-link rig while `tx0` was still an ESP32-S3: every link ran at 36 to 38 packets/s
-with about 5% loss. No figures have been recorded since `tx0` became a C5.
+On 2026-11-08, through the gateway, every link ran at 37 to 40 packets/s. Earlier, with wired receivers
+and `tx0` still an ESP32-S3, every link ran at 36 to 38 packets/s with about 5% loss.
 
-`rx1<-01` is the known weak link: during the last calibration it dropped to about 10 packets/s with RSSI
--57. Check the packet rate and drops on its dashboard card before trusting its threshold.
+In the 2026-11-07 calibration, before `tx1` moved, `rx1<-01` dropped to about 10 packets/s with RSSI -57.
+Check the packet rate and drops on a link's dashboard card before trusting its threshold.
 
 ### Link weights
 
-`link_weights` in `config/room.json` holds one entry, `"rx1<-01": 0.3`, which multiplies that link's
-heatmap evidence by 0.3. Weights affect the heatmap only, never a link's EMPTY / MOTION state. The weight
-was set when `rx1` was an ESP32-S3 receiver and its long-diagonal link false-alarmed. It has not been
-re-measured with `rx1` as a C5, so it may now be stronger than it needs to be.
+`link_weights` in `config/room.json` is empty, so every link counts fully on the heatmap. Weights affect
+the heatmap only, never a link's EMPTY / MOTION state. It used to hold `"rx1<-01": 0.3`, set when `rx1` was
+an ESP32-S3 receiver whose long-diagonal link false-alarmed. With `rx1` a C5, that link was the cleanest on
+the rig (2026-11-08, on the Pi: -45 dBm, 38 packets/s, no evidence at its median score, full evidence when
+someone moved), so the down-weighting was removed.
 
 ### Placement tips
 

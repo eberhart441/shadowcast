@@ -34,8 +34,8 @@ def test_port_hint_is_not_read_into_the_node(tmp_path):
 def test_committed_config_carries_the_known_serials_and_no_port_hints():
     config = json.loads(COMMITTED.read_text())
     serials = {name: spec.get("serial") for name, spec in config["nodes"].items()}
-    assert serials["rx1"] == "38:44:BE:A5:18:B0"
+    assert serials["rx1"] == "10:BD:A3:CF:67:48"  # Seeed XIAO since 2026-11-08 (was 38:44:BE:A5:18:B0)
     assert serials["rx2"] == "10:BD:A3:CC:85:BC"
-    assert serials["tx0"] == "38:44:BE:A5:41:BC"
+    assert serials["tx0"] == "10:BD:A3:CF:7D:CC"  # Seeed XIAO since 2026-11-08 (was 38:44:BE:A5:41:BC)
     assert serials["tx1"] == "38:44:BE:A5:33:9C"
     assert not any("port_hint" in spec for spec in config["nodes"].values())

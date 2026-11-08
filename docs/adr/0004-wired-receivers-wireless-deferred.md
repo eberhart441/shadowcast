@@ -1,6 +1,6 @@
 # 0004. Receivers stay wired; wireless receivers deferred
 
-- **Status:** Deferred
+- **Status:** Superseded by [0019](0019-wireless-receivers-over-esp-now.md)
 - **Date:** 2026-11-07
 - **Recorded in:** `d836c52` (`docs/agents/project-context.md`, "Decisions and why")
 - **Related:** [0003](0003-one-shared-channel-at-40-hz.md), [0012](0012-host-ts-line-stream-seam.md), [0015](0015-stdlib-http-server-loopback-commands.md)

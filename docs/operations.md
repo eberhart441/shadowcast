@@ -29,6 +29,7 @@ ports: find them with `python scripts/ports.py` (see
   - [Dashboard on hardware](#dashboard-on-hardware)
   - [What the page shows](#what-the-page-shows)
   - [New UI](#new-ui)
+  - [Motion track](#motion-track)
   - [Reading the heatmap](#reading-the-heatmap)
   - [Auto-threshold mode](#auto-threshold-mode)
   - [Dashboard options](#dashboard-options)
@@ -366,6 +367,22 @@ room without a building plan, and the calibration form starts at the current pag
 
 To go back, start the dashboard without `--page`: it serves `web/index.html`, which is unchanged.
 Deleting `web/ui-overhaul/` removes the new page.
+
+### Motion track
+
+The ringed dot on the map (`track` in the payload, `csi/tracker.py`) follows the heatmap's hot blob with a
+Kalman filter, so it glides instead of jumping. It is the heat-weighted centre of the cells within 45% of the
+hottest one, smoothed over time; it fades as its confidence (the blob's heat) drops, and disappears 3 s after
+the map goes cold. Like the heatmap it shows where change is, not where a person is: it assumes one moving
+person, and with four links it is drawn towards the link lines and where they cross.
+
+On the simulator (`python scripts/track_eval.py`, the demo walk at 0.5 m/s, 37 Hz) the dot is a median 0.59 m
+from the true position (p90 0.86 m), against 0.91 m for the hottest cell. No track appeared in a simulated
+empty room. On the rig the heat peaks low (median about 0.2), so the filter's measurement noise is fixed
+rather than scaled down with the heat: the dot trails a walking person by about 0.05 m and catches up with a
+jump in about 0.5 s, at any heat. It appears once the hottest cell reaches 0.1.
+
+The payload's `track` is `{x, y, vx, vy, confidence}` (metres, m/s, 0..1), or `null` when there is no track.
 
 ### Reading the heatmap
 
