@@ -434,6 +434,27 @@ What the page shows (`web/index.html`, one static file with no network assets):
 - **Pause** freezes the display while the server keeps running. The page reconnects by
   itself after a server restart.
 
+### New UI (web/ui-overhaul)
+
+A redesigned page (title-block header, pucks and link health, a Map / 3D switch) sits next to the current one in
+`web/ui-overhaul/index.html`, also one static file with no network assets. It uses the same endpoints, so the
+server only needs to serve it at `/`:
+
+```bash
+python scripts/dashboard.py --auto-ports --page web/ui-overhaul/index.html
+python scripts/dashboard.py --port rx1=<PORT_RX1> --port rx2=<PORT_RX2> --thresholds links.json --page web/ui-overhaul/index.html
+python scripts/dashboard.py --simulate-room --page web/ui-overhaul/index.html   # no hardware
+```
+
+`--page` works with every source and the usual `--http-port`, `--host` and `--room` options; open
+<http://127.0.0.1:8000/> as before. Run the commands from the repository root (the path is relative to the
+working directory). Numbers this server does not send yet (packet loss, clipping, gains, the estimator, the last
+motion time) show a dash, the 3D view shows the room without a building plan, and the calibration form starts
+at the current page's values (3 clips of 10 s, noisy room).
+
+To go back, start the dashboard without `--page`: it serves `web/index.html`, which is unchanged. Deleting
+`web/ui-overhaul/` removes the new page.
+
 ### Reading the heatmap
 
 - Each link is judged against its own quiet baseline: the median of its own score over
@@ -472,6 +493,7 @@ What the page shows (`web/index.html`, one static file with no network assets):
 - `--save-thresholds PATH`: where **Save thresholds** writes. Defaults to `--thresholds`,
   else `links_thresholds.json` in the working directory.
 - `--log`, `--replay`, `--replay-session`, `--speed`, `--margin`: see [Logging and replay](#logging-and-replay).
+- `--page PATH`: the page served at `/` (default `web/index.html`); see [New UI](#new-ui-webui-overhaul).
 - `--allow-control`: see [Security](#security).
 
 Ctrl+C stops the server and closes every port.

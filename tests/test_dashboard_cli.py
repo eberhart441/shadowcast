@@ -254,3 +254,31 @@ def test_sigterm_stops_the_simulated_dashboard_like_ctrl_c_within_five_seconds()
     assert proc.returncode == 0, err
     assert "stopped" in out
     assert "Traceback" not in err
+
+
+def test_page_defaults_to_web_index_and_must_name_a_file(tmp_path):
+    assert parse("--simulate-room").page is None
+    page = tmp_path / "index.html"
+    page.write_text("<!doctype html><title>new ui</title>")
+    assert parse("--simulate-room", "--page", str(page)).page == page
+    cli.check_page(parse("--simulate-room", "--page", str(page)))
+    cli.check_page(parse("--simulate-room"))
+    with pytest.raises(SystemExit):
+        cli.check_page(parse("--simulate-room", "--page", str(tmp_path / "missing.html")))
+
+
+def test_page_goes_to_the_live_and_the_replay_server(monkeypatch, tmp_path):
+    page = tmp_path / "index.html"
+    seen = []
+
+    def server(*args, **kwargs):
+        seen.append(kwargs.get("web_index"))
+        return "server"
+
+    monkeypatch.setattr(cli, "DashboardServer", server)
+    monkeypatch.setattr(cli, "ReplayServer", server)
+    monkeypatch.setattr(cli, "load_log", lambda path: "log")
+    assert cli.build_server(parse("--port", "rx1=/dev/cu.a", "--page", str(page))) == "server"  # opens no port
+    assert cli.build_server(parse("--replay", "run.jsonl", "--page", str(page))) == "server"
+    assert cli.build_server(parse("--port", "rx1=/dev/cu.a")) == "server"
+    assert seen == [page, page, None]
