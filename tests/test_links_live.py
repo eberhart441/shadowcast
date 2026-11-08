@@ -10,7 +10,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 import links_live  # noqa: E402
 
-from csi.links import load_thresholds  # noqa: E402
+from csi.detect import LIVE_SCORER  # noqa: E402
+from csi.links import load_thresholds, read_thresholds  # noqa: E402
 
 FAKE_PORT = "/dev/cu.no-such-csi-port"
 LABELS = ("rx1<-00", "rx1<-01", "rx2<-00", "rx2<-01")
@@ -52,6 +53,8 @@ def test_calibrate_writes_one_threshold_per_link(tmp_path):
     thresholds = load_thresholds(out)
     assert set(thresholds) == set(LABELS)
     assert all(t > 0 for t in thresholds.values())
+    recorded = read_thresholds(out)                 # the calibration's record: the scorer and each link's rate
+    assert recorded.scorer == LIVE_SCORER and set(recorded.pkt_rate_hz) == set(LABELS)
 
 
 @pytest.mark.slow

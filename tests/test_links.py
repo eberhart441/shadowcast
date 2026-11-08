@@ -1,9 +1,10 @@
 """Per-link monitoring and calibration. Driven by simulated (receiver, packet) streams from the text seam."""
 import pytest
 
-from csi.detect import EMPTY, MOTION
+from csi.detect import EMPTY, LIVE_SCORER, MOTION, MotionScorer
 from csi.links import (NO_SIGNAL, UNCALIBRATED, WARMUP, LinkId, LinkMonitor, calibrate_links,
-                       calibrate_links_report, load_thresholds, save_thresholds)
+                       calibrate_links_report, load_thresholds, rate_notes, read_thresholds, save_thresholds,
+                       threshold_file_notes)
 from csi.simulate import SENDER_MACS, Segment, simulate_links
 
 RECEIVERS = ("rx1", "rx2")
@@ -119,3 +120,75 @@ def test_link_without_threshold_is_reported_uncalibrated_not_guessed():
     rows = {row["id"]: row for row in monitor.snapshot(now=end)}
     assert rows["rx2<-01"]["threshold"] is None
     assert rows["rx2<-01"]["state"] == UNCALIBRATED
+
+
+# ---------------------------------------------------------------- the calibration record in links.json
+
+
+def test_a_calibration_saved_with_its_record_keeps_scorer_rates_and_time_and_still_loads(tmp_path):
+    path = tmp_path / "links.json"
+    report = calibrate_links_report(empty_links(seconds=12, seed=50))
+    save_thresholds(path, report.thresholds, report.record())
+    assert load_thresholds(path) == pytest.approx(report.thresholds)
+    recorded = read_thresholds(path)
+    assert recorded.thresholds == pytest.approx(report.thresholds)
+    assert recorded.scorer == LIVE_SCORER
+    assert set(recorded.pkt_rate_hz) == LABELS
+    assert all(rate == pytest.approx(100, rel=0.1) for rate in recorded.pkt_rate_hz.values())
+    assert recorded.margin == report.margin and recorded.noisy is False
+    assert recorded.saved_at and recorded.saved_at.startswith("20")
+    assert threshold_file_notes(recorded) == []
+
+
+def test_an_old_plain_thresholds_file_still_loads_and_is_flagged_as_unrecorded(tmp_path):
+    path = tmp_path / "links.json"
+    path.write_text('{"rx1<-00": 3.5, "rx2<-01": 7.25}')
+    assert load_thresholds(path) == {"rx1<-00": 3.5, "rx2<-01": 7.25}
+    recorded = read_thresholds(path)
+    assert recorded.scorer is None and recorded.pkt_rate_hz == {}
+    (note,) = threshold_file_notes(recorded, "links.json")
+    assert "does not record" in note
+
+
+def test_a_file_from_another_scorer_is_flagged(tmp_path):
+    from csi.detect import LEGACY_SCORER
+    path = tmp_path / "links.json"
+    report = calibrate_links_report(empty_links(seconds=12, seed=51), scorer=LEGACY_SCORER)
+    save_thresholds(path, report.thresholds, report.record())
+    (note,) = threshold_file_notes(read_thresholds(path), "links.json")
+    assert "another motion scorer" in note and "recalibrate" in note
+
+
+def test_a_thresholds_file_that_is_not_link_thresholds_is_a_value_error(tmp_path):
+    path = tmp_path / "links.json"
+    for text in ('[1, 2]', '{"rx1<-00": {"x": 1}}', '{"thresholds": {"rx1<-00": 3.0}, "scorer": {"window_s": 1}}'):
+        path.write_text(text)
+        with pytest.raises(ValueError):
+            read_thresholds(path)
+
+
+def row_at(label, state, pkt_rate):
+    return {"id": label, "state": state, "pkt_rate": pkt_rate}
+
+
+def test_rate_notes_flag_links_whose_packet_rate_moved_more_than_30_percent():
+    rates = {"rx1<-00": 40.0, "rx1<-01": 40.0, "rx2<-00": 40.0}
+    rows = [row_at("rx1<-00", "EMPTY", 24.0),      # 40% lower: flagged
+            row_at("rx1<-01", "MOTION", 46.0),     # 15% higher: fine
+            row_at("rx2<-00", "WARMUP", 10.0),     # still warming up: not judged
+            row_at("rx2<-01", "EMPTY", 90.0)]      # no recorded rate: not judged
+    (note,) = rate_notes(rates, rows)
+    assert note.startswith("rx1<-00") and "24 pkt/s" in note and "40 pkt/s" in note
+
+
+def test_every_link_scores_with_the_live_scorer():
+    tagged = empty_links(seconds=4, seed=52)
+    monitor, _, end = run_monitor(tagged, {})
+    label = "rx1<-00"
+    scorer = MotionScorer.from_config(LIVE_SCORER)
+    expected = None
+    for receiver, pkt in tagged:
+        if LinkId(receiver, pkt.mac).label == label:
+            expected = scorer.push(pkt)
+    rows = {row["id"]: row for row in monitor.snapshot(now=end)}
+    assert rows[label]["score"] == pytest.approx(expected, rel=1e-12)

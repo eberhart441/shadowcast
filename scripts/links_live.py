@@ -10,7 +10,9 @@
 Each link is calibrated and judged on its own, since each has its own signal scale. Real ports need
 --thresholds (from --calibrate) and refuse to start without it. --simulate-links uses the simulator
 default for every link unless --thresholds is given. Links without enough calibration data get no
-threshold and are reported, not guessed.
+threshold and are reported, not guessed. --calibrate writes the motion-scorer configuration, each link's
+packet rate and the time next to the thresholds; a file made with another scorer, or a link whose packet
+rate has moved more than 30% since, is flagged under the table.
 
 States: EMPTY (green), MOTION (red), NO_SIGNAL (grey: no packet for 2 s), WARMUP (no full window yet),
 UNCALIBRATED (no threshold for that link). Ctrl+C stops and releases every port.
@@ -26,9 +28,9 @@ from typing import Iterable, Mapping, Optional
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from csi.common import SIM_RATE_HZ, add_margin_arg, simulated_rate_hz  # noqa: E402
-from csi.detect import SIM_THRESHOLD  # noqa: E402
-from csi.links import (NO_SIGNAL, UNCALIBRATED, WARMUP, LinkId, LinkMonitor, calibrate_links_report,  # noqa: E402
-                       load_thresholds, save_thresholds)
+from csi.detect import LIVE_SCORER, SIM_THRESHOLD  # noqa: E402
+from csi.links import (NO_SIGNAL, UNCALIBRATED, WARMUP, LinkId, LinkMonitor, ThresholdFile,  # noqa: E402
+                       calibrate_links_report, rate_notes, read_thresholds, save_thresholds, threshold_file_notes)
 from csi.multisource import MultiSource, parse_port_specs  # noqa: E402
 from csi.parser import CSIPacket, Stream, serial_stream  # noqa: E402
 from csi.room import DEFAULT_ROOM_PATH, Room, load_room  # noqa: E402
@@ -64,7 +66,8 @@ def build_parser() -> argparse.ArgumentParser:
     t.add_argument("--thresholds", metavar="links.json", help="per-link thresholds from --calibrate")
     c = ap.add_argument_group("calibration")
     c.add_argument("--calibrate", type=float, metavar="SECONDS",
-                   help="record an empty room for SECONDS, write per-link thresholds to --out, then exit")
+                   help="record an empty room for SECONDS (60-120 recommended: nobody may move, a clip with "
+                        "movement is refused), write per-link thresholds to --out, then exit")
     c.add_argument("--clips", type=int, default=1, metavar="N",
                    help="with --calibrate: record N clips of SECONDS each, with a 3 s pause between them, "
                         "scored separately and pooled (default 1). Use it when one empty clip is too short "
@@ -106,15 +109,18 @@ def open_sources(args: argparse.Namespace, calibrating: bool, seconds: Optional[
     return streams
 
 
-def resolve_thresholds(args: argparse.Namespace) -> tuple[dict[str, float], str]:
-    """(thresholds by link label, description for the header). Runs before any port is opened."""
+def resolve_thresholds(args: argparse.Namespace) -> tuple[dict[str, float], str, Optional[ThresholdFile]]:
+    """(thresholds by link label, description for the header, the file read or None). Runs before any port is
+    opened."""
     if args.thresholds:
         try:
-            return load_thresholds(args.thresholds), f"--thresholds {args.thresholds}"
+            recorded = read_thresholds(args.thresholds)
         except (OSError, ValueError) as e:
             raise SystemExit(f"error: cannot read thresholds {args.thresholds}: {e}")
+        return recorded.thresholds, f"--thresholds {args.thresholds}", recorded
     if args.simulate_links:
-        return {lid.label: SIM_THRESHOLD for lid in simulated_links(load_room(args.room))}, "simulator default"
+        return ({lid.label: SIM_THRESHOLD for lid in simulated_links(load_room(args.room))}, "simulator default",
+                None)
     raise SystemExit("error: real ports need per-link thresholds: pass --thresholds links.json, or calibrate "
                      "first on an empty room with: links_live.py --port <PORT> --calibrate 60 --out links.json")
 
@@ -188,7 +194,7 @@ def run_calibration(args: argparse.Namespace) -> int:
     total = n * args.calibrate + (n - 1) * CLIP_PAUSE_S
     ms = MultiSource(open_sources(args, calibrating=True, seconds=total))
     print(f"calibrating: {n} clip(s) of {args.calibrate:.0f}s, keep the room empty... "
-          f"margin {args.margin:.2f} (threshold = margin x p99)", flush=True)
+          f"margin {args.margin:.2f} (threshold = margin x p99), scorer {LIVE_SCORER.describe()}", flush=True)
     clips = record_clips(ms, args.calibrate, n)
     report = calibrate_links_report(clips=clips, expected=expected, send_rate_hz=calibration_rate(args),
                                     margin=args.margin)
@@ -200,7 +206,7 @@ def run_calibration(args: argparse.Namespace) -> int:
     if not report.calibrations:
         print("calibration failed: no link has enough data, nothing written", file=sys.stderr)
         return 1
-    save_thresholds(args.out, report.thresholds)
+    save_thresholds(args.out, report.thresholds, report.record())
     print(f"wrote {len(report.calibrations)} link threshold(s) at margin {report.margin:.2f} -> {args.out}")
     if report.skipped:
         print(f"{len(report.skipped)} link(s) have no threshold and will show UNCALIBRATED; "
@@ -211,7 +217,11 @@ def run_calibration(args: argparse.Namespace) -> int:
 
 def run_live(args: argparse.Namespace) -> int:
     expected = simulated_links(load_room(args.room)) if args.simulate_links else []
-    thresholds, source_desc = resolve_thresholds(args)
+    thresholds, source_desc, recorded = resolve_thresholds(args)
+    file_notes = threshold_file_notes(recorded, f"--thresholds {args.thresholds}") if recorded else []
+    for note in file_notes:
+        print(f"warning: {note}", file=sys.stderr, flush=True)
+    calibration_rates = recorded.pkt_rate_hz if recorded else {}
     send_rate = (args.rate or SIM_RATE_HZ) if args.simulate_links else args.rate
     monitor = LinkMonitor(thresholds, expected=expected, send_rate_hz=send_rate)
     ms = MultiSource(open_sources(args, calibrating=False))
@@ -225,7 +235,10 @@ def run_live(args: argparse.Namespace) -> int:
                 total += 1
             now = time.time()
             if now >= next_draw:
-                sys.stdout.write(CLEAR + render_frame(monitor.snapshot(now), ms.status(), header))
+                rows = monitor.snapshot(now)
+                notes = file_notes + rate_notes(calibration_rates, rows)
+                sys.stdout.write(CLEAR + render_frame(rows, ms.status(), header)
+                                 + "".join(f"{RED}warning: {note}{RESET}\n" for note in notes))
                 sys.stdout.flush()
                 next_draw = now + args.every
             if args.duration and now - start >= args.duration:

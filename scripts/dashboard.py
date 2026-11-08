@@ -13,8 +13,10 @@
 Endpoints: GET /  (page), GET /api/state  (one payload), GET /api/events  (SSE, ~5 Hz).
 Binds to 127.0.0.1 unless --host says otherwise. Mode: links are fixed by default (--thresholds file, or the
 simulated empty-room calibration with --simulate-room; without either, links show UNCALIBRATED until calibrated
-or set). --auto-threshold switches live sources to auto mode (experimental: each link learns its own baseline,
-see csi/adaptive.py) and ignores any thresholds file. A Set on a link makes it fixed.
+or set). The page's Calibrate uses the quiet-room rules unless "noisy room" is ticked. A thresholds file made with
+another motion scorer is flagged in the status messages. --auto-threshold switches live sources to auto mode (each
+link learns its own baseline online, no calibration; see csi/adaptive.py) and ignores any thresholds file. A Set on
+a link makes it fixed.
 Ctrl+C stops the server and releases every port.
 A replay needs no serial port; when it has finished, the final state stays up (status.finished is true).
 """
@@ -30,8 +32,9 @@ from typing import Mapping, Optional
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from csi.common import margin_arg  # noqa: E402
-from csi.detect import DEFAULT_MARGIN  # noqa: E402
-from csi.links import load_thresholds  # noqa: E402
+from csi.detect import DEFAULT_MARGIN, LIVE_SCORER  # noqa: E402
+from csi.links import read_thresholds, threshold_file_notes  # noqa: E402
+from csi.live_calibration import DEFAULT_CLIPS, DEFAULT_LEAD_S, DEFAULT_SECONDS, PAUSE_S  # noqa: E402
 from csi.multisource import parse_port_specs  # noqa: E402
 from csi.parser import Stream, serial_stream  # noqa: E402
 from csi.replay import ReplayError, ReplayServer, load_log, session_dashboard  # noqa: E402
@@ -41,6 +44,7 @@ from csi.server import DEFAULT_HOST, DEFAULT_PORT, DEFAULT_THRESHOLDS_FILE, Dash
     default_walk, looping_room_streams, simulated_thresholds  # noqa: E402
 
 TICK_S = 0.5
+CALIBRATION_S = DEFAULT_LEAD_S + DEFAULT_CLIPS * DEFAULT_SECONDS + (DEFAULT_CLIPS - 1) * PAUSE_S  # API default
 
 
 def speed_arg(text: str) -> float:
@@ -78,7 +82,8 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--seed", type=int, default=0, help="simulator seed")
     g.add_argument("--sim-quiet-first", type=quiet_seconds, default=0.0, metavar="SECONDS",
                    help="with --simulate-room: the simulated room is empty for SECONDS before the walk starts, "
-                        "so Calibrate can run in the demo (the default calibration takes about 45 s; default 0)")
+                        f"so Calibrate can run in the demo ({DEFAULT_CLIPS} clips of {DEFAULT_SECONDS:g} s, the "
+                        f"calibration default, take about {CALIBRATION_S:.0f} s with the lead-in; default 0)")
     r = ap.add_argument_group("replay (no hardware)")
     r.add_argument("--replay", type=Path, metavar="run.jsonl",
                    help="serve a run written with --log: the same states, at the logged pace")
@@ -100,9 +105,11 @@ def build_parser() -> argparse.ArgumentParser:
                          "a calibration on a simulated empty room; with --replay-session the default is one "
                          "calibrated on the session's first empty recording.")
     ap.add_argument("--auto-threshold", action="store_true",
-                    help="experimental auto mode: each link adapts to its own noise baseline (about 10 s of quiet at "
-                         "start; a person still for about 25 s is absorbed; walking is detected less sensitively, since "
-                         "the room needs two links to agree). Ignores --thresholds. Live sources only")
+                    help="auto mode, no calibration: each link learns its own noise level online (WARMUP for about "
+                         "12 s; it enters MOTION at about 1.5-2x its quiet level; its baseline is frozen while it is "
+                         "in MOTION, so someone moving stays detected for up to 5 minutes; a receiver reboot restarts "
+                         "its warm-up; the room needs two links to agree, or one strong one). Ignores --thresholds. "
+                         "Live sources only")
     s = ap.add_argument_group("server")
     s.add_argument("--http-port", type=int, default=DEFAULT_PORT, help=f"HTTP port (default {DEFAULT_PORT})")
     s.add_argument("--host", default=DEFAULT_HOST,
@@ -141,12 +148,21 @@ def check_source(args: argparse.Namespace) -> None:
 
 
 def load_link_thresholds(path: Optional[Path]) -> Optional[Mapping[str, float]]:
+    """The thresholds in ``path`` (None for no file); a file that may not fit the live scorer is warned about."""
     if path is None:
         return None
     try:
-        return load_thresholds(path)
+        recorded = read_thresholds(path)
     except (OSError, ValueError) as e:
         raise SystemExit(f"error: cannot read thresholds {path}: {e}")
+    for note in threshold_file_notes(recorded, f"thresholds {path}"):
+        print(f"warning: {note}", file=sys.stderr, flush=True)
+    return recorded.thresholds
+
+
+def threshold_notes(path: Optional[Path]) -> list[str]:
+    """Status messages about a thresholds file that may not fit the live scorer (read again: it already loaded)."""
+    return [] if path is None else threshold_file_notes(read_thresholds(path), f"thresholds {path}")
 
 
 def server_mode(args: argparse.Namespace) -> str:
@@ -198,9 +214,11 @@ def build_server(args: argparse.Namespace) -> FrameServer:
     else:
         thresholds_source = (f"loaded from {args.thresholds}" if args.thresholds else
                              ("simulated empty room" if args.simulate_room else "none"))
+    notes = threshold_notes(args.thresholds) if mode == "fixed" else []
     return DashboardServer(room, sources, thresholds, host=args.host, port=args.http_port, log=args.log,
-                           allow_control=args.allow_control, thresholds_path=save_to, mode=mode,
-                           log_meta={"source": source, "thresholds_source": thresholds_source})
+                           allow_control=args.allow_control, thresholds_path=save_to, mode=mode, notes=notes,
+                           log_meta={"source": source, "thresholds_source": thresholds_source,
+                                     "scorer": LIVE_SCORER.as_dict()})
 
 
 def main(argv: Optional[list[str]] = None) -> int:
@@ -215,8 +233,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     if not controls_allowed(args.host, args.allow_control) and not args.replay and not args.replay_session:
         print("commands disabled: not bound to localhost (calibrate and tuning need --allow-control)", flush=True)
     if server_mode(args) == "auto":
-        print("auto mode (--auto-threshold, experimental): each link learns its own baseline "
-              "(WARMUP for the first 10 s, no calibration needed)", flush=True)
+        print("auto mode (--auto-threshold): each link learns its own baseline online "
+              "(WARMUP for about the first 12 s, no calibration needed)", flush=True)
     elif args.port and args.thresholds is None:
         print("no thresholds: every link shows UNCALIBRATED until calibrated (see links_live.py --calibrate)",
               flush=True)

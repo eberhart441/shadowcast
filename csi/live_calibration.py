@@ -11,11 +11,14 @@ The dashboard already owns the serial ports, so the job never opens any. The ser
 
 A link whose clips are less than MIN_CLEAN_FRACTION quiet is skipped with the reason (as in
 calibrate_links_report: "record again"), and keeps its previous threshold. Refusal and the message are the
-same as scripts/links_live.py --calibrate.
+same as scripts/links_live.py --calibrate. The clips are scored with the live scorer (LIVE_SCORER), as the
+monitor scores them.
 
-``noisy`` (default true, the dashboard's default): movement is never a refusal. The threshold is p97 x margin
-over every window, and each result carries a warning with how much of the clip looked like movement. With
-``noisy`` false the quiet-room rules apply (a busy clip is refused).
+The defaults are 3 clips of 20 s (a minute of empty room) under the quiet-room rules: a clip with movement in it
+is refused rather than averaged in. ``noisy`` (opt-in) never refuses movement: the threshold is p97 x margin
+over every window, and each result carries a warning with how much of the clip looked like movement. Movement
+then lifts the threshold above weak motion (in a replay of the recorded data, 2 s of walking in a 30 s clip cut
+weak-motion detection from 74% to 8%), so use it only when the room cannot be cleared.
 """
 from __future__ import annotations
 
@@ -26,6 +29,10 @@ from .detect import DEFAULT_MARGIN, validate_margin
 from .links import LinkId, calibrate_links_report
 
 PAUSE_S = 3.0
+DEFAULT_CLIPS = 3
+DEFAULT_SECONDS = 20.0   # per clip: 3 x 20 s = a minute of empty room (2 s windows need more data than 1 s ones)
+DEFAULT_LEAD_S = 5.0
+DEFAULT_NOISY = False    # quiet-room rules by default; the noisy-room p97 rule is opt-in
 MAX_CLIPS = 10
 MAX_SECONDS = 120.0
 MAX_LEAD_S = 60.0
@@ -47,12 +54,13 @@ def _number(body: Mapping, key: str, default: float, lo: float, hi: float) -> fl
 
 
 def parse_request(body: Mapping) -> dict:
-    """Validated calibrate options: clips, seconds, margin, lead_s (defaults 3, 10, DEFAULT_MARGIN, 5)."""
+    """Validated calibrate options: clips, seconds, margin, lead_s, noisy (defaults DEFAULT_CLIPS, DEFAULT_SECONDS,
+    DEFAULT_MARGIN, DEFAULT_LEAD_S, DEFAULT_NOISY)."""
     unknown = sorted(set(body) - REQUEST_KEYS)
     if unknown:
         raise RequestError(f"unknown calibration option(s): {', '.join(unknown)}; "
                            f"allowed: {', '.join(sorted(REQUEST_KEYS))}")
-    clips = _number(body, "clips", 3, 1, MAX_CLIPS)
+    clips = _number(body, "clips", DEFAULT_CLIPS, 1, MAX_CLIPS)
     if clips != int(clips):
         raise RequestError(f"clips must be a whole number, got {clips:g}")
     if isinstance(body.get("margin"), bool):
@@ -61,14 +69,14 @@ def parse_request(body: Mapping) -> dict:
         margin = validate_margin(body.get("margin", DEFAULT_MARGIN))
     except (TypeError, ValueError) as e:
         raise RequestError(str(e)) from e
-    noisy = body.get("noisy", True)
+    noisy = body.get("noisy", DEFAULT_NOISY)
     if not isinstance(noisy, bool):
         raise RequestError(f"noisy must be true or false, got {noisy!r}")
     return {
         "clips": int(clips),
-        "seconds": _number(body, "seconds", 10, 1, MAX_SECONDS),
+        "seconds": _number(body, "seconds", DEFAULT_SECONDS, 1, MAX_SECONDS),
         "margin": margin,
-        "lead_s": _number(body, "lead_s", 5, 0, MAX_LEAD_S),
+        "lead_s": _number(body, "lead_s", DEFAULT_LEAD_S, 0, MAX_LEAD_S),
         "noisy": noisy,
     }
 

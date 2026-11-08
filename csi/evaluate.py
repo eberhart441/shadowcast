@@ -5,7 +5,8 @@
 
 Per session: the first ``empty`` recording (by start time) calibrates the motion
 threshold via ``calibrate_packets``. Every other recording is replayed through
-``detect_packets`` with that threshold, exactly as the live CLI would. Each
+``detect_packets`` with that threshold, exactly as the live CLI would, and both use
+one scorer configuration (``LIVE_SCORER`` unless ``scorer`` says otherwise). Each
 decision the detector emits (one per packet, each over its trailing windows) is
 compared to the label of the file it came from. Nothing is split at random.
 
@@ -26,8 +27,8 @@ from typing import Iterable, Optional, Sequence
 import pandas as pd
 
 from .breathing import WINDOW_S as BREATH_WINDOW_S
-from .detect import (DEFAULT_MARGIN, EMPTY, MOTION, STILL_PRESENT, Calibration, CalibrationError, calibrate_packets,
-                     detect_packets, validate_margin)
+from .detect import (DEFAULT_MARGIN, EMPTY, LIVE_SCORER, MOTION, STILL_PRESENT, Calibration, CalibrationError,
+                     ScorerConfig, calibrate_packets, detect_packets, validate_margin)
 from .parser import CSIPacket
 from .recording import LABELS, META_NAME, Recording, Session, load_session
 
@@ -61,6 +62,7 @@ class SessionResult:
 class EvaluationReport:
     sessions: list[SessionResult]
     breathing: bool = False  # whether STILL_PRESENT predictions were made (and the still rows scored)
+    scorer: ScorerConfig = LIVE_SCORER  # the scorer every calibration and detection of the report used
 
     def total(self) -> pd.DataFrame:
         """Confusion matrix summed over all sessions."""
@@ -109,7 +111,8 @@ def _combine(states: Iterable[str]) -> str:
     return STILL_PRESENT if STILL_PRESENT in states else EMPTY
 
 
-def _evaluate_session(session: Session, breathing: bool, margin: float) -> SessionResult:
+def _evaluate_session(session: Session, breathing: bool, margin: float,
+                      scorer: ScorerConfig = LIVE_SCORER) -> SessionResult:
     name = session.path.name
     empties = [r for r in session.recordings if r.label == "empty"]
     if not empties:
@@ -117,16 +120,16 @@ def _evaluate_session(session: Session, breathing: bool, margin: float) -> Sessi
     calib_rec = empties[0]
     scored: list[Recording] = [r for r in session.recordings if r is not calib_rec]
     if len(set().union(*(_recording_macs(r) for r in session.recordings))) > 1:
-        return _evaluate_links(session, calib_rec, scored, breathing, margin)
+        return _evaluate_links(session, calib_rec, scored, breathing, margin, scorer)
     try:
-        calibration = calibrate_packets(calib_rec.packets(), margin=margin)
+        calibration = calibrate_packets(calib_rec.packets(), margin=margin, scorer=scorer)
     except CalibrationError as e:
         raise EvaluationError(f"session {name!r}: cannot calibrate on {calib_rec.path.name}: {e}") from e
 
     pairs: list[tuple[str, str]] = []
     no_breathing = 0
     for rec in scored:
-        for reading in detect_packets(rec.packets(), calibration.threshold, breathing=breathing):
+        for reading in detect_packets(rec.packets(), calibration.threshold, breathing=breathing, scorer=scorer):
             pairs.append((rec.label, reading.state))
             no_breathing += not reading.enough_data
 
@@ -146,7 +149,7 @@ def _evaluate_session(session: Session, breathing: bool, margin: float) -> Sessi
 
 
 def _evaluate_links(session: Session, calib_rec: Recording, scored: list[Recording], breathing: bool,
-                    margin: float) -> SessionResult:
+                    margin: float, scorer: ScorerConfig = LIVE_SCORER) -> SessionResult:
     """A session whose recordings hold several senders: each sender is a link, calibrated on its own packets of
     the first empty recording and detected on its own. At each link reading the room state is the combination
     of every link's latest state (MOTION if any link says MOTION), and that is one decision in the matrix."""
@@ -157,7 +160,7 @@ def _evaluate_links(session: Session, calib_rec: Recording, scored: list[Recordi
     macs = sorted(set().union(*(_recording_macs(r) for r in session.recordings)))
     for mac in macs:
         try:
-            links[mac] = calibrate_packets(calib_by_mac.get(mac, []), margin=margin)
+            links[mac] = calibrate_packets(calib_by_mac.get(mac, []), margin=margin, scorer=scorer)
         except CalibrationError as e:
             skipped[mac] = str(e)
     if not links:
@@ -170,7 +173,8 @@ def _evaluate_links(session: Session, calib_rec: Recording, scored: list[Recordi
         by_mac = _by_mac(rec.packets())
         events = [(reading.host_ts, mac, reading)
                   for mac, cal in links.items()
-                  for reading in detect_packets(by_mac.get(mac, []), cal.threshold, breathing=breathing)]
+                  for reading in detect_packets(by_mac.get(mac, []), cal.threshold, breathing=breathing,
+                                                scorer=scorer)]
         events.sort(key=lambda e: e[0])
         latest: dict[str, str] = {}
         for _, mac, reading in events:
@@ -190,12 +194,13 @@ def _evaluate_links(session: Session, calib_rec: Recording, scored: list[Recordi
 
 
 def evaluate_sessions(folders: Sequence[Path | str], breathing: bool = False,
-                      margin: float = DEFAULT_MARGIN) -> EvaluationReport:
+                      margin: float = DEFAULT_MARGIN, *, scorer: ScorerConfig = LIVE_SCORER) -> EvaluationReport:
     """Evaluate each session folder. Raises EvaluationError listing every unusable session.
 
     ``breathing=False`` (default) scores motion-only; ``True`` also makes STILL_PRESENT predictions.
     ``margin`` is the calibration margin for each session's threshold (threshold = margin x p99 of the
-    empty recording); a non-positive margin raises ValueError.
+    empty recording); a non-positive margin raises ValueError. ``scorer`` (default: the live configuration)
+    is used for every calibration and every detection, so thresholds and scores always match.
     """
     margin = validate_margin(margin)
     problems: list[str] = []
@@ -210,7 +215,7 @@ def evaluate_sessions(folders: Sequence[Path | str], breathing: bool = False,
         sessions.append(session)
     if problems:
         raise EvaluationError("\n".join(problems))
-    return EvaluationReport([_evaluate_session(s, breathing, margin) for s in sessions], breathing)
+    return EvaluationReport([_evaluate_session(s, breathing, margin, scorer) for s in sessions], breathing, scorer)
 
 
 STILL_LABELS = tuple(label for label, state in LABEL_STATE.items() if state == STILL_PRESENT)
@@ -235,7 +240,7 @@ def _format_matrix(matrix: pd.DataFrame, breathing: bool) -> str:
 
 
 def format_report(report: EvaluationReport) -> str:
-    out: list[str] = []
+    out: list[str] = [f"motion scorer: {report.scorer.describe()}"]
     if not report.breathing:
         out.append("mode: motion-only (breathing disabled; STILL_PRESENT is never predicted). "
                    "Pass --breathing to score the still_* labels.")

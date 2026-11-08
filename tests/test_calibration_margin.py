@@ -124,7 +124,7 @@ def test_margin_1_5_keeps_held_out_empty_within_tolerance():
 
 
 def test_default_margin_keeps_held_out_empty_within_tolerance():
-    # margin 1.0 fails this on the simulator (mean ~39% MOTION over 20 seeds); 1.25 gives 0%
+    # margin 1.0 fails this on the simulator (mean ~40-45% MOTION with either window length); 1.25 gives 0%
     assert DEFAULT_MARGIN == 1.25
     assert held_out_false_alarm_rate(DEFAULT_MARGIN) < FALSE_ALARM_TOLERANCE
 
@@ -145,7 +145,7 @@ def test_margin_1_5_does_not_read_a_still_person_as_motion():
 
 
 def test_default_margin_does_not_read_a_still_person_as_motion():
-    # margin 1.0 reads a simulated breathing person as MOTION ~68% of the time; 1.25 gives 0%
+    # margin 1.0 reads a simulated breathing person as MOTION ~50-70% of the time; 1.25 gives 0%
     assert still_person_motion_rate(DEFAULT_MARGIN) < FALSE_ALARM_TOLERANCE
 
 
@@ -162,7 +162,7 @@ def test_larger_margin_never_detects_more_motion_on_the_same_session():
     assert motion_counts[0] > motion_counts[-1]  # the margin really changes the outcome here
 
 
-# --- 3. CLI: --margin on links_live.py and detect_live.py; file format unchanged ---
+# --- 3. CLI: --margin on links_live.py and detect_live.py; the thresholds file keeps its calibration record ---
 
 @pytest.mark.slow
 def test_links_live_margin_scales_saved_thresholds_and_is_printed(tmp_path):
@@ -177,8 +177,11 @@ def test_links_live_margin_scales_saved_thresholds_and_is_printed(tmp_path):
     assert set(t_default) == set(t_doubled) and t_default
     for label in t_default:
         assert t_doubled[label] == pytest.approx(2 * t_default[label], rel=1e-9)
-    # the thresholds file stays a plain {label: number} object
-    assert all(isinstance(v, float) for v in json.loads(doubled_out.read_text()).values())
+    # --calibrate now writes its record next to the thresholds (a plain {label: number} object still loads, see
+    # tests/test_links.py): the thresholds stay numbers, and the margin and scorer are kept
+    saved = json.loads(doubled_out.read_text())
+    assert all(isinstance(v, float) for v in saved["thresholds"].values())
+    assert saved["margin"] == 2.0 and saved["scorer"]["window_s"] == 2.0
 
 
 @pytest.mark.slow
