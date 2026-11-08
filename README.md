@@ -107,9 +107,9 @@ the senders run from battery or USB. The rig runs on channel 6 and each sender t
 | `tx0` | sender | ESP32-S3 | (2.77, 1.84), bottom-right | MAC `1a:00:00:00:00:00`, battery or USB |
 | `tx1` | sender | ESP32-C5 | (0, 1.84), bottom-left | MAC `1a:00:00:00:00:01`, battery or USB |
 
-A third receiver, `rx3` (ESP32-C5, top-middle at (1.385, 0)), is defined in `config/room.json`
-with `"enabled": false`. It is not part of the rig: it is ignored everywhere until you set it
-to `true` (see [Scaling up](#scaling-up)). `config/room_c5_only.json` is an earlier variant
+A third receiver, `rx3` (ESP32-C5, top-middle at (1.385, 0), serial `10:BD:A3:CB:E6:4C`), is enabled in
+`config/room.json` on `feat/kalman-tracker` (2026-11-08): 3 receivers x 2 senders = 6 links. Before it was
+plugged in it heard `tx0` at -54 dBm and `tx1` at -49 dBm, 36 to 39 packets/s each. `config/room_c5_only.json` is an earlier variant
 (`rx1` disabled, `rx3` 1.5 m beyond the top wall) and does not describe the current rig.
 
 Every receiver hears every sender, so there are four links, named

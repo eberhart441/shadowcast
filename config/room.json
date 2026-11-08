@@ -24,7 +24,7 @@
       "chip": "ESP32-C5",
       "x": 1.385,
       "y": 0.0,
-      "enabled": false
+      "serial": "10:BD:A3:CB:E6:4C"
     },
     "tx0": {
       "role": "sender",
