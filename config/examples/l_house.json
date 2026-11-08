@@ -1,0 +1,34 @@
+{
+  "comment": "Planning example, not a rig: an L-shaped brick house, a 10 x 4 m main block (living room and kitchen) with a 4 x 4 m bedroom wing below its west end, drywall inside. A first attempt with typical mistakes for the planner to find: tx3 shares the north side with rx1 and rx2, rx3 and tx1 are bunched at the corner by the notch, and several links cross the notch outside the house. The footprint is the L; room is its bounding box (what the dashboard draws). x runs left to right, y runs top to bottom, metres, origin at the top-left corner.",
+  "room": {
+    "width_m": 10.0,
+    "depth_m": 8.0
+  },
+  "send_hz": 20,
+  "footprint": [[0.0, 0.0], [10.0, 0.0], [10.0, 4.0], [4.0, 4.0], [4.0, 8.0], [0.0, 8.0]],
+  "zones": {
+    "living": [0.0, 0.0, 6.0, 4.0],
+    "kitchen": [6.0, 0.0, 10.0, 4.0],
+    "bedroom": [0.0, 4.0, 4.0, 8.0]
+  },
+  "walls": [
+    {"a": [0.0, 0.0], "b": [10.0, 0.0], "material": "brick"},
+    {"a": [10.0, 0.0], "b": [10.0, 4.0], "material": "brick"},
+    {"a": [10.0, 4.0], "b": [4.0, 4.0], "material": "brick"},
+    {"a": [4.0, 4.0], "b": [4.0, 8.0], "material": "brick"},
+    {"a": [4.0, 8.0], "b": [0.0, 8.0], "material": "brick"},
+    {"a": [0.0, 8.0], "b": [0.0, 0.0], "material": "brick"},
+    {"a": [6.0, 0.0], "b": [6.0, 4.0], "material": "drywall"},
+    {"a": [0.0, 4.0], "b": [4.0, 4.0], "material": "drywall"}
+  ],
+  "nodes": {
+    "rx1": {"role": "receiver", "chip": "ESP32-C5", "x": 2.0, "y": -0.9},
+    "rx2": {"role": "receiver", "chip": "ESP32-C5", "x": 8.0, "y": -0.9},
+    "rx3": {"role": "receiver", "chip": "ESP32-C5", "x": 10.9, "y": 3.8},
+    "rx4": {"role": "receiver", "chip": "ESP32-C5", "x": -0.9, "y": 6.0},
+    "tx0": {"role": "sender", "chip": "ESP32-C5", "mac": "1a:0c:12:00:00:00", "x": 2.0, "y": 8.9},
+    "tx1": {"role": "sender", "chip": "ESP32-C5", "mac": "1a:0c:12:00:00:01", "x": 10.0, "y": 4.8},
+    "tx2": {"role": "sender", "chip": "ESP32-C5", "mac": "1a:0c:12:00:00:02", "x": -0.9, "y": 2.0},
+    "tx3": {"role": "sender", "chip": "ESP32-C5", "mac": "1a:0c:12:00:00:03", "x": 5.0, "y": -0.9}
+  }
+}
