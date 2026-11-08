@@ -46,3 +46,12 @@ Leave unfinished work findable: a comment on the ticket's issue saying what is l
 ## Report
 
 Send one final report: branch, what changed, test results (counts), and what you could not verify. Send it when all background work has ended.
+
+## Landing on main
+
+- Work reaches `main` through a pull request from `csi-sensing`.
+- Run `git fetch` before comparing with `origin/main`. A PR merged on GitHub leaves the local `origin/main` stale.
+- Wait for CI with `gh pr checks <n> --watch`.
+- A CI failure that passes on `gh run rerun <id> --failed` is a flake. Report it; do not ignore it.
+- Merge with `gh pr merge <n> --merge`. A merge commit keeps the history.
+- Commits made after a merge need a new PR.
