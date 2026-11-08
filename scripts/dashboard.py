@@ -7,6 +7,7 @@
     dashboard.py --port rx1=/dev/cu.usbmodem2101 --thresholds data/links_cal1_m1.json   # fixed thresholds
     dashboard.py --port ... --auto-threshold                       # experimental auto mode, no calibration needed
     dashboard.py --simulate-room --log run.jsonl                   # also append the state stream to a file
+    dashboard.py --port ... --estimator rti                        # force the RTI heatmap (default auto)
     dashboard.py --replay run.jsonl --speed 8                      # serve a logged run (1 = original pace, max = fastest)
     dashboard.py --replay-session data/hw5 --speed 8 [--margin X | --thresholds links.json]
 
@@ -18,6 +19,9 @@ another motion scorer is flagged in the status messages. --auto-threshold switch
 link learns its own baseline online, no calibration; see csi/adaptive.py) and ignores any thresholds file. A Set on
 a link makes it fixed.
 Ctrl+C stops the server and releases every port.
+--estimator picks the heatmap estimator of live sources: rti (regularised radio tomographic imaging, csi/rti.py),
+backprojection (the coverage-normalised map) or auto (the default: rti while at least 6 links report, else
+backprojection).
 A replay needs no serial port; when it has finished, the final state stays up (status.finished is true).
 """
 from __future__ import annotations
@@ -33,6 +37,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from csi.common import margin_arg  # noqa: E402
 from csi.detect import DEFAULT_MARGIN, LIVE_SCORER  # noqa: E402
+from csi.heatmap import ESTIMATORS, RTI_MIN_LINKS  # noqa: E402
 from csi.links import read_thresholds, threshold_file_notes  # noqa: E402
 from csi.live_calibration import DEFAULT_CLIPS, DEFAULT_LEAD_S, DEFAULT_SECONDS, PAUSE_S  # noqa: E402
 from csi.multisource import parse_port_specs  # noqa: E402
@@ -110,6 +115,10 @@ def build_parser() -> argparse.ArgumentParser:
                          "in MOTION, so someone moving stays detected for up to 5 minutes; a receiver reboot restarts "
                          "its warm-up; the room needs two links to agree, or one strong one). Ignores --thresholds. "
                          "Live sources only")
+    ap.add_argument("--estimator", choices=ESTIMATORS, default=None,
+                    help="heatmap estimator: rti (regularised radio tomographic imaging, csi/rti.py), backprojection "
+                         f"(the coverage-normalised map) or auto (default: rti while at least {RTI_MIN_LINKS} links "
+                         "report, else backprojection). Live sources only")
     s = ap.add_argument_group("server")
     s.add_argument("--http-port", type=int, default=DEFAULT_PORT, help=f"HTTP port (default {DEFAULT_PORT})")
     s.add_argument("--host", default=DEFAULT_HOST,
@@ -145,6 +154,8 @@ def check_source(args: argparse.Namespace) -> None:
         raise SystemExit("error: --thresholds does not apply to --replay: a log already holds its states")
     if args.auto_threshold and replaying:
         raise SystemExit("error: --auto-threshold applies to live sources (--port, --simulate-room) only")
+    if args.estimator is not None and replaying:
+        raise SystemExit("error: --estimator applies to live sources (--port, --simulate-room) only")
 
 
 def load_link_thresholds(path: Optional[Path]) -> Optional[Mapping[str, float]]:
@@ -218,7 +229,8 @@ def build_server(args: argparse.Namespace) -> FrameServer:
     return DashboardServer(room, sources, thresholds, host=args.host, port=args.http_port, log=args.log,
                            allow_control=args.allow_control, thresholds_path=save_to, mode=mode, notes=notes,
                            log_meta={"source": source, "thresholds_source": thresholds_source,
-                                     "scorer": LIVE_SCORER.as_dict()})
+                                     "scorer": LIVE_SCORER.as_dict()},
+                           estimator=args.estimator or "auto")
 
 
 def main(argv: Optional[list[str]] = None) -> int:
