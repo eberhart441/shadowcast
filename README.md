@@ -4,7 +4,7 @@ Team 12's CodeMetalForge hackathon demo: device-free motion sensing from WiFi
 channel state information (CSI). Fixed ESP32 boards running Espressif's
 [esp-csi](https://github.com/espressif/esp-csi) firmware exchange packets, the
 receivers stream CSI over USB serial, and Python on the laptop turns that into an
-EMPTY / MOTION state per link and a rough room heatmap on a live web dashboard.
+EMPTY / MOTION state per link, a rough room heatmap and a one-person track on a live web dashboard.
 It also runs with no hardware, on a built-in simulator.
 
 Contents: [What this is](#what-this-is) · [Quick start without hardware](#quick-start-without-hardware) ·
@@ -19,16 +19,17 @@ Contents: [What this is](#what-this-is) · [Quick start without hardware](#quick
 The boards sit at fixed points in a room. A sender transmits packets, a receiver
 records the channel state of each one, and the amplitudes change when someone
 moves between them. The scripts score each sender-receiver pair (a *link*) for
-motion, and the dashboard draws a rough map of where the change is.
+motion, and the dashboard draws a rough map of where the change is and follows one moving person across it.
 
 | Part | Status |
 |---|---|
 | Motion detection (EMPTY / MOTION) per link | **Works on real hardware.** Single-link recording hw5: walking 100% MOTION, empty room 94% EMPTY (measured with the previous 1 s scorer; see [Results](#results-and-known-limits)). |
 | Calibration from an empty room | **Works**, from the terminal or the dashboard, with the quiet-room rules by default. |
 | Live dashboard (room map, link cards, heatmap) | **Works** on the current four-link rig (two receivers, two senders) and on the simulator. Each link card shows the link's health: the sender's real rate and loss from its packet counter, clipping, gains and noise floor. |
-| Recording and offline evaluation | **Works**, including scoring a labelled dashboard run with `scripts/eval_log.py`. |
+| Recording and offline evaluation | **Works**, including scoring a labelled dashboard run with `scripts/eval_log.py`, and the position error along walked paths (`--path`). |
 | Breathing (STILL_PRESENT) | **Experimental, opt-in.** It false-fires on empty rooms (43% of empty windows on hw5), so it is off by default. |
-| Heatmap | **Rough.** A motion-likelihood estimate from the links, normalised by how many links cover each spot. It shows where change is, not where a person is, and cannot count or separate people. It is only meaningful for one moving person, at zone-level accuracy. A person who stands still for about 30 s fades into the baseline. |
+| Heatmap | **Rough.** A motion-likelihood estimate from the links, drawn by one of two estimators: the coverage-normalised back-projection (the default on the four-link rig) or regularised radio tomographic imaging (RTI, chosen automatically from 6 reporting links, or forced with `--estimator rti`). It shows where change is, not where a person is, and cannot count or separate people. It is only meaningful for one moving person. A person who stands still for about 30 s fades into the baseline. |
+| Person track | **Experimental, not yet measured on the rig.** A Kalman-filter track of one moving person on the heatmap image, drawn over the map with its trail, its uncertainty ellipse and a "last seen" marker. In a simulation of the four-link rig its median error was 0.55 to 0.77 m, limited by the heatmap image rather than the filter. See [Reading the track](#reading-the-track). |
 
 ### Intended use and limits
 
@@ -164,6 +165,10 @@ How the code treats the layout:
   and a node outside the room gets a dashed leader and an "outside room" label. The heatmap covers
   the room only.
 - **Link weights** are keyed by link label, for example `"rx1<-01": 0.3`.
+- **Heatmap estimator.** With the default `--estimator auto`, the heatmap switches from the back-projection
+  to RTI once at least 6 links report (enable `rx3`, or add a third sender). RTI places a person better
+  where links cross, but a handful of links cannot localise by inversion, so the four-link rig stays on the
+  back-projection (see [Reading the heatmap](#reading-the-heatmap)).
 
 ### Packet budget per receiver
 
@@ -515,9 +520,12 @@ What the page shows (`web/index.html`, one static file with no network assets):
 
 - **Room.** The nodes at their configured positions (receivers and senders drawn
   differently; a node outside the room is drawn with a dashed leader), the links coloured by state, and
-  the heatmap. A caption says it is a rough motion-likelihood estimate, not a position track. A node
-  with movement right next to it gets a ring, an "activity near" label and a note under the map (see
-  [Reading the heatmap](#reading-the-heatmap)).
+  the heatmap. The caption under the map says how many links drew it and with which estimator
+  (back-projection or RTI). A node with movement right next to it gets a ring, an "activity near" label
+  and a note under the map (see [Reading the heatmap](#reading-the-heatmap)).
+- **Person track.** Over the heatmap, in cyan: the trail of the last 20 s, the current estimate with its
+  uncertainty ellipse, or a "last seen" marker, and a line of text under the map that says the same in
+  words. **Show the person track** hides it; the heatmap stays. See [Reading the track](#reading-the-track).
 - **Links.** One card per link: state, score against threshold, packet rate, drops,
   RSSI, weight, whether it contributes heat, a 30 s score sparkline, and the link's health:
   - **Sent/s (seq)** and **Loss (seq)**: the rate the sender really sends and the share of its packets
@@ -541,6 +549,33 @@ What the page shows (`web/index.html`, one static file with no network assets):
   itself after a server restart.
 
 ### Reading the heatmap
+
+Two estimators can draw the map (`--estimator`, default `auto`). Both use the same grid, quiet baselines,
+near-node veto, soft saturation and smoothing, and `heatmap.estimator` in each payload says which one drew
+the frame:
+
+- **`backprojection`**: each cell is the coverage-weighted average evidence of the links that cover it, as
+  the bullets below describe. It is the estimator of the four-link rig.
+- **`rti`**: regularised radio tomographic imaging (Wilson and Patwari; `csi/rti.py`). The links' evidence
+  is modelled as `y = W x + noise`, where `x` is the image and `W` says which cells each link sees, and
+  the image is the Tikhonov-regularised inverse `x = Π y`, with `Π` computed once per set of reporting
+  links and cached. Each link sees an ellipse around its line (excess path 0.3 m: about ±0.55 m at mid-link on a
+  1.84 m wall link and ±0.72 m on a 3.33 m diagonal), wider than in RSS-based RTI because CSI variance
+  also responds off the line (multipath). An exponential spatial prior (correlation 1 m, strength 0.2)
+  keeps the image smooth. Because it explains every link at once, two raised links that cross put the
+  heat at the crossing, quiet links through a cell hold it down, and a rise on every link does not pile
+  up at the nodes. Its link evidence is a robust z-score against the link's own quiet baseline (median and
+  MAD of the log score over the same quiet-only window): zero up to z = 2, full at z = 6, and 0.5 at
+  z = 4. A vetoed link keeps a tenth of its evidence and of its confidence in the fit. The scale differs
+  from the back-projection: one fully raised link alone shows up to about 0.73 on RTI and about 0.38 on
+  the back-projection. The page's falloff slider changes only the back-projection.
+- **`auto`**: RTI while at least 6 links that reach the grid report, otherwise the back-projection. A
+  handful of links cannot localise by inversion. In a synthetic study RTI's median error was about 0.26 m
+  with 6 links and about 0.5 m when forced onto 4, so the four-link rig stays on the back-projection
+  unless you pass `--estimator rti`.
+
+The details below are those of the back-projection. The quiet baseline, the near-node veto, the
+sensitivity and timing, and the limit on still people apply to RTI as well.
 
 - Each link is judged against its own quiet baseline: the median of its own score over
   the last 60 s. A link needs 10 s of history before it contributes.
@@ -570,12 +605,73 @@ What the page shows (`web/index.html`, one static file with no network assets):
 - The map shows change, not presence: a person who stands still for more than about
   30 s is absorbed into the baseline and fades.
 
+### Reading the track
+
+The tracker (`csi/tracker.py`) follows one moving person on the heatmap image, whichever estimator drew
+it, and each payload carries the result as `track`. On the map:
+
+- **Cyan dot and ellipse**: the current estimate and its 1-sigma uncertainty. If that uncertainty is right,
+  the person is inside the ellipse about 40% of the time (`eval_log.py --path` compares the predicted error
+  with the measured one). The ellipse leans and stretches along a blob that is drawn out along one link,
+  because such a blob places the person across that link but not along it. A **solid** outline means the
+  person was measured within the last 0.5 s. A **dashed** outline means the track is coasting: it moves on
+  with its last velocity, which decays with a 1 s time constant, until a measurement returns.
+- **Trail**: where the estimate has been over the last 20 s, fading with age.
+- **"Last seen" marker** (a white cross in a dashed ring, labelled "last seen N s ago"): a track that was
+  followed for at least 2 s and then went 3 s without a measurement. The person most likely stopped
+  moving there, since a still person fades from the map, or left the area. The ring grows by about
+  2 cm/s, by at most 1.5 m. The marker is dropped after 5 minutes, or once a new track has been followed
+  for 2 s.
+- **The line under the map** says the same in words: the position with its uncertainty, the speed and how
+  long the track has been followed, or how long ago it was last measured.
+
+How it decides:
+
+- A frame counts when its hottest cell is at least 0.25 and at least 2 links contribute (one link cannot
+  place a person along it). A confirmed track keeps measuring down to 0.15.
+- Each blob's position is the centroid of its connected cells at or above 55% of its peak, weighted by how
+  far each rises above that cut.
+- A track is confirmed after 3 consistent frames (0.4 s at the dashboard's 5 frames/s). A
+  constant-velocity Kalman filter then accepts only measurements inside its 99% gate that are reachable at
+  walking speed (at most 2.5 m/s), so a burst elsewhere does not pull the track across the room.
+- A track younger than 2 s that loses its blob, usually a noise burst on two links, is dropped after 1 s
+  and leaves no marker.
+- The constants are at the top of `csi/tracker.py`.
+
+Its accuracy is limited by the image, not by the filter. In a simulation of the four-link rig, walkers
+were tracked all the time and picked up within 0.8 s; the median error was 0.55 to 0.77 m and the worst
+10% of frames were off by 0.8 to 1.6 m, close to the image's own error in the same simulation (0.4 to
+0.65 m median), and the filter settings moved it by less than 0.05 m. It has not been measured on the rig
+yet: use the [walk protocol](#scoring-a-walked-path).
+
+A log recorded before the tracker has no track. `--replay` computes one from its logged heatmaps as it
+serves them; a newer log replays the track it recorded.
+
+### Sensitivity settings
+
+From the link score to the track, these settings trade missed movement against false alarms:
+
+| Setting | Where | Default | Effect |
+|---|---|---|---|
+| Calibration margin | `--margin` on the terminal tools, the dashboard's Margin field | 1.25 | Threshold = margin x p99 of the empty room. Lower catches weaker movement, with more false alarms (see [Calibration margin](#calibration-margin)). |
+| Subcarrier noise weighting | `NOISE_WEIGHT` in `csi/detect.py` (`ScorerConfig.noise_weight`) | 0 (off) | Weights each subcarrier by its learned quiet noise to the power -p. Off because it helped the weak hw3 link (walking median over empty p99 from 1.90 to 2.05 at p = 1) but hurt the strong hw5 link (6.31 to 6.05; weak movement detected at 1% held-out false alarms fell from 90% to 84%). To try it on the rig, set it to 1.0 and recalibrate; existing `links.json` files are then flagged as from another motion scorer, which is correct. |
+| Heatmap sensitivity | the page's slider, `POST /api/params` | 1.3 | Soft-saturation gain: higher lights up weaker evidence. |
+| Back-projection evidence | `R_FLOOR`, `R_FULL` in `csi/heatmap.py` | 1.2, 3.0 | Score-to-baseline ratio at which a link starts to count, and counts fully. |
+| RTI evidence | `Z_FLOOR`, `Z_FULL`, `MAD_FLOOR` in `csi/heatmap.py` | 2, 6, 0.05 | Robust z at which a link starts to count, and counts fully. Raise `Z_FLOOR` if the empty room speckles; lower `Z_FULL` if walking looks faint. |
+| Track start and keep | `ACTIVITY_MIN`, `KEEP_MIN` in `csi/tracker.py` | 0.25, 0.15 | Hottest cell needed to start a track, and to keep one. In a simulated empty room, 0.2 gave 8 false tracks per 5 minutes and 0.25 gave 0 to 2. Lower it to 0.2 if a walker gets no track; raise it if an empty room shows tracks. |
+
+`ACTIVITY_MIN` was tuned on the back-projection. RTI draws the same evidence brighter (see
+[Reading the heatmap](#reading-the-heatmap)), so on RTI check the empty room for false tracks first.
+
 ### Dashboard options
 
 - `--port [NAME=]PATH`: a receiver's serial port; repeat for each receiver.
 - `--thresholds links.json`: per-link fixed thresholds, from `links_live.py --calibrate` or the dashboard. This is
   the default mode. Without the file, live links show UNCALIBRATED until calibrated or set; `--simulate-room`
   uses a calibration on a simulated empty room instead.
+- `--estimator {auto,backprojection,rti}`: the heatmap estimator (see [Reading the heatmap](#reading-the-heatmap)).
+  The default `auto` uses RTI while at least 6 links report, else the back-projection. Live sources only
+  (`--port`, `--simulate-room`), not replays; it is recorded in the `--log` header.
 - `--auto-threshold`: auto mode, no calibration (see [Auto threshold](#auto-threshold-no-calibration)). It
   ignores any `--thresholds` file. Each link keeps the last 180 s of its own score (packet time) and takes
   its baseline and a robust spread (1.4826 x MAD) from the lowest 60% of it, which movement cannot reach.
@@ -678,8 +774,12 @@ python scripts/dashboard.py --replay-session data/hw5 --speed 8 # a recorded ses
 ```
 
 - `--speed` takes `1`, a number `N` (N times faster), or `max`.
-- `--log` writes the motion-scorer configuration into the header, and every payload with its link health,
-  so a log can be scored later with [`scripts/eval_log.py`](#scoring-a-labelled-dashboard-run).
+- `--log` writes the motion-scorer configuration and the heatmap estimator into the header, and every
+  payload with its link health, `heatmap.estimator` and `track`, so a log can be scored later with
+  [`scripts/eval_log.py`](#scoring-a-labelled-dashboard-run).
+- `--replay` serves the logged payloads as they were. A log written before the tracker has no track, so
+  the replay computes one from each logged heatmap as it serves it. `--estimator` is refused with
+  `--replay`, since a log already holds its images, and with `--replay-session`, which always runs `auto`.
 - `--replay-session` calibrates on the session's first empty recording. Use `--margin X`
   to change the margin, or `--thresholds links.json` to skip calibration. A single-receiver
   recording replays as one link, and `status.messages` says so.
@@ -781,6 +881,60 @@ independent, so quote the episode counts rather than the frame shares. It also r
 - **Link health**: packets/s, and where the log has them the sender's rate and loss, clipping, noise floor
   and gains, with a warning when a gain changed during the run (a receiver reset).
 
+### Scoring a walked path
+
+`eval_log.py --path walk.csv` scores the position estimate (the track, else the heatmap) along walks paced
+over taped marks. The protocol:
+
+1. Start the dashboard with `--log` and keep the area empty for a minute, so every link has its quiet
+   baseline.
+2. Lay tape marks every 1 m along the route and write down their x, y in room coordinates: metres, origin
+   at the top-left corner of the room as drawn on the page, y down.
+3. Set a phone metronome to 60 bpm. Take one step per beat and pass one mark every 2 beats (0.5 m/s), at
+   the same pace throughout.
+4. Stand on the first mark, start on a beat, and note the start time on the dashboard computer's clock.
+5. Walk each route at least three times, in both directions. Leave the area between walks, so each walk's
+   time to first track counts from no track.
+
+Write the start time, then `+2` for each mark (`+4` on the same mark for a 4 s stop):
+
+```
+walk,t_s,x,y
+1,2026-11-08T10:15:30,0.5,0.9
+1,+2,1.5,0.9
+1,+2,2.5,0.9
+1,+4,2.5,0.9
+```
+
+Then score it:
+
+```bash
+python scripts/dashboard.py --port rx1=<PORT_RX1> --port rx2=<PORT_RX2> --thresholds links.json --log walk.jsonl
+python scripts/eval_log.py --log walk.jsonl --path walk.csv --absolute
+python scripts/eval_log.py --log walk.jsonl --path walk.csv --absolute \
+  --zone west=0,0,1.4,1.84 --zone east=1.4,0,2.77,1.84 --out walk.json
+```
+
+- Between two waypoints the person is taken to walk a straight line at a steady pace, so a stop is two rows
+  at the same spot. Walks are separated by a blank line, or named in the `walk` column (each walk's rows
+  together). Date-times and Unix host times need `--absolute`; without it, times are seconds from the log's
+  first frame.
+- In each walk frame the estimate is the payload's track while it is active, otherwise the heatmap's
+  weighted centroid (the cells at or above half the hottest). A frame with neither, meaning no active track
+  and a map at or below `--min-heat`, counts as a miss rather than being left out.
+- Reported: the mean, median and 90th-percentile error; the share of walk frames within 0.5, 1.0 and 1.5 m;
+  the share with an active track and the time from a walk's start to its first track; the same errors for
+  the track, the centroid and the hottest cell on their own; the tracker's predicted rms error against the
+  measured one; the time shift that best fits the estimate to the path; and one row per walk. A shift of
+  about a second is expected, since the 2 s motion window lags; several seconds mean the start times were
+  noted wrong.
+- `--zone NAME=x0,y0,x1,y1` (repeat it; where zones overlap, the first one given wins) adds a table of the
+  zone the person was in against the zone of the estimate.
+- Without `--labels`, the walks count as walking labels: detection is scored during them and false alarms
+  are not. With `--labels` as well, the labels file alone decides detection and false alarms, so label the
+  walks `walking` and the quiet minutes `empty` there.
+- A log from before the tracker has no track. It is scored with the centroid, and the summary says so.
+
 ### Recorded data
 
 Real recordings are on the `data/two-board-sessions` branch, not on `main`: `hw3` and
@@ -820,12 +974,17 @@ No recording of the four-link rig is in the repository yet.
    so a threshold, nearly the same at any packet rate. The variance of the residual over a 2 s window is
    averaged across subcarriers. The state leaves MOTION after a 0.5 s debounce. These parameters are one
    `ScorerConfig`, `LIVE_SCORER`, used by the live monitor, every calibration path, the evaluators and the
-   replays, and recorded in every calibration (`LEGACY_SCORER` is the previous 1 s scorer).
+   replays, and recorded in every calibration (`LEGACY_SCORER` is the previous 1 s scorer). An optional
+   per-subcarrier noise weighting (`noise_weight`) is part of the same configuration and off (see
+   [Sensitivity settings](#sensitivity-settings)); a file without the key reads as off.
 5. **Per-link monitor** (`csi/links.py`). Each (receiver, sender MAC) pair has its own
    scorer, debouncer, health and threshold. States: EMPTY, MOTION, WARMUP (no full window
    yet), UNCALIBRATED (no threshold), NO_SIGNAL (no packet for 2 s).
-6. **Heatmap** (`csi/heatmap.py`, geometry in `csi/room.py`), as described in [Reading the heatmap](#reading-the-heatmap).
-7. **Server** (`csi/server.py`). A standard-library HTTP server for the page, the JSON
+6. **Heatmap** (`csi/heatmap.py`, RTI in `csi/rti.py`, geometry in `csi/room.py`), as described in
+   [Reading the heatmap](#reading-the-heatmap).
+7. **Tracker** (`csi/tracker.py`). Follows one moving person on each frame's heatmap image, as described in
+   [Reading the track](#reading-the-track).
+8. **Server** (`csi/server.py`). A standard-library HTTP server for the page, the JSON
    payload, the SSE stream (about 5 Hz) and the commands.
 
 The payload, from `/api/state` and each SSE event:
@@ -836,10 +995,19 @@ nodes      [{name, role, chip, x, y}]          receivers, then senders
 links      [{id, receiver, sender, mac, state, mode, elevated, level, score, threshold, normalised,
              baseline, evidence, pkt_rate, drops, rssi, age_s, weight, contributes, since_motion_s,
              seq_rate, seq_loss, clip_pct, agc_gain, fft_gain, noise_floor}]
-heatmap    {cols, rows, extents, cells, max, contributing, busy_nodes}   cells: row-major 0..1, row 0 = y 0
+heatmap    {cols, rows, extents, cells, max, contributing, busy_nodes, estimator}   cells: row-major 0..1, row 0 = y 0
 status     {time_s, links_by_state, parameters, room, receivers, errors, finished,
             calibrated_links, uncalibrated_links, messages, calibration, commands}
+track      null, or {active, x, y, sx, sy, rho, vx, vy, age_s, last_seen_s, trail: [[t, x, y], ...]}
 ```
+
+- `heatmap.estimator`: `rti` or `backprojection`, the estimator that drew this frame;
+  `status.parameters.estimator` is the configured choice (`auto` by default). Logs from before RTI have
+  no `estimator` key.
+- `track`: null until a track is confirmed. Metres, m/s and seconds: `sx` and `sy` are the 1-sigma
+  uncertainty on each axis and `rho` their correlation; `active` is false for a "last seen" marker, whose
+  `x`, `y` are the last measured position; `trail` times are host times, like `status.time_s`. Logs from
+  before the tracker have no `track` key.
 
 - `seq_rate` (packets/s the sender sends), `seq_loss` and `clip_pct` (shares, 0..1) are null while a link
   is silent or until it has 20 packets; `agc_gain`, `fft_gain` and `noise_floor` are the newest packet's
@@ -857,13 +1025,15 @@ status     {time_s, links_by_state, parameters, room, receivers, errors, finishe
 | `csi/common.py` | Shared CLI options (`--simulate`, `--port`, `--baud`, `--rate`, `--margin`) and source setup. |
 | `csi/clock.py` | Unwraps the device counter; detects wraps and reboots. |
 | `csi/health.py` | Per link: packet rate and drops, loss and real send rate from the sender's counter, clipping, gains. |
-| `csi/detect.py` | Motion score and its one `ScorerConfig` (`LIVE_SCORER`), debounced detector, calibration (robust chunks, margin, p99 or noisy-room p97), threshold files. |
+| `csi/detect.py` | Motion score and its one `ScorerConfig` (`LIVE_SCORER`, with the optional noise weighting off), debounced detector, calibration (robust chunks, margin, p99 or noisy-room p97), threshold files. |
 | `csi/adaptive.py` | `--auto-threshold` detector: per-link online baseline, frozen during motion, and a room decision from link agreement. |
 | `csi/breathing.py` | Experimental breathing rate from 15 s windows (0.1 to 0.5 Hz, PCA, FFT peak). |
 | `csi/links.py` | Per-link monitoring and multi-link calibration; `links.json` with its calibration record. |
 | `csi/multisource.py` | Reads several receivers concurrently into one stream. |
 | `csi/room.py` | Room and node geometry, links (every enabled receiver with every enabled sender), disabled nodes, simulated person positions. |
-| `csi/heatmap.py` | The motion-likelihood heatmap: coverage-normalised, quiet-only baselines, near-node veto. |
+| `csi/heatmap.py` | The motion-likelihood heatmap: back-projection or RTI (`--estimator`), quiet-only baselines, ratio or robust-z link evidence, near-node veto. |
+| `csi/rti.py` | Regularised radio tomographic imaging: ellipse link weights, exponential spatial prior, the projection `Π` cached per set of reporting links. |
+| `csi/tracker.py` | One-person tracker on the heatmap image: blob measurements, constant-velocity Kalman filter, birth, coasting, "last seen" marker. |
 | `csi/dashboard.py` | `DashboardState`: receiver packets in, the JSON payload out. |
 | `csi/server.py` | HTTP server: page, `/api/state`, `/api/events`, commands. |
 | `csi/live_calibration.py` | The dashboard's calibration run (countdown, clips, processing). |
@@ -879,7 +1049,7 @@ status     {time_s, links_by_state, parameters, room, receivers, errors, finishe
 | `scripts/live.py` | Matplotlib viewer: amplitude heatmap, variance trace, threshold keys. |
 | `scripts/record.py` | Labelled recorder with a countdown and label keys. |
 | `scripts/evaluate.py` | Offline evaluation over recorded sessions. |
-| `scripts/eval_log.py` | Scores a labelled dashboard `--log` run: detection, latency, false alarms, localisation, scaling curve, link health. |
+| `scripts/eval_log.py` | Scores a labelled dashboard `--log` run: detection, latency, false alarms, localisation, position error along walked paths (`--path`, `--zone`), scaling curve, link health. |
 | `web/index.html` | The dashboard page. |
 | `firmware/` | The ESP32 firmware (`csi_send`, `csi_recv`) and its build flags; see `firmware/README.md`. |
 
@@ -911,7 +1081,11 @@ previous scorer gave 94% at the default margin and 95% at 1.5.
 
 Known limits:
 
-- **One moving person, zone-level.** Two people blur together, and nothing counts people.
+- **One moving person.** Two people blur together, nothing counts people, and the tracker follows one
+  blob.
+- **Tracking is not measured on the rig.** The track's accuracy comes from simulation only (0.55 to
+  0.77 m median on the four-link rig). Measure it with the [walk protocol](#scoring-a-walked-path) before
+  quoting a number. RTI needs at least 6 links to localise better than the back-projection.
 - **Stillness fades.** A person who stays still for about 30 s is absorbed into the
   baseline, so the heatmap is not a presence sensor.
 - **Breathing is unreliable.** It is off by default.
@@ -949,6 +1123,9 @@ Known limits:
 | Packet rate drops after adding a sender or receiver | The receivers' packet budget, or an S3 receiver. | Keep the senders' real rates under about 80 packets/s per receiver, and use C5 receivers. See [Scaling up](#scaling-up). |
 | Commands return 409 | Replay mode, or a calibration is already running. | Use live mode, or wait for the calibration to finish. |
 | Breathing says "not enough data" | Less than 15 s of data. | Wait, or leave breathing off. |
+| No person track while someone walks | The map stays below 0.25, or fewer than 2 links contribute. | Check that the links the route crosses reach MOTION, then lower `ACTIVITY_MIN` in `csi/tracker.py` to 0.2 (see [Sensitivity settings](#sensitivity-settings)). |
+| A track appears in an empty room | Noise lifts two links at once. | Check those links' **Loss (seq)** and **Clipped**; raise `ACTIVITY_MIN`, or `Z_FLOOR` on RTI. |
+| The track sits near the middle with a large ellipse | Every link rose together, so the image is spread over the room. | Check which links contribute. More links that cross the area (RTI from 6) place a person better. |
 
 ## Roadmap
 
@@ -960,7 +1137,7 @@ Nothing below is started.
 - **Floor-plan support.** Rooms defined by a floor plan, not a rectangle.
 - **More nodes.** The config already takes more senders and receivers (see [Scaling up](#scaling-up)).
   In practice each receiver's serial output (about 80 packets/s) is the limit.
-- **Position tracking.** A tracker that follows the heatmap over time. An idea, not yet specified.
+- **More than one person.** The tracker follows one blob; two people blur into one.
 - **Fingerprinting.** Learned signatures for room states, in place of thresholds.
 - **Speed up the test suite.** Marker tiers and parallel runs; the full suite takes several minutes.
 - **Adaptive detection as the default.** `--auto-threshold` becomes the default once it has run clean on
