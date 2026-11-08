@@ -24,7 +24,16 @@
 #include "esp_netif.h"
 #include "esp_now.h"
 
-#define CONFIG_LESS_INTERFERENCE_CHANNEL   6
+/* Build-time options: idf.py -D<NAME>=<value>, forwarded by CMakeLists.txt. firmware/README.md lists them all. */
+
+/* Wi-Fi channel, the same on every board: -DCSI_CHANNEL=11 */
+#ifndef CSI_CHANNEL
+#define CSI_CHANNEL 6
+#endif
+#if CSI_CHANNEL < 5 || CSI_CHANNEL > 11
+#error "CSI_CHANNEL must be 5-11: HT40 puts the secondary channel 4 below it, and 12-13 are not allowed in the US"
+#endif
+#define CONFIG_LESS_INTERFERENCE_CHANNEL   CSI_CHANNEL
 
 #if CONFIG_IDF_TARGET_ESP32C5 || CONFIG_IDF_TARGET_ESP32C61 || (CONFIG_IDF_TARGET_ESP32C6 && ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 4, 0))
 #define CONFIG_WIFI_BAND_MODE   WIFI_BAND_MODE_2G_ONLY
@@ -38,17 +47,32 @@
 
 #define CONFIG_ESP_NOW_PHYMODE           WIFI_PHY_MODE_HT40
 #define CONFIG_ESP_NOW_RATE             WIFI_PHY_RATE_MCS0_LGI
-#define CONFIG_SEND_FREQUENCY               40
+
+/* Packets per second: -DCSI_SEND_HZ=30. usleep() below adds one 1 ms tick to every period, so 20 really sends
+ * about 19.6 packets/s (40 sends about 38.5). */
+#ifndef CSI_SEND_HZ
+#define CSI_SEND_HZ 20
+#endif
+#if CSI_SEND_HZ < 1
+#error "CSI_SEND_HZ must be at least 1"
+#endif
+#define CONFIG_SEND_FREQUENCY               CSI_SEND_HZ
 
 #if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(6, 0, 0)
 #define ESP_IF_WIFI_STA ESP_MAC_WIFI_STA
 #endif
 
-/* Unique per sender; receivers accept 1a:00:00:00:00:xx. Set at build time: idf.py -DSENDER_ID=0x01 (see CMakeLists.txt). */
+/* Team address prefix: senders are 1a:0c:12:00:00:<SENDER_ID>, receivers 1a:0c:12:00:00:fe. Same value in csi_recv. */
+#define CSI_MAC_PREFIX                      0x1a, 0x0c, 0x12, 0x00, 0x00
+
+/* Unique per sender: -DSENDER_ID=0x01. 0xfe is the receivers' last address byte. */
 #ifndef SENDER_ID
 #define SENDER_ID 0x00
 #endif
-static const uint8_t CONFIG_CSI_SEND_MAC[] = {0x1a, 0x00, 0x00, 0x00, 0x00, SENDER_ID};
+#if SENDER_ID < 0 || SENDER_ID > 0xff || SENDER_ID == 0xfe
+#error "SENDER_ID must be 0x00-0xff and not 0xfe (the receivers' last address byte)"
+#endif
+static const uint8_t CONFIG_CSI_SEND_MAC[] = {CSI_MAC_PREFIX, SENDER_ID};
 static const char *TAG = "csi_send";
 
 static void wifi_init()
