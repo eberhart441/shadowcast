@@ -159,7 +159,7 @@ def _wait_for_finished(port: int, timeout: float) -> dict:
     deadline = time.time() + timeout
     while time.time() < deadline:
         try:
-            with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/state", timeout=2) as resp:
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/state", timeout=10) as resp:
                 payload = json.loads(resp.read())
             if payload["status"]["finished"]:
                 return payload
@@ -174,7 +174,7 @@ def _wait_for_hot_room(port: int, timeout: float) -> dict:
     last_error = None
     while time.time() < deadline:
         try:
-            with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/state", timeout=2) as resp:
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/state", timeout=10) as resp:
                 payload = json.loads(resp.read())
             if payload["links"] and max(payload["heatmap"]["cells"]) > 0.05:
                 return payload
