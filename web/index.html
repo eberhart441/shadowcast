@@ -585,6 +585,10 @@
     p.links.forEach(function (row) {
       var rx = nodes[row.receiver], tx = nodes[row.sender];
       if (!rx || !tx) return;
+      // same coordinates mean the same physical device declared twice (once as receiver, once as
+      // sender) under the all-transceiver convention: that "link" is a board paired with itself,
+      // can never carry real data, and is pure clutter on the map.
+      if (rx.x === tx.x && rx.y === tx.y) return;
       var colour = COLOR[row.state] || COLOR.NO_SIGNAL;
       var norm = row.normalised == null ? 0 : clamp(row.normalised / FULL_SCALE, 0, 1);
       var x1 = X(rx.x), y1 = Y(rx.y), x2 = X(tx.x), y2 = Y(tx.y);
@@ -766,14 +770,22 @@
     // one row per link, in payload order; rows are reused, and placeholder text is replaced
     var seen = {};
     clearChildren(els.links);
-    p.links.forEach(function (row) {
+    var nodes = {};
+    p.nodes.forEach(function (n) { nodes[n.name] = n; });
+    var shownLinks = p.links.filter(function (row) {
+      // same self-pair skip as the map: receiver and sender at identical coordinates are the same
+      // physical device under the all-transceiver convention, and can never carry real data.
+      var rx = nodes[row.receiver], tx = nodes[row.sender];
+      return !(rx && tx && rx.x === tx.x && rx.y === tx.y);
+    });
+    shownLinks.forEach(function (row) {
       var r = rows[row.id] || (rows[row.id] = makeRow(row.id));
       seen[row.id] = true;
       updateRow(r, row, p.status.time_s);
       els.links.appendChild(r.art);
     });
     Object.keys(rows).forEach(function (id) { if (!seen[id]) delete rows[id]; });
-    if (!p.links.length) els.links.appendChild(el("p", "muted", "no links"));
+    if (!shownLinks.length) els.links.appendChild(el("p", "muted", "no links"));
   }
 
   // ------------------------------------------------------------------ status bar
