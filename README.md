@@ -8,7 +8,7 @@ We turn the WiFi channel into a motion sensor: every packet that crosses the roo
 
 [![CI](https://github.com/CodeMetalForge-Hackathon/Team-12/actions/workflows/ci.yml/badge.svg)](https://github.com/CodeMetalForge-Hackathon/Team-12/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/python-3.10%2B-3776AB)
-![Tests](https://img.shields.io/badge/tests-439-brightgreen)
+![Tests](https://img.shields.io/badge/tests-446-brightgreen)
 ![Server](https://img.shields.io/badge/HTTP%20server-stdlib%20only-informational)
 ![License](https://img.shields.io/badge/license-Apache%202.0-blue)
 
@@ -41,7 +41,7 @@ a live **RF-tomography heatmap** of where in the room the change is.
 | **Output** | Per-link state machine, a room-level vote, and a 28 × 18 heatmap (≈10 cm cells), streamed to the browser at ~5 Hz over Server-Sent Events |
 | **Hardware** | 4 × ESP32-C5 (2 senders, 2 receivers), ESP-NOW on channel 6, vendored firmware |
 | **Software** | Pure Python + NumPy signal pipeline, a standard-library HTTP/SSE server, single-file web UI |
-| **Quality** | 439 automated tests, no hardware required, CI on every PR, deterministic replay |
+| **Quality** | 446 automated tests, no hardware required, CI on every PR, deterministic replay |
 
 > **Decision support, not a guarantee.** This system detects *movement*. A person who is completely
 > still is not reliably detected, because the motion statistic removes the static channel by
@@ -68,7 +68,7 @@ python scripts/dashboard.py --simulate-room --page web/ui-overhaul/index.html
 Run the test suite (CI runs it on Ubuntu, Python 3.12):
 
 ```bash
-python -m pytest -q -n auto      # 439 tests, under a minute in parallel
+python -m pytest -q -n auto      # 446 tests, ~1 min on a 16-thread laptop, 3-6 min on CI
 scripts/check.sh                 # ruff + the fast tier, run before every commit
 ```
 
@@ -208,7 +208,7 @@ The full tour is in [**docs/architecture.md**](docs/architecture.md).
   checks.
 - **Never blocks on a client.** Calibration math runs off the server lock, and each browser reads a bounded frame
   log with its own cursor, so a slow client cannot stall ingest.
-- **439 automated tests and more test code than product code** (6.5k vs 4.8k lines), pinned to a frozen room
+- **446 automated tests and more test code than product code** (6.9k vs 4.8k lines), pinned to a frozen room
   fixture so reconfiguring the live rig never changes a test outcome. Ruff and the fast tier run on every push;
   the full suite runs on every PR.
 - **Reproducible hardware.** Firmware is vendored at a pinned upstream commit, and boards are found by USB serial

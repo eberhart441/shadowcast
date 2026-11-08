@@ -1,6 +1,6 @@
 ## Project context
 
-What the project is for, where it stands, decisions, gotchas and a glossary: read `docs/agents/project-context.md` first.
+What the project is for, where it stands, gotchas, and pointers to every other doc: read `docs/agents/project-context.md` first.
 
 ## Agent skills
 
@@ -14,7 +14,7 @@ Default five-role vocabulary (`needs-triage`, `needs-info`, `ready-for-agent`, `
 
 ### Domain docs
 
-Single-context: one `GLOSSARY.md` + `docs/adr/` at the repo root. See `docs/agents/domain.md`.
+Single-context: one `GLOSSARY.md` at the repo root + `docs/adr/`. See `docs/agents/domain.md`.
 
 ### Hardware and live rig
 

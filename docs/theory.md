@@ -251,7 +251,7 @@ channel, the sender MAC and the float32 vector $A[n]\in\mathbb R^{K}$.
 
 **Quantisation floor.** Uniform int8 quantisation adds about $1/12$ LSB² of variance per I/Q component.
 For amplitudes well above 1 LSB, that projects to about $1/12$ LSB² on $A_k$. Quiet-room scores on the
-four-link rig have medians of about 2 to 7 LSB² (README, "Results and known limits"), one to two
+four-link rig have medians of about 2 to 7 LSB² (README, "Results"), one to two
 orders of magnitude higher. The empty-room floor is therefore set by noise sources other than
 quantisation.
 
@@ -351,7 +351,7 @@ of the 1 s window holds motion, so detection latency is a fraction of a second.
 | Setup | Empty | Walking | Source |
 |---|---|---|---|
 | Single link, receiver and sender about 2 m apart | about 3 to 9 | about 25 to 70 | `csi/common.py`, `--threshold` help |
-| Four-link rig | medians about 2 to 7, thresholds about 8 to 20 | | README, "Results and known limits" |
+| Four-link rig | medians about 2 to 7, thresholds about 8 to 20 | | README, "Results" |
 | C5 receiver on the top wall, one walk test | quiet maximum about 11 | 25 to 31 | README, "Placement hints" |
 | Simulator | about 0.2 | about 3 to 9 | `csi/detect.py`, `SIM_THRESHOLD` comment |
 
@@ -844,7 +844,7 @@ where $v^\ast(u)$ is the expected state. With breathing off, the `still_*` rows 
 calibrated and detected on its own. The room decision at each link reading is then the **OR** of the
 links' latest states: MOTION if any link says MOTION (`_combine`).
 
-**Results** (README, "Results and known limits"; all single-link, one C5 receiver and one S3 sender
+**Results** (README, "Results"; all single-link, one C5 receiver and one S3 sender
 about 2 m apart, channel 6):
 
 | Session | Result |
