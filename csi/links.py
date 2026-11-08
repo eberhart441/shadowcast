@@ -35,6 +35,7 @@ from .detect import (DEBOUNCE_S, DEFAULT_MARGIN, EMPTY, LIVE_SCORER, MIN_CLEAN_F
                      scorer_note, validate_margin)
 from .health import LinkHealth
 from .parser import CSIPacket
+from .room import Room
 
 NO_SIGNAL = "NO_SIGNAL"
 WARMUP = "WARMUP"
@@ -142,21 +143,27 @@ class LinkMonitor:
     ``mode="auto"``: each link is judged by its own AdaptiveDetector (csi/adaptive.py); ``thresholds`` is
     not used for state, and a link given a number by ``set_threshold`` becomes fixed.
     ``expected`` lists links to show from the start, so a link that never transmits appears as NO_SIGNAL
-    instead of being absent. The room decision (``room_state``) is updated on every packet, at its time.
+    instead of being absent. The room decision (``room_state``, csi/adaptive.py RoomDecision, the same in both
+    modes) is updated on every packet, at its time. ``room`` (csi/room.py) gives it each link's segment, for its
+    place test and ``room_support``; without it the decision uses the link counts and node diversity only.
+    ``room_status()`` is the decision as a payload.
     """
 
     def __init__(self, thresholds: Optional[Mapping[str, float]] = None, *, mode: str = FIXED,
                  expected: Iterable[LinkId] = (), debounce_s: float = DEBOUNCE_S,
-                 send_rate_hz: Optional[float] = None, no_signal_s: float = NO_SIGNAL_S) -> None:
+                 send_rate_hz: Optional[float] = None, no_signal_s: float = NO_SIGNAL_S,
+                 room: Optional[Room] = None) -> None:
         if mode not in (FIXED, AUTO):
             raise ValueError(f"mode must be 'fixed' or 'auto', got {mode!r}")
         self._mode = mode
         self._thresholds = {} if mode == AUTO else dict(thresholds or {})
         self._debounce_s, self._send_rate_hz, self._no_signal_s = debounce_s, send_rate_hz, no_signal_s
         self._links: dict[LinkId, _Link] = {}
-        self._room = RoomDecision()
+        self._room = RoomDecision(**_room_geometry(room))
         self.room_state = WARMUP
         self.room_elevated: list[str] = []
+        self.room_support: Optional[dict] = None   # while MOTION with a room: where the agreeing links cross
+        self.room_glitch_nodes: list[str] = []     # nodes whose links the decision set aside (glitch or near-node)
         for link_id in expected:
             self._get(link_id)
 
@@ -201,6 +208,20 @@ class LinkMonitor:
                     and now - link.last_host <= self._no_signal_s}
         self.room_state = self._room.update(now, readings)
         self.room_elevated = list(self._room.elevated)
+        self.room_support = self._room.support
+        self.room_glitch_nodes = list(self._room.glitch_nodes)
+
+    def room_status(self) -> dict:
+        """The room decision, JSON-serialisable, for a payload's ``status.room``: ``state``; ``elevated`` (labels);
+        ``active`` (live links) and ``required`` (elevated links they need now); ``room_support`` (while MOTION with
+        a ``room``: {x, y, links, radius_m}, the point the agreeing links pass near, else None); ``glitch_nodes``
+        (nodes whose links were set aside as a glitch or someone right next to the node); ``reason`` (one word,
+        csi/adaptive.py RoomDecision)."""
+        support = self.room_support
+        return {"state": self.room_state, "elevated": list(self.room_elevated), "active": self._room.active,
+                "required": self._room.required,
+                "room_support": None if support is None else {**support, "links": list(support["links"])},
+                "glitch_nodes": list(self.room_glitch_nodes), "reason": self._room.reason}
 
     def snapshot(self, now: Optional[float] = None) -> list[dict]:
         """One dict per link, sorted by label. ``now`` is host time (default: the wall clock).
@@ -247,6 +268,15 @@ class LinkMonitor:
                 "noise_floor": link.health.noise_floor,
             })
         return rows
+
+
+def _room_geometry(room: Optional[Room]) -> dict:
+    """RoomDecision arguments for ``room``: each link's nodes and segment by label, and the room as search area."""
+    if room is None:
+        return {}
+    places = {LinkId(rx.name, tx.mac).label: (rx.name, tx.name, ((rx.x, rx.y), (tx.x, tx.y)))
+              for rx, tx in room.links()}
+    return {"places": places, "bounds": (0.0, 0.0, room.width_m, room.depth_m)}
 
 
 @dataclass(frozen=True)
