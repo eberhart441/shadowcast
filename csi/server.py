@@ -61,6 +61,7 @@ REORDER_STARTUP_S = 2.0    # wall-clock wait for a connected receiver that has n
 WALL_CLOCK_TOLERANCE_S = 5.0  # packets stamped within this of the wall clock count as live
 MIN_EVENT_GAP_S = 0.2      # wall-clock gap between two SSE events: at most ~5 Hz
 FRAME_LOG_MAX = 1200       # frames kept for replay (4 minutes at 5 Hz)
+CALIBRATION_JOIN_S = 30.0  # how long a run's final frame waits for a calibration still processing
 LIVE_LAG_FRAMES = 5        # a live client further behind than this skips to the newest frame
 KEEPALIVE_S = 15.0         # SSE comment sent when idle, so dead clients are noticed
 WAIT_TICK_S = 0.2          # how often idle handlers re-check for shutdown
@@ -487,6 +488,7 @@ class DashboardServer(FrameServer):
         self._replay = replay
         self._thresholds_path = Path(thresholds_path) if thresholds_path else Path(DEFAULT_THRESHOLDS_FILE)
         self._calib: Optional[CalibrationJob] = None
+        self._calib_thread: Optional[threading.Thread] = None
         self._commands: deque[str] = deque(maxlen=COMMAND_LOG_MAX)
         # a stream for a disabled node (room config "enabled": false) is never read: it has no links
         self._ms = MultiSource({name: s for name, s in sources.items() if name not in room.disabled})
@@ -554,6 +556,7 @@ class DashboardServer(FrameServer):
             self._sources_done.set()
 
     def _finish_run(self) -> None:
+        self._join_calibration()
         with self._lock:
             if self._calib is not None and self._calib.active:
                 self._calib.abort("the sources ended before the calibration recording finished")
@@ -572,6 +575,7 @@ class DashboardServer(FrameServer):
         else:
             self._pipeline_errors["pipeline"] = message
         self._ms.close()
+        self._join_calibration()
         with self._lock:
             if self._calib is not None and self._calib.active:
                 self._calib.abort(f"the pipeline failed: {message}")
@@ -738,11 +742,31 @@ class DashboardServer(FrameServer):
             return 409, {"error": "a calibration is already running", "calibration": self._calib_status(self._clock())}
         request = parse_request(body)
         self._calib = CalibrationJob(request, self._expected, now_mono=time.monotonic(),
-                                     current=lambda: self._state.thresholds, apply=self._apply_threshold)
+                                     current=lambda: self._state.thresholds, apply=self._apply_threshold,
+                                     defer=self._defer_calibration)
         self._commands.append(f"calibrate: {request['clips']} clip(s) of {request['seconds']:g} s, margin "
                               f"{request['margin']:g}, lead-in {request['lead_s']:g} s, "
                               f"{'noisy room' if request['noisy'] else 'quiet room'}")
         return 202, {"calibration": self._calib_status(self._clock())}
+
+    def _defer_calibration(self, compute, complete) -> None:
+        """Run a finished recording's (slow) report off the lock, so requests and frames keep flowing.
+
+        Called under the lock by the job; the thread takes the lock again only to apply the outcome.
+        """
+        def run() -> None:
+            outcome = compute()
+            with self._lock:
+                complete(outcome)
+
+        self._calib_thread = threading.Thread(target=run, name="dashboard-calibration", daemon=True)
+        self._calib_thread.start()
+
+    def _join_calibration(self) -> None:
+        """Wait (without the lock) for a calibration still processing, so a run's final frame shows its result."""
+        thread = self._calib_thread
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=CALIBRATION_JOIN_S)
 
     def _cmd_cancel(self, body: Mapping) -> tuple[int, dict]:
         if self._calib is None or not self._calib.cancel():
