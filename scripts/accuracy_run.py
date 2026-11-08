@@ -45,6 +45,7 @@ PHRASES = {
     "walk_end": "Stop. Walking test done.",
     "leave": "Almost done. Please leave the room for thirty seconds.",
     "done": "Test complete. Thank you.",
+    "check": "Audio check. If you can hear this inside the room, the test is ready.",
     **{f"goto{k}": f"Go to mark {w}." for k, w in NUMBERS.items()},
     **{f"num{k}": w for k, w in NUMBERS.items()},
 }
@@ -56,6 +57,8 @@ class Voice:
         if silent:
             return
         folder.mkdir(parents=True, exist_ok=True)
+        if all((folder / (key + ".wav")).exists() for key in PHRASES):
+            return   # rendered by an earlier run
         script = ["Add-Type -AssemblyName System.Speech",
                   "$s = New-Object System.Speech.Synthesis.SpeechSynthesizer", "$s.Rate = 0"]
         for key, text in PHRASES.items():
@@ -191,8 +194,13 @@ def main() -> None:
     ap.add_argument("--url", default="http://localhost:8000")
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--silent", action="store_true", help="no voice (for a dry run)")
+    ap.add_argument("--audio-check", action="store_true", help="only play one test prompt, then exit")
     a = ap.parse_args()
     voice = Voice(a.out / "voice", a.silent)
+    if a.audio_check:
+        import winsound
+        winsound.PlaySound(str(a.out / "voice" / "check.wav"), winsound.SND_FILENAME)
+        return
     run = Run(a.url, a.out, voice)
     (a.out / "run.json").write_text(json.dumps({"started": time.time(), "url": a.url, "marks": A.MARKS,
                                                 "walk_route": A.WALK_ROUTE}, indent=2))
