@@ -17,16 +17,16 @@ What that means for any decision you make:
 
 - All of issues #1-#15 (detection, calibration, dashboard, recording, replay, controls) are implemented, merged and closed. There are no open issues.
 - `main` and `csi-sensing` are identical. `csi-sensing` is the working branch; work reaches `main` through a pull request (see the brief, "Landing on main").
-- **The rig:** four ESP32-C5 boards at 40 Hz on channel 6. Two receivers on USB (top left `rx2`, top right `rx1`), two senders off USB (bottom right `tx0` with `SENDER_ID` 0x00, bottom left `tx1` with 0x01). A third receiver `rx3` is defined and disabled in `config/room.json`. Thresholds live in the newest `data/links_cal*.json`; `data/` is gitignored.
+- **The rig:** four ESP32-C5 boards on channel 6, senders at 40 Hz with two senders (pick the rate from the number of senders each receiver hears: 2 -> 40 Hz, 3 -> 25, 4 -> 20; the firmware default is 20, see `firmware/README.md`). Two receivers on USB (top left `rx2`, top right `rx1`), two senders off USB (bottom right `tx0` with `SENDER_ID` 0x00, bottom left `tx1` with 0x01). A third receiver `rx3` is defined and disabled in `config/room.json`. Thresholds live in the newest `data/links_cal*.json`; `data/` is gitignored.
 - **A known weak link:** `rx1<-01` (bottom-left sender to top-right receiver, the long diagonal) dropped to about 10 packets/s with RSSI -57 during the last calibration, so its threshold may be unreliable. Check packet rate and drops on its card before trusting it.
 - **Receivers stay wired for now** (decided 2026-11-07). The wireless estimate is in "Decisions" below.
-- **Not ours:** the remote branches `origin/fix/scaling-and-accuracy` and `origin/siv/turn-taking` belong to teammates. Leave them alone.
+- **This branch (`fix/scaling-and-accuracy`)** carries the scaling and accuracy work on top of `csi-sensing`: the per-receiver serial budget, the team MAC prefix, one live scorer configuration, quiet calibration by default, online auto thresholds, the scaled room decision, the coverage-normalised heatmap with the RTI estimator, the tracker and the room footprint, `scripts/plan_layout.py` and `scripts/tune_replay.py`. Do not revert these to the older behaviour described elsewhere without measuring. `origin/siv/turn-taking` belongs to a teammate; leave it alone.
 - **Little data:** the repo has two single-link recordings (branch `data/two-board-sessions`) and no labelled recording of the four-link rig, so there are no accuracy figures for the current rig. Say so rather than quoting numbers from the single-link recordings.
 
 ## How the system fits together
 
 ```
-sender boards (ESP-NOW, ch 6, 40 Hz)
+sender boards (ESP-NOW, ch 6, 20-40 Hz by sender count)
       -> receiver boards (measure CSI per packet, print CSI_DATA lines over USB serial, 921600 baud)
       -> csi/parser.py  (one amplitude vector per packet)
       -> csi/multisource.py  (one thread per receiver)
@@ -50,23 +50,23 @@ Where to start, by task:
 ## Glossary
 
 - **Link:** one (receiver, sender) pair, labelled `<receiver><-<sender id>`, e.g. `rx1<-00`. Four links with two receivers and two senders.
-- **Sender / receiver / node:** boards by role. A receiver measures CSI on packets from every sender whose address starts `1a:00:00:00:00`; the last byte is the sender id.
-- **Score:** a link's motion measure: the variance of the high-passed amplitude over a 1 s window, averaged across subcarriers.
+- **Sender / receiver / node:** boards by role. A receiver measures CSI on packets from every sender whose address starts with the team prefix `1a:0c:12:00:00`; the last byte is the sender id. Boards still on the old firmware (`1a:00:00:00:00:xx`) are mapped to the configured sender with the same last byte (`csi/server.py`).
+- **Score:** a link's motion measure: the variance of the high-passed amplitude over a 2 s window, averaged across subcarriers (the live scorer configuration `LIVE_SCORER` in `csi/detect.py`: about 1 Hz high-pass, trapezoidal update, 3-tap median prefilter).
 - **Threshold:** the score above which a link reads MOTION. One per link, from calibration or set by hand.
 - **States:** EMPTY, MOTION, WARMUP (window not full yet), UNCALIBRATED (no threshold), NO_SIGNAL (no packet for 2 s). STILL_PRESENT is the experimental breathing state.
-- **Calibration:** setting a link's threshold from a stretch of live scores. A **quiet-room** run refuses clips that are mostly movement; a **noisy-room** run accepts them and reports how much looked like movement. Calibration **margin** scales the threshold.
+- **Calibration:** setting a link's threshold from a stretch of live scores. A **quiet-room** run refuses clips that are mostly movement; a **noisy-room** run accepts them and reports how much looked like movement. Calibration **margin** scales the threshold. The quiet-room rules are the default on this branch.
 - **Gain baseline:** a receiver fixes its automatic gain from the first 100 packets after boot. **Re-baseline** means a reset shifted it, which makes every saved threshold on that receiver stale.
-- **Heatmap:** a rough motion-likelihood map built from the links' scores and the room geometry. It shows where change is, not where a person is.
+- **Heatmap:** a rough motion-likelihood map built from the links' scores and the room geometry, normalised by link coverage. With 6 or more reporting links the RTI estimator (`csi/rti.py`) draws it; `csi/tracker.py` follows one moving person on it and leaves a last-seen marker; an optional `footprint` in `config/room.json` keeps heat inside the room outline. It shows roughly where change is (a few metres), not an exact position.
 - **`SENDER_ID`:** the last byte of a sender's address, set at firmware build time.
 - **Board serial:** a board's USB serial, equal to its base MAC (e.g. `38:44:BE:A5:18:B0`). It identifies a board; the `/dev/cu.usbmodem*` name does not, because it changes on replug.
 
 ## Decisions and why
 
 - **ESP32-C5 receivers only.** S3 receivers were much noisier (35-65% false MOTION in a quiet room against 4-16% for a C5), and an S3 third receiver cut the others' packet rates. See `hardware.md`.
-- **Fixed per-link thresholds are the default; `--auto-threshold` is experimental.** Adaptive detection (`csi/adaptive.py`) was less sensitive to walking.
+- **Fixed per-link thresholds are the default.** `--auto-threshold` (online per-link CFAR baselines in `csi/adaptive.py`) was retuned on this branch for rooms that cannot be cleared and no longer restarts on short packet gaps; measure it against labelled walks before relying on it.
 - **Motion-only by default; breathing is opt-in.** It false-fires on empty rooms (43% of empty windows on hw5).
 - **Thresholds for a noisy room.** The room is never empty, so there are two methods: a formula (`scripts/calibrate.py`) and the dashboard's Calibrate button. They disagreed on one link (rx2<-00: 137 vs 50) and neither was checked against labelled motion, so no winner is declared. See `hardware.md`.
-- **Channel 6, 40 Hz.** Chosen for the shared channel; more senders mean more collisions (README "Scaling up").
+- **Channel 6; the limit is each receiver's serial output, not collisions.** A C5 receiver prints about 100-107 CSI packets/s summed over every sender it hears (S3 and original ESP32 receivers about 65-79), while the team's frames use about 1% of airtime. Keep senders x real rate under about 80/s per receiver (README "Scaling up", `firmware/README.md`).
 - **Tests are pinned to a frozen four-node fixture** (`tests/fixtures/room_rig4.json`, via `CSI_ROOM` in `tests/conftest.py`), so reconfiguring the live rig never changes test outcomes. Tests that load the real config are the deliberate exception.
 - **The server uses only the standard library**, and the dashboard commands are loopback-only by default (README "Security").
 - **Firmware is vendored** in `firmware/` (stock `esp-csi` plus our edits) so the repo is self-contained.
@@ -80,7 +80,7 @@ Where to start, by task:
 - **USB port names change on every replug.** Identify boards by serial.
 - **Boards flash from one build directory per chip and role.** The example's `sdkconfig` is shared and carries the last target; see `firmware/README.md`.
 - **A flashed sender must have a unique `SENDER_ID`.** Two senders with the same id merge into one link and look like one noisy sender.
-- **Duplicate or ghost senders:** a receiver hears every `1a:00:00:00:00:xx` sender, including a board you forgot to switch off. Count packets per sender before assuming a link is yours.
+- **Duplicate or ghost senders:** a receiver hears every sender with the team prefix `1a:0c:12:00:00:xx` (and old-firmware `1a:00:00:00:00:xx` boards through the legacy mapping), including a board you forgot to switch off. Count packets per sender before assuming a link is yours.
 - **The dashboard holds the serial ports.** Another reader (`idf.py monitor`, `record.py`, `telemetry.py`) on the same port starves it.
 - **Tests can time out on a loaded machine.** Calibration tests poll the live server. Check the load average before blaming code, and kill any busy-loop processes left by earlier load tests.
 - **macOS specifics:** bash 3.2 (an empty array under `set -u` is an error), `zsh` does not word-split unquoted variables, `timeout` is not installed, the sandbox refuses `PYTHONPATH`, use `/dev/cu.*` ports.
