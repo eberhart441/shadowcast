@@ -32,6 +32,8 @@ As a person walks a loop through the room, the heat follows them, and each link 
 [Why it's hard](#why-this-is-hard) · [Engineering](#engineering) · [Results](#results) ·
 [Docs](#documentation)
 
+**[Slide deck (PDF)](media/Shadowcast.pdf)** · **[Build photos and demo video](media/README.md)**
+
 </div>
 
 ---
@@ -344,6 +346,8 @@ We would rather you hear these from us:
 
 | Doc | What's in it |
 |---|---|
+| [media/Shadowcast.pdf](media/Shadowcast.pdf) | The pitch deck |
+| [media/](media/README.md) | Photos of the capsule nodes and the build, and a video of a live test |
 | [docs/theory.md](docs/theory.md) | Signal model and detection math: every equation, constant and source function |
 | [docs/architecture.md](docs/architecture.md) | System diagram, module map, concurrency, HTTP API, testing strategy |
 | [docs/adr/](docs/adr/README.md) | Architecture decision records, with evidence |
