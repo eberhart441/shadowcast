@@ -10,6 +10,7 @@
     dashboard.py --simulate-room --log run.jsonl                   # also append the state stream to a file
     dashboard.py --replay run.jsonl --speed 8                      # serve a logged run (1 = original pace, max = fastest)
     dashboard.py --replay-session data/hw5 --speed 8 [--margin X | --thresholds links.json]
+    dashboard.py --auto-ports --page web/ui-overhaul/index.html   # any source: serve the new UI at / instead
 
 Endpoints: GET /  (page), GET /api/state  (one payload), GET /api/events  (SSE, ~5 Hz).
 Binds to 127.0.0.1 unless --host says otherwise. Mode: links are fixed by default (--thresholds file, or the
@@ -123,6 +124,9 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--save-thresholds", type=Path, default=None, metavar="PATH",
                    help=f"where POST /api/thresholds/save writes (default: --thresholds, else "
                         f"{DEFAULT_THRESHOLDS_FILE} in the working directory)")
+    s.add_argument("--page", type=Path, default=None, metavar="PATH",
+                   help="the HTML page served at / (default web/index.html); "
+                        "--page web/ui-overhaul/index.html serves the new UI")
     return ap
 
 
@@ -150,6 +154,12 @@ def check_source(args: argparse.Namespace) -> None:
         raise SystemExit("error: --thresholds does not apply to --replay: a log already holds its states")
     if args.auto_threshold and replaying:
         raise SystemExit("error: --auto-threshold applies to live sources (--port, --simulate-room) only")
+
+
+def check_page(args: argparse.Namespace) -> None:
+    """--page must name a file: a wrong path would serve the server's "web/index.html is missing" stub."""
+    if args.page is not None and not args.page.is_file():
+        raise SystemExit(f"error: --page {args.page} is not a file")
 
 
 def resolve_auto_ports(room: Room) -> list[str]:
@@ -209,16 +219,20 @@ def build_sources(args: argparse.Namespace, room: Room) -> tuple[dict[str, Strea
 def build_server(args: argparse.Namespace) -> FrameServer:
     """The server for the chosen source, not yet started. Raises ReplayError for unusable replay inputs."""
     speed = 1.0 if args.speed is None else args.speed
+    page = args.page  # None: the server's default, web/index.html
     if args.replay is not None:
-        return ReplayServer(load_log(args.replay), speed=speed, host=args.host, port=args.http_port)
+        return ReplayServer(load_log(args.replay), speed=speed, host=args.host, port=args.http_port, web_index=page)
     room = load_room(args.room)
     if args.replay_session is not None:
         thresholds = load_link_thresholds(args.thresholds)
         source = f"loaded from {args.thresholds}" if thresholds is not None else None
-        return session_dashboard(args.replay_session, room, speed=speed,
-                                 margin=DEFAULT_MARGIN if args.margin is None else args.margin,
-                                 thresholds=thresholds, thresholds_source=source,
-                                 host=args.host, port=args.http_port, log=args.log)
+        server = session_dashboard(args.replay_session, room, speed=speed,
+                                   margin=DEFAULT_MARGIN if args.margin is None else args.margin,
+                                   thresholds=thresholds, thresholds_source=source,
+                                   host=args.host, port=args.http_port, log=args.log)
+        if page is not None:
+            server._web_index = page  # session_dashboard takes no web_index; the page is read on each GET /
+        return server
     sources, thresholds = build_sources(args, room)
     if args.simulate_room:
         source = "simulate-room"
@@ -235,12 +249,13 @@ def build_server(args: argparse.Namespace) -> FrameServer:
                              ("simulated empty room" if args.simulate_room else "none"))
     return DashboardServer(room, sources, thresholds, host=args.host, port=args.http_port, log=args.log,
                            allow_control=args.allow_control, thresholds_path=save_to, mode=mode,
-                           log_meta={"source": source, "thresholds_source": thresholds_source})
+                           log_meta={"source": source, "thresholds_source": thresholds_source}, web_index=page)
 
 
 def main(argv: Optional[list[str]] = None) -> int:
     args = build_parser().parse_args(argv)
     check_source(args)
+    check_page(args)
     if args.auto_ports:
         args.port = resolve_auto_ports(load_room(args.room))
     try:
