@@ -11,6 +11,11 @@ if(DEFINED SENDER_ID)
     add_compile_definitions(SENDER_ID=${SENDER_ID})
 endif()
 
+# 2.4GHz channel (non-overlapping: 1, 6, 11): idf.py -DCHANNEL=11 build
+if(DEFINED CHANNEL)
+    add_compile_definitions(CHANNEL=${CHANNEL})
+endif()
+
 string(REGEX REPLACE ".*/\(.*\)" "\\1" CURDIR ${CMAKE_CURRENT_SOURCE_DIR})
 project(${CURDIR})
 

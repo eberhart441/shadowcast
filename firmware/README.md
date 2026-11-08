@@ -6,7 +6,8 @@ Which board is which (chip, position, sender address, port hint) is in `config/r
 
 ## Our edits to the stock examples
 
-- Channel 6 (`CONFIG_LESS_INTERFERENCE_CHANNEL`), sender and receiver.
+- HT20 bandwidth (`CONFIG_WIFI_2G_BANDWIDTHS`/`CONFIG_WIFI_5G_BANDWIDTHS`/`CONFIG_WIFI_BANDWIDTH`), down from the stock HT40, to free up non-overlapping 2.4GHz channels for a future multi-channel split.
+- Channel (`CONFIG_LESS_INTERFERENCE_CHANNEL`), default 6, sender and receiver; set at build time via `CHANNEL` (below).
 - Sender: send frequency 40 Hz; the last byte of its address is `SENDER_ID`, default `0x00`, set at build time (below).
 - Receiver: `CONFIG_FORCE_GAIN` 1, and it accepts any sender whose first 5 address bytes are `1a:00:00:00:00`, so one receiver hears every sender.
 - Receiver, unchanged from stock: it also sets its own address to `1a:00:00:00:00:00`.
@@ -42,6 +43,15 @@ idf.py -B build_c5_id01 -p /dev/cu.usbmodemXXXX flash
 ```
 
 Use `esp32s3` instead of `esp32c5` for an S3 board. Changing `SENDER_ID` in an existing build directory does not reliably rebuild; use a fresh directory.
+
+Channel: both `csi_send` and `csi_recv` default to channel 6. Set a different non-overlapping 2.4GHz channel (1, 6, or 11) at build time with `-DCHANNEL=N`, same pattern as `SENDER_ID`, and give it its own build directory too:
+
+```
+idf.py -B build_c5_ch11 -DCHANNEL=11 set-target esp32c5
+idf.py -B build_c5_ch11 build
+```
+
+A sender and the receiver that should hear it must build with the same `CHANNEL`.
 
 ## Serial output
 
