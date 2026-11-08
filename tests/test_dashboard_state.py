@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 
 from csi.dashboard import DashboardState
-from csi.links import calibrate_links_report
+from csi.links import LinkMonitor, calibrate_links_report
 from csi.room import load_room, stand_at_centre, stand_near_wall
 from csi.simulate import simulate_room_links
 
@@ -222,3 +222,66 @@ def test_baseline_is_none_during_warm_up_and_evidence_zero_until_ten_seconds_of_
     assert all(rows[label]["baseline"] is None for label in LABELS)
     assert all(rows[label]["evidence"] == 0.0 for label in LABELS)
     assert early["heatmap"]["max"] == 0.0
+
+
+# ---------------------------------------------------------------- link health, near-node veto, last motion
+
+HEALTH = {"seq_rate": 38.46, "seq_loss": 0.0625, "clip_pct": 0.025, "agc_gain": 32, "fft_gain": -6,
+          "noise_floor": -92}
+
+
+def test_link_health_from_the_monitor_rows_reaches_each_link_and_is_none_where_a_row_has_none(monkeypatch):
+    """The monitor's rows (csi/links.py) carry seq_rate, seq_loss, clip_pct, agc_gain, fft_gain and noise_floor; the
+    payload passes them through per link. A row without them (an older monitor) gives None, so the page and old
+    logs still work, and a NaN never reaches the JSON."""
+    original = LinkMonitor.snapshot
+
+    def rows_with_health(self, now=None):
+        rows = [{k: v for k, v in row.items() if k not in HEALTH} for row in original(self, now)]
+        for row in rows:
+            if row["id"] == RIGHT:
+                row.update(HEALTH)
+            elif row["id"] == DIAG_A:
+                row.update(seq_rate=float("nan"), seq_loss=None, agc_gain=float("inf"))
+        return rows
+
+    monkeypatch.setattr(LinkMonitor, "snapshot", rows_with_health)
+    payload = run(tagged(person=None, duration_s=3, seed=1)).snapshot()
+    json.dumps(payload, allow_nan=False)
+    rows = links_by_id(payload)
+    assert {key: rows[RIGHT][key] for key in HEALTH} == HEALTH
+    assert isinstance(rows[RIGHT]["agc_gain"], int) and isinstance(rows[RIGHT]["noise_floor"], int)
+    assert all(rows[LEFT][key] is None for key in HEALTH)          # the row had none of them
+    assert all(rows[DIAG_A][key] is None for key in HEALTH)        # NaN, inf and None all become None
+
+
+def test_payload_reports_no_busy_node_on_the_four_link_rig_and_keeps_its_old_keys():
+    payload = run(quiet_then(stand_near_wall(ROOM, "right"), 6)).snapshot()
+    assert payload["heatmap"]["busy_nodes"] == []                  # every node has two links: never busy
+    assert {"cols", "rows", "extents", "cells", "max", "contributing"} <= set(payload["heatmap"])
+    params = payload["status"]["parameters"]
+    assert {"coverage_eps", "min_coverage", "baseline_freeze_s", "busy_evidence", "busy_link_weight"} <= set(params)
+
+
+def test_links_and_the_room_report_seconds_since_their_last_motion():
+    state = new_state()
+    standing = tagged(person=stand_near_wall(ROOM, "right"), duration_s=6, seed=12, t0=T0 + LEAD_S)
+    left_at = T0 + LEAD_S + 6.0
+    empty = tagged(person=None, duration_s=10, seed=12, t0=left_at)
+    feed(state, tagged(person=None, duration_s=LEAD_S, seed=12))
+    quiet = state.snapshot(now=T0 + LEAD_S)
+    assert quiet["status"]["room"]["since_motion_s"] is None      # no MOTION yet
+    assert all(row["since_motion_s"] is None for row in quiet["links"])
+
+    feed(state, standing)
+    during = state.snapshot(now=left_at)
+    rows = links_by_id(during)
+    assert rows[RIGHT]["state"] == "MOTION" and rows[RIGHT]["since_motion_s"] == 0.0
+    assert during["status"]["room"]["since_motion_s"] == 0.0
+    assert rows[LEFT]["since_motion_s"] is None
+
+    feed(state, empty)
+    after = state.snapshot(now=left_at + 10.0)
+    since = links_by_id(after)[RIGHT]["since_motion_s"]
+    assert 5.0 < since <= 10.0              # its MOTION ended a second or two after the person left
+    assert after["status"]["room"]["since_motion_s"] == since
