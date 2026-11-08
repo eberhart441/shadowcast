@@ -32,7 +32,7 @@ Merge `csi-sensing` into the work branch before reporting.
 
 ## Landing (merger)
 
-Done means all of:
+Lands a work branch on `csi-sensing`. Done means all of:
 
 1. `csi-sensing` is merged into the work branch and `scripts/check.sh --full` passes there.
 2. `csi-sensing` is fast-forwarded onto the work branch: `git -C <main checkout> merge --ff-only <work branch>`. This updates the branch without a `git switch`.
@@ -48,6 +48,8 @@ Leave unfinished work findable: a comment on the ticket's issue saying what is l
 Send one final report: branch, what changed, test results (counts), and what you could not verify. Send it when all background work has ended.
 
 ## Landing on main
+
+Takes `csi-sensing` to `main`, after the steps above.
 
 - Work reaches `main` through a pull request from `csi-sensing`.
 - Run `git fetch` before comparing with `origin/main`. A PR merged on GitHub leaves the local `origin/main` stale.
