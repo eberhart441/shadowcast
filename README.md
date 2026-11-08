@@ -2,12 +2,13 @@
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/banner-dark.svg">
-  <img src="docs/assets/banner-light.svg" width="100%" alt="Device-free motion sensing from WiFi CSI. Every radio link is a motion sensor. Four ESP32-C5 boards at the corners of a 2.77 by 1.84 metre room, with radio links between them and a heat spot following a person.">
+  <img src="docs/assets/banner-light.svg" width="100%" alt="Shadowcast. Never go in blind. Device-free motion sensing from WiFi CSI. Four ESP32-C5 boards at the corners of a 2.77 by 1.84 metre room, with radio links between them and a heat spot following a person.">
 </picture>
 
+**Drop WiFi pucks around a building. See who's moving inside, through walls, live.**<br>
 Every WiFi packet arrives as a 114-subcarrier measurement of how the space scattered it on the way,
-and a moving body changes that measurement. No cameras, no wearables, no line of sight.<br>
-Today it runs on four boards in one room. The math doesn't care how many boards there are, or where.
+and a moving body casts a radio shadow across that measurement. No cameras, no wearables, no line of sight.<br>
+Today it runs on four pucks in one room. The math doesn't care how many pucks there are, or where.
 
 [![CI](https://github.com/CodeMetalForge-Hackathon/Team-12/actions/workflows/ci.yml/badge.svg)](https://github.com/CodeMetalForge-Hackathon/Team-12/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/python-3.10%2B-3776AB)
@@ -25,7 +26,7 @@ As a person walks a loop through the room, the heat follows them, and each link 
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/stats-dark.svg">
-  <img src="docs/assets/stats-light.svg" width="100%" alt="100% of walking windows flagged MOTION (hw5 recording, 2,621 windows). 94% of empty-room windows read EMPTY (hw5 validation recording). About 16,000 subcarrier amplitudes analysed per second (4 links times 114 subcarriers). 447 automated tests, no hardware needed, CI on every PR. 1,225 links from 50 nodes: pairs grow as n(n-1)/2.">
+  <img src="docs/assets/stats-light.svg" width="100%" alt="100% of walking windows flagged MOTION (hw5 recording, 2,621 windows). 94% of empty-room windows read EMPTY (hw5 validation recording). About 16,000 subcarrier amplitudes analysed per second (4 links times 114 subcarriers). 447 automated tests, no hardware needed, CI on every PR. 240 links from 16 pucks: links grow as n(n-1).">
 </picture>
 
 [Beyond one room](#beyond-one-room) · [Quick start](#quick-start-no-hardware-needed) · [How it works](#how-it-works) · [The math](#the-math) ·
@@ -40,14 +41,16 @@ As a person walks a loop through the room, the heat follows them, and each link 
 
 ## The pitch
 
+**Shadowcast** starts from one insight: **a moving body casts a radio shadow.**
+
 To decode a packet, every WiFi receiver already measures the channel the packet crossed: one complex gain
 per subcarrier, called **Channel State Information (CSI)**. That measurement is a sensor that almost
 nobody uses. When a person moves between two radios, their body blocks, reflects and bends the waves,
-and the CSI changes. The person carries nothing. Smoke, darkness, drywall and foliage stop a camera, but
-radio goes through them.
+and the CSI flickers. Catch that shadow on every link, and you can map where the movement is. The person
+carries nothing. Smoke, darkness, drywall and foliage stop a camera, but radio goes through them.
 
 Our first target is firefighters and tactical teams, who need to know whether anyone is moving in a room
-**before** they open the door. Fixed ESP32 boards around a room exchange
+**before** they open the door. Pucks (ESP32-C5 boards) placed around a room exchange
 packets at 40 Hz. Each sender→receiver **link** becomes a continuous, 114-dimensional probe of the
 space between them. A body moving through that space perturbs the multipath channel. We turn the
 perturbation into a calibrated, debounced **EMPTY / MOTION** decision per link, and fuse the links into
@@ -79,16 +82,18 @@ motion-imaging network**. Nothing in the software assumes a room, a building or 
   independently, so a lost node drops only its own links. They read NO_SIGNAL, never a false EMPTY.
 - **Geometry is data.** Nodes are coordinates in [`config/room.json`](config/room.json), and they may sit
   outside the room. Adding a node is a JSON edit, not a code change.
-- **Sensing grows quadratically.** Every pair of nodes is a link, so coverage grows faster than cost:
+- **Sensing grows quadratically.** Every puck you add multiplies the links, so coverage grows faster than
+  cost:
 
 ```math
 L_{\text{today}} = R\cdot S
 \qquad\text{vs.}\qquad
-L_{\text{transceivers}} = \binom{n}{2} = \frac{n(n-1)}{2}
+L_{\text{transceivers}} = n(n-1)
 ```
 
-Here $R$ and $S$ count receivers and senders, and $n$ counts nodes that both send and receive. Ten such
-nodes give 45 links; fifty give 1,225. Each link is one projection through the space, and the heatmap is
+Here $R$ and $S$ count receivers and senders, and $n$ counts pucks that both send and receive. A link is a
+(receiver, sender) pair, and the code scores each direction separately, so A→B and B→A are two links. Six
+such pucks give 30 links; sixteen give 240. Each link is one projection through the space, and the heatmap is
 a backprojection of those projections. A CT scanner works the same way, with X-rays where we use radio
 links: more angles give a sharper image.
 

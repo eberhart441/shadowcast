@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 360" width="1280" height="360" role="img" aria-labelledby="title desc">
-<title id="title">Device-free motion sensing from WiFi CSI</title>
-<desc id="desc">Team 12, CodeMetalForge Hackathon. Every radio link is a motion sensor. ESP32-C5, 114 subcarriers, 40 Hz, RF tomography. Schematic of the 2.77 m by 1.84 m rig: receivers rx2 and rx1 in the top corners, senders tx1 and tx0 in the bottom corners, four links between them, and a heat blob for a person walking through the room.</desc>
+<title id="title">Shadowcast: never go in blind</title>
+<desc id="desc">Shadowcast. Never go in blind. Device-free motion sensing from WiFi CSI. Team 12, CodeMetalForge Hackathon. ESP32-C5, 114 subcarriers, 40 Hz, RF tomography. Schematic of the 2.77 m by 1.84 m rig: receivers rx2 and rx1 in the top corners, senders tx1 and tx0 in the bottom corners, four links between them, and a heat blob for a person walking through the room.</desc>
 <style>
 text{font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif}.m{font-family:ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace}
 @keyframes walk{0%{transform:translate(0px,0px)}2.08%{transform:translate(14.4px,14.9px)}4.17%{transform:translate(28.6px,28.8px)}6.25%{transform:translate(42.2px,40.7px)}8.33%{transform:translate(55.2px,49.9px)}10.42%{transform:translate(67.2px,55.6px)}12.5%{transform:translate(78.1px,57.6px)}14.58%{transform:translate(87.6px,55.6px)}16.67%{transform:translate(95.6px,49.9px)}18.75%{transform:translate(102px,40.7px)}20.83%{transform:translate(106.6px,28.8px)}22.92%{transform:translate(109.5px,14.9px)}25%{transform:translate(110.4px,0px)}27.08%{transform:translate(109.5px,-14.9px)}29.17%{transform:translate(106.6px,-28.8px)}31.25%{transform:translate(102px,-40.7px)}33.33%{transform:translate(95.6px,-49.9px)}35.42%{transform:translate(87.6px,-55.6px)}37.5%{transform:translate(78.1px,-57.6px)}39.58%{transform:translate(67.2px,-55.6px)}41.67%{transform:translate(55.2px,-49.9px)}43.75%{transform:translate(42.2px,-40.7px)}45.83%{transform:translate(28.6px,-28.8px)}47.92%{transform:translate(14.4px,-14.9px)}50%{transform:translate(0px,0px)}52.08%{transform:translate(-14.4px,14.9px)}54.17%{transform:translate(-28.6px,28.8px)}56.25%{transform:translate(-42.2px,40.7px)}58.33%{transform:translate(-55.2px,49.9px)}60.42%{transform:translate(-67.2px,55.6px)}62.5%{transform:translate(-78.1px,57.6px)}64.58%{transform:translate(-87.6px,55.6px)}66.67%{transform:translate(-95.6px,49.9px)}68.75%{transform:translate(-102px,40.7px)}70.83%{transform:translate(-106.6px,28.8px)}72.92%{transform:translate(-109.5px,14.9px)}75%{transform:translate(-110.4px,0px)}77.08%{transform:translate(-109.5px,-14.9px)}79.17%{transform:translate(-106.6px,-28.8px)}81.25%{transform:translate(-102px,-40.7px)}83.33%{transform:translate(-95.6px,-49.9px)}85.42%{transform:translate(-87.6px,-55.6px)}87.5%{transform:translate(-78.1px,-57.6px)}89.58%{transform:translate(-67.2px,-55.6px)}91.67%{transform:translate(-55.2px,-49.9px)}93.75%{transform:translate(-42.2px,-40.7px)}95.83%{transform:translate(-28.6px,-28.8px)}97.92%{transform:translate(-14.4px,-14.9px)}100%{transform:translate(0px,0px)}}
@@ -32,9 +32,9 @@ text{font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Hel
 
 <!-- text -->
 <text class="m" x="64" y="68" font-size="18" fill="#08717d" letter-spacing="0.5">Team 12 · CodeMetalForge Hackathon</text>
-<text x="62" y="128" font-size="44" font-weight="700" fill="#1f2328">Device-free motion sensing</text>
-<text x="62" y="180" font-size="44" font-weight="700" fill="#1f2328">from WiFi CSI</text>
-<text x="64" y="228" font-size="26" font-weight="500" fill="#08717d">Every radio link is a motion sensor.</text>
+<text x="60" y="146" font-size="72" font-weight="700" fill="#1f2328" letter-spacing="-1">Shadowcast</text>
+<text x="64" y="196" font-size="30" font-weight="500" fill="#08717d">Never go in blind.</text>
+<text x="64" y="236" font-size="22" fill="#1f2328">Device-free motion sensing from WiFi CSI</text>
 <text class="m" x="64" y="272" font-size="18" fill="#59636e">ESP32-C5 · 114 subcarriers · 40 Hz · RF tomography</text>
 
 <!-- 114 subcarrier amplitudes (DC nulls left out) -->
