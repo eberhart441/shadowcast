@@ -24,6 +24,11 @@ returns one JSON-serialisable dict:
     status    {time_s, links_by_state, parameters, room}
                 room: {state, elevated (labels), mode, since_motion_s}: room-level MOTION from link agreement
                 (csi/adaptive.py); since_motion_s: seconds since any of the room's links was last in MOTION
+    track     None, or the one-person track on the heatmap image (csi/tracker.py): {active, x, y, sx, sy, rho, vx,
+                vy, age_s, last_seen_s, trail: [[t, x, y], ...]} in metres, m/s and seconds (trail times are host
+                time); active False is a 'last seen' marker. The tracker steps once per snapshot (the server's 5 Hz
+                frames); a snapshot less than 0.1 s after the last one only refreshes its ages. Logs written before
+                the tracker have no track key.
 
 Time is host time from the packets. ``snapshot()`` with no argument uses the newest packet time, so the
 payload is deterministic for simulated streams; pass ``now`` to advance the decay while packets stop.
@@ -38,6 +43,7 @@ from .heatmap import Heatmap
 from .links import LinkId, LinkMonitor, NO_SIGNAL, UNCALIBRATED, WARMUP
 from .parser import CSIPacket
 from .room import Room
+from .tracker import Tracker
 
 STATES = ("EMPTY", "MOTION", WARMUP, UNCALIBRATED, NO_SIGNAL)
 PAYLOAD_DECIMALS = 4
@@ -57,6 +63,7 @@ class DashboardState:
         self._room_labels = {link.label for link in expected}
         self._motion_at: dict[str, float] = {}   # link label -> host time it was last seen in MOTION
         self._last_host: Optional[float] = None
+        self._tracker = Tracker()                # follows one person on the heatmap image, whatever drew it
 
     def push(self, receiver: str, pkt: CSIPacket) -> None:
         self._monitor.push(receiver, pkt)
@@ -111,12 +118,14 @@ class DashboardState:
         self._note_motion(now, rows)
         self._heat.advance(now, rows)
         links = [self._link_payload(row, now) for row in rows]
+        heatmap = self._heatmap_payload()
         return {
             "room": {"width_m": self._room.width_m, "depth_m": self._room.depth_m},
             "nodes": self._nodes(),
             "links": links,
-            "heatmap": self._heatmap_payload(),
+            "heatmap": heatmap,
             "status": self._status_payload(now, rows),
+            "track": self._tracker.update(now, heatmap),
         }
 
     def _note_motion(self, now: float, rows: list[Mapping]) -> None:
