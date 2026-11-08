@@ -26,7 +26,45 @@
 #include "esp_now.h"
 #include "esp_csi_gain_ctrl.h"
 
-#define CONFIG_LESS_INTERFERENCE_CHANNEL   6
+/* Build-time options: idf.py -D<NAME>=<value>, forwarded by CMakeLists.txt. firmware/README.md lists them all. */
+
+/* Wi-Fi channel, the same on every board: -DCSI_CHANNEL=11 */
+#ifndef CSI_CHANNEL
+#define CSI_CHANNEL 6
+#endif
+#if CSI_CHANNEL < 5 || CSI_CHANNEL > 11
+#error "CSI_CHANNEL must be 5-11: HT40 puts the secondary channel 4 below it, and 12-13 are not allowed in the US"
+#endif
+#define CONFIG_LESS_INTERFERENCE_CHANNEL   CSI_CHANNEL
+
+/* 1 (stock): force the receive gain at packet 100. 0: leave the AGC running (pair with CSI_PRINT_RAW=1). */
+#ifndef CSI_FORCE_GAIN
+#define CSI_FORCE_GAIN 1
+#endif
+
+/* Experimental, off by default: force the gain of the strongest sender heard in packets 0-99 (the packet with the
+ * lowest agc_gain), lowered by CSI_GAIN_LOCK_OFFSET agc steps, instead of the library's median baseline. */
+#ifndef CSI_GAIN_LOCK_STRONGEST
+#define CSI_GAIN_LOCK_STRONGEST 0
+#endif
+#ifndef CSI_GAIN_LOCK_OFFSET
+#define CSI_GAIN_LOCK_OFFSET 0
+#endif
+
+/* 1: print the raw int8 CSI values, without the gain-compensation multiply. With the AGC running that multiply can
+ * exceed the int8 range, and csi/parser.py drops such lines. */
+#ifndef CSI_PRINT_RAW
+#define CSI_PRINT_RAW 0
+#endif
+
+/* Print only every Nth subcarrier (I/Q pair) to shorten each line; 1 prints all of them. */
+#ifndef CSI_PRINT_STRIDE
+#define CSI_PRINT_STRIDE 1
+#endif
+#if CSI_PRINT_STRIDE < 1
+#error "CSI_PRINT_STRIDE must be 1 or more"
+#endif
+
 #if CONFIG_IDF_TARGET_ESP32C5 || CONFIG_IDF_TARGET_ESP32C61 || (CONFIG_IDF_TARGET_ESP32C6 && ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 4, 0))
 #define CONFIG_WIFI_BAND_MODE               WIFI_BAND_MODE_2G_ONLY
 #define CONFIG_WIFI_2G_BANDWIDTHS           WIFI_BW_HT40
@@ -39,7 +77,7 @@
 
 #define CONFIG_ESP_NOW_PHYMODE           WIFI_PHY_MODE_HT40
 #define CONFIG_ESP_NOW_RATE             WIFI_PHY_RATE_MCS0_LGI
-#define CONFIG_FORCE_GAIN                   1
+#define CONFIG_FORCE_GAIN                   CSI_FORCE_GAIN
 
 #if CONFIG_IDF_TARGET_ESP32C5 || CONFIG_IDF_TARGET_ESP32C61
 #define CSI_FORCE_LLTF                      0
@@ -49,11 +87,18 @@
 #define CONFIG_GAIN_CONTROL                 1
 #endif
 
+#if CSI_GAIN_LOCK_STRONGEST && !(CONFIG_GAIN_CONTROL && CONFIG_FORCE_GAIN)
+#error "CSI_GAIN_LOCK_STRONGEST needs CSI_FORCE_GAIN=1 and a chip with gain control (ESP32-S3, C3, C5, C6, C61)"
+#endif
+
 #if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(6, 0, 0)
 #define ESP_IF_WIFI_STA ESP_MAC_WIFI_STA
 #endif
 
-static const uint8_t CONFIG_CSI_SEND_MAC[] = {0x1a, 0x00, 0x00, 0x00, 0x00, 0x00};
+/* Team address prefix: senders are 1a:0c:12:00:00:<SENDER_ID>, receivers 1a:0c:12:00:00:fe. Same value in csi_send. */
+#define CSI_MAC_PREFIX                      0x1a, 0x0c, 0x12, 0x00, 0x00
+static const uint8_t CSI_SENDER_PREFIX[] = {CSI_MAC_PREFIX};
+static const uint8_t CSI_RECV_MAC[] = {CSI_MAC_PREFIX, 0xfe};
 static const char *TAG = "csi_recv";
 
 static void wifi_init()
@@ -116,7 +161,7 @@ static void wifi_init()
     }
 #endif
 
-    ESP_ERROR_CHECK(esp_wifi_set_mac(WIFI_IF_STA, CONFIG_CSI_SEND_MAC));
+    ESP_ERROR_CHECK(esp_wifi_set_mac(WIFI_IF_STA, CSI_RECV_MAC));
 }
 
 static void wifi_esp_now_init(esp_now_peer_info_t peer)
@@ -141,7 +186,7 @@ static void wifi_csi_rx_cb(void *ctx, wifi_csi_info_t *info)
         return;
     }
 
-    if (memcmp(info->mac, CONFIG_CSI_SEND_MAC, 5)) {  /* accept any sender 1a:00:00:00:00:xx */
+    if (memcmp(info->mac, CSI_SENDER_PREFIX, sizeof(CSI_SENDER_PREFIX))) {  /* accept any team sender 1a:0c:12:00:00:xx */
         return;
     }
 
@@ -153,18 +198,47 @@ static void wifi_csi_rx_cb(void *ctx, wifi_csi_info_t *info)
 #if CONFIG_GAIN_CONTROL
     static uint8_t agc_gain_baseline = 0;
     static int8_t fft_gain_baseline = 0;
+#if CSI_GAIN_LOCK_STRONGEST
+    static int agc_gain_lock = UINT8_MAX + 1;  /* lowest agc_gain in packets 0-99 (the first packet replaces this) */
+    static int8_t fft_gain_lock = 0;           /* fft_gain of that packet */
+#endif
     esp_csi_gain_ctrl_get_rx_gain(rx_ctrl, &agc_gain, &fft_gain);
     if (s_count < 100) {
         esp_csi_gain_ctrl_record_rx_gain(agc_gain, fft_gain);
+#if CSI_GAIN_LOCK_STRONGEST
+        if (agc_gain < agc_gain_lock || (agc_gain == agc_gain_lock && fft_gain < fft_gain_lock)) {
+            agc_gain_lock = agc_gain;
+            fft_gain_lock = fft_gain;
+        }
+#endif
     } else if (s_count == 100) {
         esp_csi_gain_ctrl_get_rx_gain_baseline(&agc_gain_baseline, &fft_gain_baseline);
 #if CONFIG_FORCE_GAIN
-        esp_csi_gain_ctrl_set_rx_force_gain(agc_gain_baseline, fft_gain_baseline);
-        ESP_LOGD(TAG, "fft_force %d, agc_force %d", fft_gain_baseline, agc_gain_baseline);
+        uint8_t agc_force = agc_gain_baseline;
+        int8_t fft_force = fft_gain_baseline;
+#if CSI_GAIN_LOCK_STRONGEST
+        int agc_lock = agc_gain_lock - (CSI_GAIN_LOCK_OFFSET);
+        agc_force = agc_lock < 0 ? 0 : (agc_lock > UINT8_MAX ? UINT8_MAX : agc_lock);
+        fft_force = fft_gain_lock;
+        ESP_LOGI(TAG, "gain lock on the strongest sender: agc_force %d, fft_force %d (median baseline agc %d, fft %d)",
+                 agc_force, fft_force, agc_gain_baseline, fft_gain_baseline);
+#endif
+        esp_csi_gain_ctrl_set_rx_force_gain(agc_force, fft_force);
+        ESP_LOGD(TAG, "fft_force %d, agc_force %d", fft_force, agc_force);
 #endif
     }
     esp_csi_gain_ctrl_get_gain_compensation(&compensate_gain, agc_gain, fft_gain);
-    ESP_LOGI(TAG, "compensate_gain %f, agc_gain %d, fft_gain %d", compensate_gain, agc_gain, fft_gain);
+    ESP_LOGD(TAG, "compensate_gain %f, agc_gain %d, fft_gain %d", compensate_gain, agc_gain, fft_gain);
+#if CSI_GAIN_LOCK_STRONGEST
+    if (s_count >= 100) {
+        /* The gain is locked, and the library compensates against its median baseline, not this lock: that would
+         * scale the strongest link back up past the int8 range. Print the locked values as they are. */
+        compensate_gain = 1.0f;
+    }
+#endif
+#endif
+#if CSI_PRINT_RAW
+    compensate_gain = 1.0f;  /* raw int8 values: the prints below multiply by 1 */
 #endif
 
     uint32_t rx_id = *(uint32_t *)(info->payload + 15);
@@ -198,6 +272,14 @@ static void wifi_csi_rx_cb(void *ctx, wifi_csi_info_t *info)
     for (int i = 2; i < (info->len - 2); i += 2) {
         csi = ((int16_t)(((((uint16_t)info->buf[i + 1]) << 8) | info->buf[i]) << 4) >> 4);
         ets_printf(",%d", (int16_t)(compensate_gain * csi));
+    }
+#elif CSI_PRINT_STRIDE > 1
+    /* I/Q pairs 0, N, 2N, ... (N = CSI_PRINT_STRIDE); len counts the values actually printed. */
+    int pairs = (info->len / 2 + CSI_PRINT_STRIDE - 1) / CSI_PRINT_STRIDE;
+    ets_printf(",%d,%d,\"[", 2 * pairs, info->first_word_invalid);
+    for (int i = 0; i + 1 < info->len; i += 2 * CSI_PRINT_STRIDE) {
+        ets_printf(i ? ",%d,%d" : "%d,%d", (int16_t)(compensate_gain * info->buf[i]),
+                   (int16_t)(compensate_gain * info->buf[i + 1]));
     }
 #else
     ets_printf(",%d,%d,\"[%d", info->len, info->first_word_invalid, (int16_t)(compensate_gain * info->buf[0]));
