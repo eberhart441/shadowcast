@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 170" width="1280" height="170" role="img" aria-labelledby="title desc">
+<title id="title">Results at a glance</title>
+<desc id="desc">100% of walking windows flagged MOTION (hw5 recording, 2,621 windows). 94% of empty-room windows read EMPTY (hw5 validation recording). About 16,000 subcarrier amplitudes analysed per second (4 links × 114 subcarriers). 446 automated tests, no hardware needed, CI on every PR. 1,225 links from 50 nodes, since pairs grow as n(n−1)/2.</desc>
+<style>
+text{font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif}.m{font-family:ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace}
+</style>
+<defs><linearGradient id="card" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#fbfcfd"/><stop offset="1" stop-color="#edf3f7"/></linearGradient></defs>
+<rect x="1" y="1" width="1278" height="168" rx="16" fill="url(#card)" stroke="#d0d7de" stroke-width="2"/>
+<rect x="42" y="28" width="22" height="3" rx="1.5" fill="#08717d"/>
+<text x="40" y="82" font-size="48" font-weight="600" fill="#1f2328">100%<tspan class="m" dx="10" font-size="17" font-weight="700" fill="#a64300" letter-spacing="0.5">MOTION</tspan></text>
+<text x="42" y="112" font-size="18" fill="#1f2328">of walking windows</text>
+<text x="42" y="138" font-size="17" fill="#59636e">hw5 · 2,621 windows</text>
+<path d="M268 30V140" stroke="#d0d7de" stroke-width="1.5"/>
+<rect x="290" y="28" width="22" height="3" rx="1.5" fill="#08717d"/>
+<text x="288" y="82" font-size="48" font-weight="600" fill="#1f2328">94%<tspan class="m" dx="10" font-size="17" font-weight="700" fill="#08717d" letter-spacing="0.5">EMPTY</tspan></text>
+<text x="290" y="112" font-size="18" fill="#1f2328">of empty-room windows</text>
+<text x="290" y="138" font-size="17" fill="#59636e">hw5 validation recording</text>
+<path d="M516 30V140" stroke="#d0d7de" stroke-width="1.5"/>
+<rect x="538" y="28" width="22" height="3" rx="1.5" fill="#08717d"/>
+<text x="536" y="82" font-size="48" font-weight="600" fill="#1f2328">~16k<tspan font-size="30" font-weight="500" fill="#59636e">/s</tspan></text>
+<text x="538" y="112" font-size="18" fill="#1f2328">amplitudes analysed</text>
+<text x="538" y="138" font-size="17" fill="#59636e">4 links × 114 subcarriers</text>
+<path d="M764 30V140" stroke="#d0d7de" stroke-width="1.5"/>
+<rect x="786" y="28" width="22" height="3" rx="1.5" fill="#08717d"/>
+<text x="784" y="82" font-size="48" font-weight="600" fill="#1f2328">446</text>
+<text x="786" y="112" font-size="18" fill="#1f2328">automated tests</text>
+<text x="786" y="138" font-size="17" fill="#59636e">no hardware · CI per PR</text>
+<path d="M1012 30V140" stroke="#d0d7de" stroke-width="1.5"/>
+<rect x="1034" y="28" width="22" height="3" rx="1.5" fill="#08717d"/>
+<text x="1032" y="82" font-size="48" font-weight="600" fill="#1f2328">1,225</text>
+<text x="1034" y="112" font-size="18" fill="#1f2328">links from 50 nodes</text>
+<text x="1034" y="138" font-size="17" fill="#59636e">pairs grow as n(n−1)/2</text>
+</svg>
