@@ -1,6 +1,6 @@
 # Hardware and live-rig notes
 
-Reference for anything that touches boards, serial ports, firmware, thresholds or the running dashboard. The rig itself (nodes, positions, sender addresses, port hints) lives in `config/room.json`; read it there.
+Reference for anything that touches boards, serial ports, firmware, thresholds or the running dashboard. The rig itself (nodes, positions, sender addresses, board serials) lives in `config/room.json`; read it there.
 
 ## Receivers re-baseline on reset
 
