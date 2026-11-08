@@ -37,8 +37,8 @@ flowchart LR
 |---|---|---|---|
 | Parse | amplitude $A_k=\sqrt{I_k^2+Q_k^2}$ on 114 kept subcarriers | nulls 57, 58, 59 of 117 | `csi/parser.py` (`CSIParser`) |
 | Score | variance of 3-stage high-passed amplitude over 1 s, mean over subcarriers | $\tau=0.16$ s, $W=1$ s, $N\ge5$ | `csi/detect.py` (`MotionScorer`) |
-| Decide | $S>\theta$, zero-latency attack, 0.5 s release hold | $h=0.5$ s | `csi/detect.py` (`classify`, `_Debouncer`) |
-| Calibrate | $\theta=1.25\,Q_{0.99}$ (quiet) or $1.25\,Q_{0.97}$ (noisy) or median + 6 robust sigma | 1 s chunks, 3x / 2.5x rejection | `csi/detect.py` (`calibrate_clips`), `csi/noisy_calibration.py` |
+| Decide | $S\gt \theta$, zero-latency attack, 0.5 s release hold | $h=0.5$ s | `csi/detect.py` (`classify`, `_Debouncer`) |
+| Calibrate | $\theta=1.25\thinspace Q_{0.99}$ (quiet) or $1.25\thinspace Q_{0.97}$ (noisy) or median + 6 robust sigma | 1 s chunks, 3x / 2.5x rejection | `csi/detect.py` (`calibrate_clips`), `csi/noisy_calibration.py` |
 | Map | log-ratio evidence, Gaussian capsule, soft-AND, exponential saturation, asymmetric smoothing | $\sigma_F=0.35$ m, $\gamma=0.5$, $\kappa=1.3$ | `csi/heatmap.py` (`Heatmap`) |
 | Time | 32-bit counter unwrap, host-time watermark merge | $2^{32}$ µs, 1 s stall | `csi/clock.py`, `csi/server.py` (`_Reorder`) |
 
@@ -64,40 +64,40 @@ flowchart LR
 ### 1.1 Multipath CSI
 
 An OFDM receiver estimates, per packet, the complex channel frequency response on each subcarrier
-$f_k=f_c+k\,\Delta f$, with $\Delta f=312.5$ kHz [1]. In a room the channel is a sum over propagation
+$f_k=f_c+k\thinspace \Delta f$, with $\Delta f=312.5$ kHz [1]. In a room the channel is a sum over propagation
 paths, each with a complex gain $a_p$ and a delay $\tau_p=d_p/c$ for path length $d_p$:
 
-$$
+```math
 H_k(t)=\sum_{p=1}^{P} a_p(t)\,e^{-j2\pi f_k\,\tau_p(t)} .
-$$
+```
 
 Split the paths into those that do not touch a person (walls, furniture, line of sight) and those
 that do:
 
-$$
+```math
 H_k(t)=\underbrace{\sum_{p\in\mathcal S} a_p\,e^{-j2\pi f_k\tau_p}}_{H_k^{\mathrm s}\ \text{(static)}}+\underbrace{\sum_{p\in\mathcal D} a_p(t)\,e^{-j2\pi f_k\tau_p(t)}}_{H_k^{\mathrm d}(t)\ \text{(body paths)}} .
-$$
+```
 
 The phase of a body path advances at a rate set by how fast its length changes, which is the basis
 of the CSI-speed model [3]:
 
-$$
+```math
 \frac{1}{2\pi}\frac{d}{dt}\Big(2\pi f_k\,\tau_p(t)\Big)=\frac{\dot d_p(t)}{\lambda_k}.
-$$
+```
 
 When the body paths are weak relative to the static field, $\lvert H^{\mathrm d}\rvert\ll\lvert H^{\mathrm s}\rvert$, the amplitude is to first order
 
-$$
+```math
 \lvert H_k(t)\rvert\approx\lvert H_k^{\mathrm s}\rvert+\sum_{p\in\mathcal D}\lvert a_p(t)\rvert\cos\!\Big(\frac{2\pi\,d_p(t)}{\lambda_k}+\phi_{k,p}\Big).
-$$
+```
 
 So a static room is a **constant** in amplitude, and every moving reflector adds a tone at
 instantaneous frequency $\lvert\dot d_p\rvert/\lambda$. A reflector moving at speed $v$ changes a
 bistatic path length at most at $2v$, so its tone lies below
 
-$$
+```math
 f_{\max}=\frac{2v}{\lambda}\approx 16\ \text{Hz}\quad\text{for } v=1\ \text{m/s},\ \lambda\approx 12.3\ \text{cm}.
-$$
+```
 
 Breathing moves the chest by millimetres at 0.1 to 0.5 Hz, the band `csi/breathing.py` searches. That
 is a small, slow perturbation, close to DC.
@@ -119,20 +119,20 @@ Sender and receiver run on independent crystals and share no clock. Every packet
 a fresh timing offset (packet-detection delay plus sampling-frequency offset) and a fresh common
 phase (residual carrier-frequency offset, PLL phase):
 
-$$
+```math
 \angle\hat H_k[n]=\angle H_k[n]-2\pi k\,\Delta f\,\delta t_n+\psi_n+Z_k[n],
-$$
+```
 
 where $\delta t_n$ and $\psi_n$ are random from packet to packet. Raw phase is unusable as it stands.
 Sanitising it (fitting and removing a linear phase across $k$, as in SpotFi [4]) also removes any real
-linear-in-$k$ phase change. The cross-antenna conjugate product that cancels these offsets on
+linear in $k$ phase change. The cross-antenna conjugate product that cancels these offsets on
 multi-antenna NICs is not available, because these boards receive on one antenna.
 
 Amplitude is immune to both offsets. It sees only the receiver gain $g_n$:
 
-$$
+```math
 \lvert\hat H_k[n]\rvert=g_n\,\lvert H_k[n]\rvert+\text{noise}.
-$$
+```
 
 The receiver firmware records its AGC and FFT gain over the first 100 packets after boot, then forces
 the gain to that baseline (`CONFIG_FORCE_GAIN 1`, `esp_csi_gain_ctrl_set_rx_force_gain` in
@@ -140,9 +140,9 @@ the gain to that baseline (`CONFIG_FORCE_GAIN 1`, `esp_csi_gain_ctrl_set_rx_forc
 "gain baseline" in the project docs, and Section 11 shows why a reset invalidates thresholds. The
 observable the Python side receives is
 
-$$
+```math
 A_k[n]=\sqrt{I_k[n]^2+Q_k[n]^2},\qquad I_k,Q_k\in\lbrace-128,\dots,127\rbrace .
-$$
+```
 
 ### 1.3 Fresnel zones and the line of sight
 
@@ -151,9 +151,9 @@ points P with excess path length $\lvert TP\rvert+\lvert PR\rvert-\lvert TR\rver
 perturbs the strongest (line-of-sight and near-line-of-sight) paths, and the effect falls off outside
 it [5, 6]. At the midpoint of a link of length $d$ the first zone has radius
 
-$$
+```math
 r_1=\tfrac12\sqrt{\lambda d}.
-$$
+```
 
 For the current rig (`config/room.json`, $\lambda\approx12.35$ cm) this gives:
 
@@ -173,9 +173,9 @@ Section 1.1 gives the argument. Static paths contribute DC. Breathing contribute
 0.5 Hz. Walking puts energy up to $2v/\lambda$, roughly 16 Hz. A high-pass filter followed by a
 windowed variance is therefore an estimate of amplitude power in a band above about 2 Hz:
 
-$$
+```math
 \mathbb E\big[S\big]\approx\frac{1}{K}\sum_{k\in\mathcal K}\int_{0}^{f_s/2}\lvert G(f)\rvert^2\,\Gamma_{A_k}(f)\,df,
-$$
+```
 
 where $G$ is the high-pass response (Section 3.1) and $\Gamma_{A_k}$ is the power spectral density of
 subcarrier $k$'s amplitude. This is an **energy detector**, the classic test for an unknown signal in
@@ -185,11 +185,11 @@ work [2]. Two properties follow and are used later:
 * **Aliasing is harmless.** At about 37 packets/s the Nyquist frequency is about 18.5 Hz, close to
   $f_{\max}$. Energy from faster motion folds back into the band but still counts as variance. Only
   energy that folds to near DC would be lost.
-* **Homogeneity in gain.** The filter is linear, so $y\mapsto g\,y$ and
+* **Homogeneity in gain.** The filter is linear, so $y\mapsto g\thinspace y$ and
 
-$$
+```math
 S[g\,A]=g^2\,S[A].
-$$
+```
 
 A change in receiver gain rescales every score on that receiver by $g^2$. Section 11 uses this.
 
@@ -219,9 +219,9 @@ The parser never raises on bad input.
 **Amplitude** (`CSIParser._parse_csi`). Values come in (imaginary, real) pairs per subcarrier, and the
 parser computes `np.hypot`, so the order does not matter:
 
-$$
+```math
 A_m[n]=\operatorname{hypot}\big(r_{2m}[n],\,r_{2m+1}[n]\big),\qquad m=0,\dots,M-1 .
-$$
+```
 
 **Null-subcarrier mask** (`CSIParser._admit`, `_finish_warm_up`, `_maybe_relock`). The kept set
 $\mathcal K$ is locked once per raw layout:
@@ -229,16 +229,16 @@ $\mathcal K$ is locked once per raw layout:
 * **Known layout.** For 234 raw values (ESP32-C5, $M=117$) the mask is fixed from hardware
   measurement:
 
-$$
+```math
 \mathcal K=\lbrace0,\dots,116\rbrace\setminus\lbrace57,58,59\rbrace,\qquad K=114 .
-$$
+```
 
 * **Unknown layout.** The first `WARMUP_PACKETS` = 20 packets of that length are held. A subcarrier
   is kept if it is non-zero in **any** of them:
 
-$$
+```math
 m\in\mathcal K\iff\max_{1\le j\le 20}A_m^{(j)}>0 .
-$$
+```
 
   The held packets are then released in order. A single packet is not used, because at low CSI gain
   most values are 0 or ±1 and one packet's zeros are not a stable guard-band mask (code comment).
@@ -269,16 +269,16 @@ squeezing it.
 `csi/detect.py`, `MotionScorer._highpass`, with `HIGHPASS_TAU_S` $\tau=0.16$ s and `HIGHPASS_STAGES` = 3.
 For each packet, with $\Delta t_n=t_n-t_{n-1}$ in seconds,
 
-$$
+```math
 \alpha_n=1-e^{-\Delta t_n/\tau}.
-$$
+```
 
 Stage $i=1,2,3$ keeps a running mean $s^{(i)}_k$ and passes on the residual. The code updates the mean
 first and then subtracts it:
 
-$$
+```math
 s^{(i)}_k[n]=s^{(i)}_k[n-1]+\alpha_n\big(x^{(i)}_k[n]-s^{(i)}_k[n-1]\big),\qquad x^{(i+1)}_k[n]=x^{(i)}_k[n]-s^{(i)}_k[n],
-$$
+```
 
 with $x^{(1)}=A$ and residual $y=x^{(4)}$. On the first packet, $s^{(1)}=A[0]$, $s^{(2)}=s^{(3)}=0$ and
 $y[0]=0$, so there is no start-up transient.
@@ -290,9 +290,9 @@ packets advances the mean by $1-e^{-0.625}\approx0.47$ of the way, as it should.
 *Frequency response.* At a uniform packet interval $\Delta t$, write $\beta=e^{-\Delta t/\tau}$. Each
 stage is the first-order high-pass $\beta(1-z^{-1})/(1-\beta z^{-1})$, so the cascade is
 
-$$
+```math
 G(z)=\left(\frac{\beta\,(1-z^{-1})}{1-\beta z^{-1}}\right)^{3}.
-$$
+```
 
 As $\Delta t\to0$ this tends to the analogue cascade $G(s)=\big(s\tau/(1+s\tau)\big)^{3}$. The figures
 below are computed from these constants at 37 to 40 packets/s, relative to the passband:
@@ -320,29 +320,29 @@ filter state and the window.
 `csi/detect.py`, `MotionScorer.push`, with `WINDOW_S` $W=1$ s and `MIN_WINDOW_PACKETS` = 5. The window
 holds the residuals of the last second of device time:
 
-$$
+```math
 \mathcal W_n=\lbrace i:\ t_n-t_i\le W\rbrace .
-$$
+```
 
 The score is the population variance (`np.var`, ddof = 0) of each subcarrier's residual over the
 window, averaged over subcarriers. Equivalently, it is the normalised trace of the window's sample
 covariance:
 
-$$
+```math
 S_n=\frac{1}{K}\sum_{k\in\mathcal K}\frac{1}{\lvert\mathcal W_n\rvert}\sum_{i\in\mathcal W_n}\big(y_k[i]-\bar y_k\big)^2=\frac{1}{K}\operatorname{tr}\hat\Sigma_{y}(n)\qquad\text{(3.1)}
-$$
+```
 
 $S_n$ is defined only when $\lvert\mathcal W_n\rvert\ge5$ and the window spans at least
-$0.9\,W=0.9$ s. Otherwise the scorer returns `None` and the link reports WARMUP. At 36 to 38
+$0.9\thinspace W=0.9$ s. Otherwise the scorer returns `None` and the link reports WARMUP. At 36 to 38
 packets/s a full window holds about 37 packets × 114 subcarriers.
 
 *Onset latency.* The detector has no attack delay (Section 4). Suppose motion of window-variance $S_1$
 replaces quiet of $S_0$. The residual has roughly zero mean, so the window variance mixes roughly
 linearly, and $S$ crosses $\theta$ once a fraction
 
-$$
+```math
 \phi^\ast=\frac{\theta-S_0}{S_1-S_0}
-$$
+```
 
 of the 1 s window holds motion, so detection latency is a fraction of a second.
 
@@ -363,9 +363,9 @@ of the 1 s window holds motion, so detection latency is a fraction of a second.
 
 `csi/detect.py`, `classify`, with breathing off (the default):
 
-$$
+```math
 \hat q_n=\text{MOTION}\ \text{ if } S_n>\theta_\ell,\qquad \hat q_n=\text{EMPTY}\ \text{ otherwise}.
-$$
+```
 
 `_Debouncer` with `DEBOUNCE_S` $h=0.5$ s, in **host time**:
 
@@ -416,9 +416,9 @@ stateDiagram-v2
 `csi/adaptive.py`, `RoomDecision`, driven by `LinkMonitor._update_room` on every packet in **both**
 modes. Over the links heard within the last 2 s:
 
-$$
+```math
 R=\text{MOTION}\iff\Big(\sum_{\ell}\mathbf 1\big[\ell\ \text{elevated}\big]\ge2\Big)\ \lor\ \big(\exists\,\ell:\ \ell\ \text{strong}\big),
-$$
+```
 
 which is then debounced like Section 4.1 with $h=1.0$ s (`ROOM_HOLD_S`). In fixed mode a link is
 elevated exactly when it is in MOTION and is never strong, so the room rule reduces to a **2-of-N
@@ -437,39 +437,39 @@ guarding against contamination by movement. They differ in how much contaminatio
 in it (`_since_last_reboot`). The send rate is estimated robustly to drops (`estimate_rate_hz`). Drops
 make some intervals 2× or 3× the period, so the estimator anchors on the lower decile:
 
-$$
+```math
 \hat f=\frac{10^6}{\operatorname{median}\big\lbrace\Delta_i:\ \Delta_i\le1.5\,Q_{0.10}(\Delta)\big\rbrace},\qquad L=\max\Big(0,\ 1-\frac{N}{D\hat f+1}\Big),
-$$
+```
 
 where $\Delta_i$ are the positive device-time intervals in µs, $N$ packets span $D$ seconds, and $L$ is
-the loss. A link is refused if any of its clips has an effective rate $N/D<15$ packets/s
-(`MIN_CALIBRATION_PKT_RATE_HZ`) or a loss $L>0.6$ (`MAX_CALIBRATION_LOSS`).
+the loss. A link is refused if any of its clips has an effective rate $N/D\lt 15$ packets/s
+(`MIN_CALIBRATION_PKT_RATE_HZ`) or a loss $L\gt 0.6$ (`MAX_CALIBRATION_LOSS`).
 
 ### 5.1 Quiet-room rule (terminal tools, or dashboard with "noisy room" unticked)
 
 `csi/detect.py`, `calibrate_clips(noisy=False)`. Each clip is scored by a fresh `MotionScorer`, so no
-window spans two clips. Every window score $S_i$ is assigned to a 1 s chunk $j=\lfloor(t_i-t_0)/1\,\mathrm s\rfloor$
+window spans two clips. Every window score $S_i$ is assigned to a 1 s chunk $j=\lfloor(t_i-t_0)/1\thinspace \mathrm s\rfloor$
 (`CHUNK_S`). Let $m_j$ be chunk $j$'s median and $J$ the number of chunks pooled over all clips. The
 **quiet baseline** is the median of the lower half of the chunk medians, roughly their first quartile:
 
-$$
+```math
 B=\operatorname{median}\big(m_{(1)},\dots,m_{(\max(1,\lfloor J/2\rfloor))}\big).
-$$
+```
 
 A chunk is rejected as contaminated if either test fires: its median is too high (someone moving,
 `REJECT_RATIO` = 3), or its upper tail is too heavy (a passer-by inside the chunk, `BURST_RATIO` = 2.5):
 
-$$
+```math
 m_j>3B\qquad\text{or}\qquad Q_{0.90}(\text{chunk } j)>2.5\,m_j .
-$$
+```
 
 The link is refused unless the kept ("clean") time satisfies both $T_{\text{clean}}\ge8$ s
-(`MIN_CLEAN_S`) and $T_{\text{clean}}\ge0.5\,T_{\text{total}}$ (`MIN_CLEAN_FRACTION`). Otherwise the
+(`MIN_CLEAN_S`) and $T_{\text{clean}}\ge0.5\thinspace T_{\text{total}}$ (`MIN_CLEAN_FRACTION`). Otherwise the
 threshold is
 
-$$
+```math
 \theta_\ell=\mu\cdot Q_{0.99}\big(\lbrace S_i:\ i\in\text{kept chunks}\rbrace\big),\qquad\mu=1.25 .\qquad\text{(5.1)}
-$$
+```
 
 The margin $\mu$ is `DEFAULT_MARGIN`, set with `--margin` or the dashboard's Margin field.
 
@@ -479,16 +479,16 @@ The margin $\mu$ is `DEFAULT_MARGIN`, set with `--margin` or the dashboard's Mar
 3 s pauses, a 5 s countdown and `noisy` true. Chunks are still classified, but only to write the
 warning. Every window counts:
 
-$$
+```math
 \theta_\ell=\mu\cdot Q_{0.97}\big(\lbrace S_i:\ \text{all windows}\rbrace\big).\qquad\text{(5.2)}
-$$
+```
 
 *Breakdown point.* Suppose a fraction $\varepsilon$ of windows is movement lying entirely above the
 clean distribution $F_0$. The pooled 97th percentile is then a clean quantile:
 
-$$
+```math
 Q_{0.97}\big((1-\varepsilon)F_0+\varepsilon F_1\big)=F_0^{-1}\!\Big(\frac{0.97}{1-\varepsilon}\Big),\qquad\varepsilon\le0.03 .
-$$
+```
 
 So (5.2) tolerates up to 3 % movement windows before the threshold starts to follow the movement
 distribution. Its breakdown point against upper-tail contamination is 3 %.
@@ -498,9 +498,9 @@ distribution. Its breakdown point against upper-tail contamination is 3 %.
 `csi/noisy_calibration.py`, `link_threshold`. The script polls `/api/state` every 0.25 s (`POLL_S`) for
 45 s (`DEFAULT_SECONDS`). Over the usable scores $x$ of one link, with $m=\operatorname{median}(x)$:
 
-$$
+```math
 s_-=\operatorname{median}\big\lbrace m-x:\ x\le m\big\rbrace,\qquad\theta_\ell=\max\big(m+6\times1.4826\,s_-,\ \ 3m\big).\qquad\text{(5.3)}
-$$
+```
 
 $s_-$ is a **lower-half MAD**. For symmetric noise it equals the ordinary MAD, and $1.4826=1/z_{0.75}$,
 where $z_{0.75}\approx0.6745$ is the upper quartile of the standard normal, makes it a consistent
@@ -557,9 +557,9 @@ footprints with a nonlinear, agreement-rewarding rule instead.
 10 s, in host time. At each heatmap step (Section 6.6), the link's newest score is pushed if it comes
 from a packet the baseline has not seen yet, and only while the link's state is EMPTY or MOTION:
 
-$$
+```math
 b_\ell(\tau)=\operatorname{median}\big\lbrace S_\ell(\tau'):\ \tau-60\,\mathrm s\le\tau'\le\tau\big\rbrace,
-$$
+```
 
 defined once the samples span at least 10 s. The baseline is a median rather than a low percentile.
 On the real rig, a noisy link's 20th percentile sat at the bottom of its own noise and made every spike
@@ -573,9 +573,9 @@ docstring), so threshold-relative evidence was almost always zero.
 
 `link_evidence`, with `R_FLOOR` $r_0=1.2$ and `R_FULL` $r_1=3.0$:
 
-$$
+```math
 e_\ell=\operatorname{clip}_{[0,1]}\!\left(\frac{\ln\!\big(S_\ell/(r_0\,b_\ell)\big)}{\ln(r_1/r_0)}\right)=\operatorname{clip}_{[0,1]}\!\left(\frac{\Lambda_\ell-0.79\ \mathrm{dB}}{3.98\ \mathrm{dB}}\right),\qquad\Lambda_\ell=10\log_{10}\frac{S_\ell}{b_\ell}.\qquad\text{(6.1)}
-$$
+```
 
 Evidence is linear in the score excess measured in decibels. There is a dead zone up to 0.79 dB
 (1.2×), and evidence reaches 1 at 4.77 dB (3×). For example, 1.5× gives 0.24 and 2× gives 0.56. Two
@@ -589,7 +589,7 @@ properties make this the natural scale:
   a level increase (Karlin–Rubin). The log puts the ratio on an additive, decibel scale.
 
 A link contributes only if its state is EMPTY or MOTION (`CONTRIBUTING_STATES`), its baseline is
-warm, and $e_\ell>0$.
+warm, and $e_\ell\gt 0$.
 
 ### 6.3 Geometric prior: Gaussian segment footprint
 
@@ -598,16 +598,16 @@ cells over the room, about 9.9 cm × 10.2 cm each on the 2.77 m × 1.84 m rig. L
 $\mathbf x_{\mathrm{rx}}$ and $\mathbf x_{\mathrm{tx}}$ be the link's endpoints. For a cell centre
 $\mathbf c$, the distance to the segment (projection clamped to the ends) and the footprint are
 
-$$
+```math
 d_\ell(\mathbf c)=\min_{u\in[0,1]}\big\lVert\mathbf c-\mathbf x_{\mathrm{rx}}-u\,(\mathbf x_{\mathrm{tx}}-\mathbf x_{\mathrm{rx}})\big\rVert,\qquad F_\ell(\mathbf c)=\exp\!\Big(-\frac{d_\ell(\mathbf c)^2}{2\sigma_F^2}\Big),\quad\sigma_F=0.35\ \mathrm m.
-$$
+```
 
 Each link's contribution is weighted by $w_\ell$ (`link_weights` in `config/room.json`, default 1;
 currently 0.3 for `rx1<-01`):
 
-$$
+```math
 p_\ell(\mathbf c)=w_\ell\,e_\ell\,F_\ell(\mathbf c).
-$$
+```
 
 This footprint has constant width along the whole segment, a capsule. A Fresnel ellipse narrows to
 zero width at the nodes (Section 1.3), so near the nodes the capsule is a wider prior than the physics
@@ -619,9 +619,9 @@ suggests. The simulator uses the same shape with $\sigma=0.25$ m to generate syn
 `Heatmap._combine`, with `AGREEMENT` $\gamma=0.5$. Sort the contributions at each cell and let
 $p_{(1)}(\mathbf c)\ge p_{(2)}(\mathbf c)$ be the two largest. Then
 
-$$
+```math
 \Phi(\mathbf c)=(1-\gamma)\sum_{\ell}p_\ell(\mathbf c)+\gamma\sqrt{p_{(1)}(\mathbf c)\,p_{(2)}(\mathbf c)}.\qquad\text{(6.2)}
-$$
+```
 
 The geometric-mean term is added only when at least two links contribute. The first term behaves
 like an OR: any link adds heat. The second behaves like an AND: it is large only where the two
@@ -632,9 +632,9 @@ and a crossing of two links that both see change is boosted.
 
 `SENSITIVITY` $\kappa=1.3$:
 
-$$
+```math
 T(\mathbf c)=1-e^{-\kappa\,\Phi(\mathbf c)}.\qquad\text{(6.3)}
-$$
+```
 
 Worked values from (6.2) and (6.3) at the defaults:
 
@@ -649,11 +649,11 @@ Worked values from (6.2) and (6.3) at the defaults:
 `Heatmap._smooth`, with `RISE_TAU_S` = `DECAY_TAU_S` = 0.3 s and `STEP_S` = 0.1 s, in host time. Each
 cell relaxes towards its target with a time constant that depends on direction:
 
-$$
+```math
 V(\mathbf c)\leftarrow\operatorname{clip}_{[0,1]}\Big(V+\big(T-V\big)\big(1-e^{-\Delta\tau/\tau_\pm}\big)\Big),
-$$
+```
 
-where $\tau_\pm=\tau_{\text{rise}}$ if $T>V$ and $\tau_\pm=\tau_{\text{decay}}$ otherwise.
+where $\tau_\pm=\tau_{\text{rise}}$ if $T\gt V$ and $\tau_\pm=\tau_{\text{decay}}$ otherwise.
 
 With the defaults a cell reaches 63 % of a step in 0.3 s and 95 % in 0.9 s. The structure allows
 separate rise and decay constants, but the defaults are equal. The grid advances at most every 0.1 s
@@ -667,7 +667,7 @@ rise, decay and falloff can be changed live (`Heatmap.set_params`, `POST /api/pa
 `csi/breathing.py`, `estimate_breathing`, driven by `_BreathingTracker` in `csi/detect.py`. It is
 enabled only with `breathing=True` / `--breathing`. The input is a 15 s window (`WINDOW_S`) of raw
 amplitude vectors in device time, re-estimated at most once per second. It needs at least 8 packets
-and a span of at least 0.97 × 15 s. The tracker is reset whenever $S>\theta$, because motion
+and a span of at least 0.97 × 15 s. The tracker is reset whenever $S\gt \theta$, because motion
 contaminates the window, and MOTION always overrides breathing in `classify`.
 
 1. **Resample** onto a uniform grid at $f_s=1/\operatorname{median}(\Delta t)$ by linear interpolation,
@@ -680,16 +680,16 @@ contaminates the window, and MOTION always overrides breathing in `classify`.
 4. **PCA by SVD** of the centred $n\times10$ matrix $X=U\Sigma V^{\top}$. The breathing candidate is
    the first principal component $\sigma_1\mathbf u_1$, and the coherence statistic is
 
-$$
+```math
 \rho=\frac{\sigma_1^2+\sigma_2^2}{\sum_i\sigma_i^2}.
-$$
+```
 
 5. **Peak** of the Hann-windowed, 8× zero-padded power spectrum $P$ of the component inside the band,
    refined by parabolic interpolation:
 
-$$
+```math
 \delta=\frac{1}{2}\,\frac{P_{k-1}-P_{k+1}}{P_{k-1}-2P_k+P_{k+1}},\qquad\hat f=f_{k}+\delta\,\Delta f_{\text{pad}},\qquad\text{bpm}=60\hat f\ \ \text{if }\rho\ge0.85 .
-$$
+```
 
 Zero padding interpolates the spectrum. It does not add resolution, which stays near $1/15$ Hz.
 
@@ -697,9 +697,9 @@ Zero padding interpolates the spectrum. It does not add resolution, which stays 
 the 10 channels while breathing concentrates in one or two. Its degrees of freedom are limited by the
 window's time-bandwidth product:
 
-$$
+```math
 2BT=2\times(0.5-0.1)\ \mathrm{Hz}\times15\ \mathrm s=12 .
-$$
+```
 
 Ten band-limited, Hann-tapered signals live in a subspace of at most about 12 real dimensions, so even
 pure noise gives a large top-two share. A common-mode in-band fluctuation, such as slow drift shared
@@ -716,13 +716,13 @@ threshold tracks a running robust estimate of the link's own noise level, so it 
 Over the last `WINDOW_S` = 75 s of samples, with statistics refreshed at most every 0.25 s
 (`RECALC_S`):
 
-$$
+```math
 b=\operatorname{median}(S),\qquad\hat\sigma=1.4826\cdot\operatorname{median}\lvert S-b\rvert,
-$$
+```
 
-$$
+```math
 \theta_{\text{enter}}=\max\big(b+5.5\,\hat\sigma,\ 2b\big),\qquad\theta_{\text{exit}}=\max\big(b+2.5\,\hat\sigma,\ 1.5\,b\big).\qquad\text{(8.1)}
-$$
+```
 
 * **Warm-up.** The detector reports WARMUP for the first 10 s (`WARMUP_S`) and until it has 20 samples
   (`MIN_SAMPLES`).
@@ -731,7 +731,7 @@ $$
   $\theta_{\text{enter}}$, is reset only by a sample below $\theta_{\text{exit}}$, and fires on a sample
   at or above $\theta_{\text{enter}}$ that is at least 0.6 s later. The link leaves MOTION on the first
   sample below $\theta_{\text{exit}}$.
-* **Strong.** A link is strong when it is elevated and $S\ge2\,\theta_{\text{enter}}$ has held for
+* **Strong.** A link is strong when it is elevated and $S\ge2\thinspace \theta_{\text{enter}}$ has held for
   0.6 s.
 * **Level shift (rebuild).** Take the last `CAP_S` = 30 s, which must span at least 27 s. If at least
   80 % of its samples were high ($S\ge\theta_{\text{enter}}$), or at least 80 % were low
@@ -765,12 +765,12 @@ at 0 when a receiver reboots. Let $\Delta=r_n-r_{\text{last}}$ be the step in th
   packet and does not move $r_{\text{last}}$.
 * Otherwise the backward step is a **wrap** if the host clock agrees with the wrapped step:
 
-$$
+```math
 \Big\lvert\frac{r_n+2^{32}-r_{\text{last}}}{10^6}-(\tau_n-\tau_{\text{last}})\Big\rvert\le\max\big(0.5\ \mathrm s,\ 0.5\,(\tau_n-\tau_{\text{last}})\big),
-$$
+```
 
   and the offset grows by $2^{32}$. If there is no usable host gap, it is a wrap only if
-  $r_{\text{last}}\ge2^{31}>r_n$.
+  $r_{\text{last}}\ge2^{31}\gt r_n$.
 * Any other backward step is a **reset** (reboot). The offset returns to 0, and every consumer clears
   state built on the old timeline: the scorer's filter and window, the breathing window and the health
   baseline.
@@ -783,9 +783,9 @@ The output is $t_n=r_n+\text{offset}$.
 $10^6/\operatorname{median}$ of the last 200 positive device-time intervals, once at least 50 exist.
 Each in-order step adds to the drop counter:
 
-$$
+```math
 \text{drops}\mathrel{+}=\max\big(0,\ \operatorname{round}(\Delta t\cdot\hat f)-1\big).
-$$
+```
 
 The packet rate is the number of packets in the last 2 s of host time divided by 2.
 
@@ -798,9 +798,9 @@ packets in **host-time order** with a watermark. A receiver $r$ is active while 
 the first 2.0 s (`REORDER_STARTUP_S`). The watermark is the newest host time that every active receiver
 has reached:
 
-$$
+```math
 \Omega=\min_{r\ \text{active}}\ \tau^{\text{newest}}_r .
-$$
+```
 
 All packets with $\tau\le\Omega$ are released. Each receiver's stream is already in order, so
 everything at or before $\Omega$ is complete. The resulting state does not depend on thread timing, a
@@ -812,11 +812,11 @@ clock is advanced by wall time, so silent links turn NO_SIGNAL.
 time. Let $\rho=\tau-\tau_0$ be the time since recording started, with clip length $T_c=10$ s and
 pause 3 s. Then
 
-$$
+```math
 (k,\ o)=\operatorname{divmod}(\rho,\ T_c+3\ \mathrm s),
-$$
+```
 
-and a packet belongs to clip $k$ if $k$ is less than the number of clips and $o<T_c$.
+and a packet belongs to clip $k$ if $k$ is less than the number of clips and $o\lt T_c$.
 
 ---
 
@@ -835,9 +835,9 @@ are strongly correlated, and a random split would leak.
 The confusion matrix $C[u,v]$ counts decisions with true label $u$ and predicted state $v$. The
 per-label accuracy is
 
-$$
+```math
 \operatorname{acc}(u)=\frac{C\big[u,\ v^\ast(u)\big]}{\sum_{v}C[u,v]},
-$$
+```
 
 where $v^\ast(u)$ is the expected state. With breathing off, the `still_*` rows are printed as
 "breathing disabled" rather than scored 0 %. When a session holds several sender MACs, each sender is
