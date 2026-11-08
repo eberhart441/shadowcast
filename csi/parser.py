@@ -10,6 +10,11 @@ after boot) we fall back to the standard esp-csi column order.
 
 Values are int8 pairs, imaginary first then real, per subcarrier. Amplitude is
 ``hypot(imag, real)`` so the order does not matter for amplitude.
+
+Health fields come from the same line when the layout has them: ``seq`` is the sender's own packet counter
+(the ``seq`` column on the C5, ``id`` on the S3/ESP32 layout), and the C5 also prints the receiver's
+``agc_gain`` and ``fft_gain``. A value that is missing or not an integer gives None and never makes the line
+malformed. ``clipped`` counts raw values at the int8 rails (abs >= 127) out of ``n_raw``.
 """
 from __future__ import annotations
 
@@ -43,6 +48,11 @@ RELOCK_WINDOW = 50
 RELOCK_FRACTION = 0.8
 _ALIASES = {"primary_channel": "channel", "timestamp": "local_timestamp"}
 _REQUIRED = ("rssi", "channel", "local_timestamp", "data")
+SEQ_MODULUS = 2 ** 32    # the sender counter is a uint32; the firmware prints it with %d, so it can read negative
+CLIP_LEVEL = 127         # a raw I/Q value with abs(v) >= this sits at the int8 rail: the receiver gain is too high
+# A line longer than this with no newline is not CSI (the longest known CSI line is ~3 KB); serial_stream passes
+# it on as it is, so the parser counts it, instead of buffering without bound.
+MAX_LINE_BYTES = 16384
 
 # A stream is an iterable of (host_timestamp_seconds, text_line).
 Stream = Iterable[tuple[float, str]]
@@ -56,6 +66,13 @@ class CSIPacket:
     channel: int
     amplitude: np.ndarray   # float32, one value per kept (non-null) subcarrier
     mac: str = ""           # sender MAC, lowercase; "" when the header has no mac column
+    # Health fields (None or 0 when the packet did not come from a CSI_DATA line, e.g. a recording):
+    seq: Optional[int] = None          # sender's packet counter, 0 .. 2**32 - 1 (seq or id column)
+    agc_gain: Optional[int] = None     # receiver AGC gain as printed (C5 layout only)
+    fft_gain: Optional[int] = None     # receiver FFT gain as printed (C5 layout only)
+    noise_floor: Optional[int] = None  # noise floor as printed
+    clipped: int = 0                   # raw I/Q values with abs(v) >= CLIP_LEVEL
+    n_raw: int = 0                     # raw I/Q values in the line (0: unknown)
 
 
 @dataclass
@@ -88,6 +105,22 @@ class _Draft:
     raw_len: int            # raw int count (I and Q values), the layout key
     amp: np.ndarray         # every raw subcarrier, float32
     mac: str = ""
+    seq: Optional[int] = None
+    agc_gain: Optional[int] = None
+    fft_gain: Optional[int] = None
+    noise_floor: Optional[int] = None
+    clipped: int = 0
+
+
+def _optional_int(fields: list[str], columns: dict[str, int], name: str) -> Optional[int]:
+    """The integer in column ``name``; None when the layout has no such column or the value is not an integer."""
+    i = columns.get(name)
+    if i is None:
+        return None
+    try:
+        return int(fields[i])
+    except (ValueError, IndexError):
+        return None
 
 
 @dataclass
@@ -160,6 +193,7 @@ class CSIParser:
             raise ValueError("len column disagrees with data length")
         c = self.columns
         iq = raw.reshape(-1, 2).astype(np.float32)
+        seq = _optional_int(fields, c, "seq" if "seq" in c else "id")
         return _Draft(
             host_ts=host_ts,
             device_ts=int(fields[c["local_timestamp"]]),
@@ -168,6 +202,11 @@ class CSIParser:
             raw_len=raw.size,
             amp=np.hypot(iq[:, 0], iq[:, 1]),
             mac=fields[c["mac"]].strip('"').lower() if "mac" in c else "",
+            seq=None if seq is None else seq % SEQ_MODULUS,
+            agc_gain=_optional_int(fields, c, "agc_gain"),
+            fft_gain=_optional_int(fields, c, "fft_gain"),
+            noise_floor=_optional_int(fields, c, "noise_floor"),
+            clipped=int(np.count_nonzero(np.abs(raw) >= CLIP_LEVEL)),
         )
 
     def _infer_layout(self, n_fields: int) -> None:
@@ -241,7 +280,9 @@ class CSIParser:
     def _emit(self, d: _Draft) -> CSIPacket:
         self.stats.parsed += 1
         return CSIPacket(host_ts=d.host_ts, device_ts=d.device_ts, rssi=d.rssi,
-                         channel=d.channel, amplitude=d.amp[self._keep], mac=d.mac)
+                         channel=d.channel, amplitude=d.amp[self._keep], mac=d.mac,
+                         seq=d.seq, agc_gain=d.agc_gain, fft_gain=d.fft_gain, noise_floor=d.noise_floor,
+                         clipped=d.clipped, n_raw=d.raw_len)
 
 
 def _known_keep(n: int) -> np.ndarray:
@@ -262,14 +303,37 @@ def parse_stream(stream: Stream, parser: Optional[CSIParser] = None) -> Iterator
 def serial_stream(port: str, baud: int = 921600, timeout: float = 1.0) -> Iterator[tuple[float, Optional[str]]]:
     """Yield (time.time(), line) from a serial port until closed/interrupted.
 
+    The port is read in chunks (everything waiting, or 1 byte with ``timeout``), not a byte at a time, and the
+    complete lines of a chunk share the time the chunk arrived. Lines come without their line ending.
     A read that times out with no data yields (time.time(), None), a heartbeat: a consumer can then check its
     stop flag at least every ``timeout`` seconds, and closing the generator closes the port. parse_stream and
     MultiSource skip heartbeats, so they see only lines.
+
+    DTR and RTS are de-asserted before the port opens. On the ESP32 boards they drive reset and boot mode, and
+    a receiver that resets re-rolls its forced gain, so opening a port (e.g. restarting the dashboard) must not
+    reset it.
     """
     import serial  # imported lazily so --simulate works without a port
 
-    with serial.Serial(port, baud, timeout=timeout) as ser:
+    ser = serial.Serial()  # unopened, so the settings below are in place when it opens
+    ser.port, ser.baudrate, ser.timeout = port, baud, timeout
+    ser.dtr = False
+    ser.rts = False
+    ser.open()
+    try:
         ser.reset_input_buffer()
+        pending = b""
         while True:
-            raw = ser.readline()
-            yield time.time(), (raw.decode("utf-8", errors="replace") if raw else None)
+            chunk = ser.read(ser.in_waiting or 1)
+            now = time.time()
+            if not chunk:
+                yield now, None
+                continue
+            *lines, pending = (pending + chunk).split(b"\n")
+            if len(pending) > MAX_LINE_BYTES:  # no newline in far too long: not CSI, hand it on
+                lines.append(pending)
+                pending = b""
+            for raw in lines:
+                yield now, raw.rstrip(b"\r").decode("utf-8", errors="replace")
+    finally:
+        ser.close()
