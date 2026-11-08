@@ -1,8 +1,10 @@
 <div align="center">
 
-# Device-free motion sensing from WiFi CSI
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/banner-dark.svg">
+  <img src="docs/assets/banner-light.svg" width="100%" alt="Device-free motion sensing from WiFi CSI. Every radio link is a motion sensor. Four ESP32-C5 boards at the corners of a 2.77 by 1.84 metre room, with radio links between them and a heat spot following a person.">
+</picture>
 
-**Every radio link is a motion sensor.**<br>
 Every WiFi packet arrives as a 114-subcarrier measurement of how the space scattered it on the way,
 and a moving body changes that measurement. No cameras, no wearables, no line of sight.<br>
 Today it runs on four boards in one room. The math doesn't care how many boards there are, or where.
@@ -13,7 +15,18 @@ Today it runs on four boards in one room. The math doesn't care how many boards 
 ![Server](https://img.shields.io/badge/HTTP%20server-stdlib%20only-informational)
 ![License](https://img.shields.io/badge/license-Apache%202.0-blue)
 
-Team 12 · CodeMetalForge Hackathon
+<img src="docs/assets/demo.gif" width="100%" alt="The live dashboard on the built-in simulator. As a simulated person walks a loop through the room, the heatmap glow follows them, and each sender-to-receiver link switches between Motion and Empty on the map and in the link list.">
+
+<sub>The live dashboard (<code>--page web/ui-overhaul/index.html</code>) on the built-in simulator, real time.
+As a person walks a loop through the room, the heat follows them, and each link flips between
+<b>Motion</b> (thick) and <b>Empty</b> (thin) as they cross it.</sub>
+
+<br>
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/stats-dark.svg">
+  <img src="docs/assets/stats-light.svg" width="100%" alt="100% of walking windows flagged MOTION (hw5 recording, 2,621 windows). 94% of empty-room windows read EMPTY (hw5 validation recording). About 16,000 subcarrier amplitudes analysed per second (4 links times 114 subcarriers). 446 automated tests, no hardware needed, CI on every PR. 1,225 links from 50 nodes: pairs grow as n(n-1)/2.">
+</picture>
 
 [Beyond one room](#beyond-one-room) · [Quick start](#quick-start-no-hardware-needed) · [How it works](#how-it-works) · [The math](#the-math) ·
 [Why it's hard](#why-this-is-hard) · [Engineering](#engineering) · [Results](#results) ·
@@ -46,6 +59,7 @@ a live **RF-tomography heatmap** of where in the room the change is.
 | **Software** | Pure Python + NumPy signal pipeline, a standard-library HTTP/SSE server, single-file web UI |
 | **Quality** | 446 automated tests, no hardware required, CI on every PR, deterministic replay |
 
+> [!IMPORTANT]
 > **Decision support, not a guarantee.** This system detects *movement*. A person who is completely
 > still is not reliably detected, because the motion statistic removes the static channel by
 > construction. A missed person is the costly error in search and rescue, so treat the output as one
@@ -86,13 +100,15 @@ links: more angles give a sharper image.
 | **Scatter-dropped sensor field** (woods, disaster zones, search areas) | Dozens to hundreds of cheap battery nodes, dropped from the air, form a mesh. Each neighbouring pair is an invisible tripwire whose sensitive band has radius $\sqrt{\lambda d/4}$ (≈ 0.8 m for nodes 20 m apart). A person moving through the field lights a chain of links that traces their path | Links generated from config; a source interface that a radio-mesh source plugs into; CSI forwarded over ESP-NOW to a gateway (prototype on `feat/wireless-receivers`) | Nodes that locate themselves after the drop, duty-cycled power, channel scheduling at scale (TDMA: issues #16, #17, #20, #21) |
 | **Camera-free buildings** (elder care, smart buildings) | Ordinary WiFi hardware doubles as a motion sensor, with no camera and nothing to wear | The full pipeline and dashboard | Reading CSI from commodity access points |
 
-**Responsible use.** Sensing people who carry nothing and cannot see the sensor cuts both ways. We built
-this for rescue and safety. Consent, privacy and authorised deployment are requirements for any use
-beyond the bench.
+> [!NOTE]
+> **Responsible use.** Sensing people who carry nothing and cannot see the sensor cuts both ways. We built
+> this for rescue and safety. Consent, privacy and authorised deployment are requirements for any use
+> beyond the bench.
 
 ## Quick start (no hardware needed)
 
-The whole pipeline runs on a physics-shaped simulator, so you can see it work in about a minute.
+> [!TIP]
+> **No boards needed.** The whole pipeline runs on a built-in simulator, so you can see it working in about a minute.
 
 ```bash
 python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
