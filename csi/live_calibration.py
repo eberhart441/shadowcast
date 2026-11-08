@@ -79,13 +79,19 @@ class CalibrationJob:
     ``expected`` lists every link of the room, so a link with no packets is reported as skipped.
     ``current()`` returns the thresholds in effect now; ``apply(label, value)`` sets one on the live
     monitor; ``now_mono`` arguments are wall-clock seconds (time.monotonic) and drive the countdown only.
+
+    The report is the slow step. By default it is computed inline, inside the call that finishes the
+    recording. A caller that must not stall while it runs passes ``defer(compute, complete)``: ``defer``
+    runs ``compute()`` anywhere, without the caller's lock, and then calls ``complete(outcome)`` under
+    that lock. The job is in state "processing" in between, and takes no packets.
     """
 
     def __init__(self, request: Mapping, expected: Sequence[LinkId], *, now_mono: float,
-                 current: Callable[[], Mapping[str, float]], apply: Callable[[str, float], None]) -> None:
+                 current: Callable[[], Mapping[str, float]], apply: Callable[[str, float], None],
+                 defer: Optional[Callable[[Callable[[], object], Callable[[object], None]], None]] = None) -> None:
         self.request = dict(request)
         self._expected = list(expected)
-        self._current, self._apply = current, apply
+        self._current, self._apply, self._defer = current, apply, defer
         self.state = "countdown"
         self.message = ""
         self.result: dict[str, dict] = {}
@@ -174,11 +180,23 @@ class CalibrationJob:
 
     def _finish(self) -> None:
         self.state = "processing"
+        if self._defer is None:
+            self._complete(self._compute())
+        else:
+            self._defer(self._compute, self._complete)
+
+    def _compute(self) -> object:
+        """The report, or the exception that stopped it. Touches no job state, so it may run off the lock:
+        nothing appends to the clips once the state is "processing"."""
         try:
-            report = calibrate_links_report(clips=self._clips, expected=self._expected,
-                                            margin=self.request["margin"], noisy=self.request["noisy"])
+            return calibrate_links_report(clips=self._clips, expected=self._expected,
+                                          margin=self.request["margin"], noisy=self.request["noisy"])
         except Exception as e:  # any failure keeps the old thresholds and says why
-            self._fail(f"calibration failed: {e}")
+            return e
+
+    def _complete(self, report: object) -> None:
+        if isinstance(report, Exception):
+            self._fail(f"calibration failed: {report}")
             return
         applied: dict[str, float] = {}
         self.result, self.skipped = {}, dict(report.skipped)

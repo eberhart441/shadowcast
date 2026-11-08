@@ -33,10 +33,10 @@ def calibrated_thresholds():
     return calibrate_links(list(simulate_room_links(room=ROOM, person=None, duration_s=25, seed=10)))
 
 
-# Client socket timeouts are generous on purpose. The server holds its state lock while a calibration is processed
-# (csi/server.py _feed/_idle_frame -> CalibrationJob._finish), and a GET waits for that lock. On a loaded CI runner
-# that wait can exceed a few seconds, which made a 5 s read time out. Failures show up as assertions on responses,
-# not as socket timeouts.
+# Client socket timeouts are generous on purpose: on a loaded CI runner the server thread can be starved for a few
+# seconds, which made a 5 s read time out. (The server no longer holds its state lock while a calibration is
+# processed; test_state_requests_stay_prompt_while_a_calibration_is_processing pins that.) Failures show up as
+# assertions on responses, not as socket timeouts.
 HTTP_TIMEOUT_S = 30.0
 
 
@@ -123,6 +123,65 @@ def empty_room(go=None, drop_after=None, duration_s=EMPTY_S, seed=12):
 
 
 # ----------------------------------------------------------------- calibration on the live stream
+
+def held_calibration(monkeypatch):
+    """Make the calibration computation wait until ``release`` is set. Returns (started, release): ``started`` is
+    set when the computation begins. A wait that is never released gives up after 20 s so a bug cannot hang the run."""
+    import csi.live_calibration as live_calibration
+
+    real = live_calibration.calibrate_links_report
+    started, release = threading.Event(), threading.Event()
+
+    def held(*args, **kwargs):
+        started.set()
+        release.wait(20.0)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(live_calibration, "calibrate_links_report", held)
+    return started, release
+
+
+@pytest.mark.slow
+def test_state_requests_are_answered_while_a_calibration_is_processing(serve, monkeypatch):
+    started, release = held_calibration(monkeypatch)
+    go = serve.gate()
+    server = serve(empty_room(go), thresholds=None)
+    status, _ = post(server.url, "/api/calibrate", {"clips": 1, "seconds": 3, "lead_s": 0})
+    assert status == 202
+    go.set()
+    assert started.wait(60), "the calibration never reached its computation"
+
+    # The computation is held until we release it, so this request can only be answered if the server is not
+    # waiting on it. (Held behind the computation, it would only return after the 20 s give-up.)
+    t0 = time.time()
+    payload = get_json(server)
+    elapsed = time.time() - t0
+    release.set()
+
+    assert elapsed < 15.0, f"the state request was held up for {elapsed:.1f} s by the calibration"
+    assert payload["status"]["calibration"]["state"] == "processing"
+    final = wait_calibration(server)
+    assert final["status"]["calibration"]["state"] == "done"
+    assert set(final["status"]["calibrated_links"]) == LABELS
+
+
+@pytest.mark.slow
+def test_a_run_that_ends_while_a_calibration_is_processing_ends_with_it_done(serve, monkeypatch):
+    started, release = held_calibration(monkeypatch)
+    go = serve.gate()
+    server = serve(empty_room(go, duration_s=3.5), thresholds=None)
+    post(server.url, "/api/calibrate", {"clips": 1, "seconds": 3, "lead_s": 0})
+    go.set()
+    assert started.wait(60)
+    threading.Timer(2.0, release.set).start()   # the run is over before the computation finishes
+
+    assert server.wait_finished(60)
+    status = get_json(server)["status"]
+
+    assert status["finished"] is True
+    assert status["calibration"]["state"] == "done", status["calibration"]
+    assert set(status["calibrated_links"]) == LABELS
+
 
 @pytest.mark.slow
 def test_calibrate_on_the_simulator_runs_the_clips_and_links_become_calibrated(serve):
