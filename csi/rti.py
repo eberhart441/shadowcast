@@ -37,14 +37,21 @@ can paint when every link reports (so 1.0 is one fully raised link alone; two cr
 they cross), then masked to the cells some reporting link covers. csi.heatmap then applies its soft saturation
 and smoothing exactly as for the back-projection.
 
+Room footprint: ``mask`` marks the cells whose centres lie inside the room's outline (csi.room footprint). Only
+those cells are unknowns: ``W``, the prior ``C`` and every solve are over them alone, so a cell outside has no
+weight and no prior coupling, and nothing can be explained by heat in the notch of an L-shaped room or beyond a
+wall. Outside cells are 0 in ``.weights``, in every projection and in the image. Without a mask (or with every
+cell inside) every cell is an unknown, as before.
+
 Public API:
     link_weight_row(centres, a, b, excess_m, cell_area, ...)    -> (cells,) ellipse weights of one link
     exponential_prior(centres, delta_m)                         -> (cells, cells)
-    RTIProjector(centres, segments, cell_area, ...)
-        .projection(labels, confidences)   Pi for those links, (cells, len(labels)), cached
+    RTIProjector(centres, segments, cell_area, ..., mask=None)
+        .projection(labels, confidences)   Pi for those links, (cells, len(labels)), cached; 0 rows outside the mask
         .image(evidence, confidence)       display field (cells,) >= 0, 1.0 = one fully raised link alone
-        .informative(label)                the link's weights reach the grid
-        .weights                           W, (links, cells), rows in .labels order
+        .informative(label)                the link's weights reach the grid (inside the mask)
+        .weights                           W, (links, cells), rows in .labels order; 0 columns outside the mask
+        .unknowns                          indices of the cells that are unknowns (all, or those inside the mask)
 """
 from __future__ import annotations
 
@@ -101,7 +108,7 @@ class RTIProjector:
     def __init__(self, centres: np.ndarray, segments: Mapping[str, tuple[Sequence[float], Sequence[float]]],
                  cell_area: float, *, excess_m: float = EXCESS_M, delta_m: float = PRIOR_DELTA_M,
                  alpha: float = ALPHA, min_link_m: float = MIN_LINK_M, min_coverage: float = MIN_COVERAGE,
-                 soft_sigma_m: Optional[float] = None) -> None:
+                 soft_sigma_m: Optional[float] = None, mask: Optional[Sequence[bool]] = None) -> None:
         for name, value in (("excess_m", excess_m), ("delta_m", delta_m), ("alpha", alpha),
                             ("cell_area", cell_area)):
             if not (math.isfinite(value) and value > 0):
@@ -112,15 +119,30 @@ class RTIProjector:
         if soft_sigma_m is None:
             soft_sigma_m = 0.5 * math.sqrt(2 * cell_area)   # half the diagonal of a square cell of that area
         cells = len(self.centres)
-        rows = [link_weight_row(self.centres, a, b, excess_m, cell_area, min_link_m=min_link_m,
+        if mask is None:
+            self.unknowns = np.arange(cells)
+        else:
+            inside = np.asarray(mask, dtype=bool)
+            if inside.shape != (cells,):
+                raise ValueError(f"mask needs one entry per cell ({cells}), got shape {inside.shape}")
+            self.unknowns = np.flatnonzero(inside)
+        # the room footprint leaves cells out: the fit runs over the unknowns only (no weight, no prior coupling)
+        self._masked = len(self.unknowns) < cells
+        inner = self.centres[self.unknowns] if self._masked else self.centres
+        rows = [link_weight_row(inner, a, b, excess_m, cell_area, min_link_m=min_link_m,
                                 soft_sigma_m=soft_sigma_m) for a, b in segments.values()]
-        self.weights = np.vstack(rows) if rows else np.zeros((0, cells))
+        inner_weights = np.vstack(rows) if rows else np.zeros((0, len(inner)))
+        if self._masked:
+            self.weights = np.zeros((len(rows), cells))
+            self.weights[:, self.unknowns] = inner_weights
+        else:
+            self.weights = inner_weights
         self._index = {label: i for i, label in enumerate(self.labels)}
         peak = self.weights.max(axis=1, initial=0.0)
         self._footprint = self.weights / np.where(peak > 0, peak, 1.0)[:, None]   # each link's shape, max 1
-        prior = exponential_prior(self.centres, delta_m)
-        self._cw = prior @ self.weights.T            # C W^T, (cells, links)
-        self._wcw = self.weights @ self._cw          # W C W^T, (links, links), symmetric
+        prior = exponential_prior(inner, delta_m)
+        self._cw = prior @ inner_weights.T           # C W^T, (unknowns, links)
+        self._wcw = inner_weights @ self._cw         # W C W^T, (links, links), symmetric
         energy = np.diag(self._wcw)
         self._energy = energy
         positive = energy[energy > _TINY]
@@ -134,12 +156,15 @@ class RTIProjector:
             self.reference = brightest if brightest > _TINY else 1.0
 
     def informative(self, label: str) -> bool:
-        """True when the link's weights reach at least one cell of the grid."""
+        """True when the link's weights reach at least one cell of the grid (inside the mask, with one)."""
         i = self._index.get(label)
         return i is not None and self._energy[i] > _TINY
 
     def projection(self, labels: Sequence[str], confidences: Sequence[float]) -> np.ndarray:
-        """``Pi`` (cells x links) for these links with these confidences (all > 0), cached per pattern."""
+        """``Pi`` (cells x links) for these links with these confidences (all > 0), cached per pattern.
+
+        Rows of cells outside the mask are 0: those cells are not unknowns.
+        """
         key = (tuple(labels), tuple(round(float(v), 9) for v in confidences))
         cached = self._cache.get(key)
         if cached is not None:
@@ -149,6 +174,10 @@ class RTIProjector:
         idx = [self._index[label] for label in labels]
         system = self._wcw[np.ix_(idx, idx)] + np.diag(self._alpha_abs / np.asarray(confidences, dtype=float))
         pi = np.linalg.solve(system, self._cw[:, idx].T).T
+        if self._masked:
+            full = np.zeros((len(self.centres), len(idx)))
+            full[self.unknowns] = pi
+            pi = full
         if len(self._cache) >= CACHE_SIZE:
             self._cache.clear()
         self._cache[key] = pi

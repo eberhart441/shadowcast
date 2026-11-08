@@ -30,7 +30,12 @@ Per frame at host time t:
    track, most often a burst of noise on two links, is dropped after ``young_coast_s`` and leaves no marker.
    A new track is shown instead of the marker, and replaces it once it is mature.
 
-Estimates stay inside the image extents plus ``margin_m``.
+Estimates stay inside the image extents plus ``margin_m``. With a room footprint (``Tracker(footprint=...)``, the
+room's outline polygon, csi/room.py; the dashboard passes it for a room that has one), the walls are real and the
+person is inside them: each blob measurement and the filtered position are moved to the nearest point inside the
+footprint (or on its edge), any velocity out of it is dropped (as at the extents), and so the trail and the 'last
+seen' marker stay inside too. The margin then only bounds the extents. Without a footprint (a rectangle room, or a
+replayed old log) nothing changes.
 
 ``Tracker.update(t, heatmap)`` returns the payload, or None until a track is confirmed (and after the marker is
 dropped):
@@ -52,9 +57,11 @@ from __future__ import annotations
 
 import math
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import lru_cache
 from typing import Mapping, Optional, Sequence
+
+from .room import nearest_point_in_polygon, parse_footprint
 
 ACTIVITY_MIN = 0.25      # hottest cell needed to start a track (one link at full evidence shows ~0.38, a crossing 0.6)
 KEEP_MIN = 0.15          # ... lower while a confirmed track is followed, so a fading walker is not dropped at once
@@ -222,7 +229,8 @@ class Tracker:
                  lost_growth_mps: float = LOST_GROWTH_MPS, lost_sigma_max_m: float = LOST_SIGMA_MAX_M,
                  lost_hold_s: float = LOST_HOLD_S, margin_m: float = MARGIN_M, trail_s: float = TRAIL_S,
                  trail_step_s: float = TRAIL_STEP_S, min_step_s: float = MIN_STEP_S,
-                 reset_backstep_s: float = RESET_BACKSTEP_S) -> None:
+                 reset_backstep_s: float = RESET_BACKSTEP_S,
+                 footprint: Optional[Sequence[Sequence[float]]] = None) -> None:
         self.activity_min, self.keep_min, self.min_links = activity_min, min(keep_min, activity_min), min_links
         self.blob_fraction, self.max_blobs = blob_fraction, max_blobs
         self.spread_gain, self.meas_floor_m = spread_gain, meas_floor_m
@@ -234,6 +242,9 @@ class Tracker:
         self.lost_growth_mps, self.lost_sigma_max_m, self.lost_hold_s = lost_growth_mps, lost_sigma_max_m, lost_hold_s
         self.margin_m, self.trail_s, self.trail_step_s = margin_m, trail_s, trail_step_s
         self.min_step_s, self.reset_backstep_s = min_step_s, reset_backstep_s
+        # the room's outline polygon (metres): estimates stay inside it; None keeps only the extents bound
+        self.footprint: Optional[tuple[tuple[float, float], ...]] = (
+            parse_footprint(footprint) if footprint is not None else None)
         self.reset()
 
     def reset(self) -> None:
@@ -278,6 +289,8 @@ class Tracker:
                 blobs = grid_blobs(grid, activity_min=self.keep_min if self._track else self.activity_min,
                                    fraction=self.blob_fraction, spread_gain=self.spread_gain,
                                    floor_m=self.meas_floor_m, max_blobs=self.max_blobs)
+                if self.footprint is not None:
+                    blobs = [self._inside_blob(blob) for blob in blobs]
         self._step(t, blobs)
         self._last_t = t
         return self.payload(t)
@@ -387,8 +400,14 @@ class Tracker:
         while trail and trail[0][0] < t - self.trail_s:
             trail.popleft()
 
+    def _inside_blob(self, blob: Blob) -> Blob:
+        """The blob measured at the nearest point inside the footprint (itself when its centroid is inside)."""
+        x, y = nearest_point_in_polygon(blob.x, blob.y, self.footprint)
+        return blob if (x, y) == (blob.x, blob.y) else replace(blob, x=x, y=y)
+
     def _settle(self, track: "_Track") -> None:
-        """Keep the estimate inside the bounds (no velocity out of them), or drop the track if it went non-finite."""
+        """Keep the estimate inside the footprint and the bounds (no velocity out of them), or drop the track if it
+        went non-finite."""
         filt = track.filt
         if not filt.finite():
             if track is self._track:
@@ -396,10 +415,19 @@ class Tracker:
             if track is self._tentative:
                 self._tentative = None
             return
+        s = filt.s
+        if self.footprint is not None:
+            px, py = nearest_point_in_polygon(s[0], s[1], self.footprint)
+            dx, dy = s[0] - px, s[1] - py
+            gap = math.hypot(dx, dy)
+            if gap > 0:                                    # outside: onto the edge, without the outward velocity
+                outward = (s[2] * dx + s[3] * dy) / gap
+                if outward > 0:
+                    s[2], s[3] = s[2] - outward * dx / gap, s[3] - outward * dy / gap
+                s[0], s[1] = px, py
         if self._bounds is None:
             return
         x0, y0, x1, y1 = self._bounds
-        s = filt.s
         for axis, lo, hi in ((0, x0, x1), (1, y0, y1)):
             if s[axis] < lo:
                 s[axis], s[axis + 2] = lo, max(0.0, s[axis + 2])
@@ -410,8 +438,10 @@ class Tracker:
         """Drop the track; a mature one leaves its 'last seen' marker (a young one leaves any older marker)."""
         if marker:
             var_x, cov_xy, var_y = track.hit_cov
-            self._lost = _Lost(track.hit_x, track.hit_y, var_x, cov_xy, var_y, track.first_t, track.last_hit_t,
-                               track.trail)
+            x, y = track.hit_x, track.hit_y
+            if self.footprint is not None:                 # already inside (settled); kept so explicitly
+                x, y = nearest_point_in_polygon(x, y, self.footprint)
+            self._lost = _Lost(x, y, var_x, cov_xy, var_y, track.first_t, track.last_hit_t, track.trail)
         self._track = None
 
     def _format(self, active: bool, x: float, y: float, var_x: float, cov_xy: float, var_y: float, vx: float,

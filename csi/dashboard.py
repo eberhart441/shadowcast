@@ -3,7 +3,10 @@
 ``DashboardState.push(receiver, pkt)`` feeds a LinkMonitor and the heatmap smoother. ``snapshot(now)``
 returns one JSON-serialisable dict:
 
-    room      {width_m, depth_m}
+    room      {width_m, depth_m, footprint?}
+                footprint: the room's outline polygon [[x, y], ...] in metres (room.json "footprint", csi/room.py),
+                only for a room that has one: a rectangle room's room part is just its size, as are logs written
+                before footprints. The heatmap has no heat outside it and the track stays inside it.
     nodes     [{name, role, chip, x, y}]              receivers then senders
     links     [{id, receiver, sender, mac, state, mode, elevated, level, score, threshold, normalised, baseline,
                 evidence, pkt_rate, drops, rssi, age_s, weight, contributes, since_motion_s,
@@ -66,7 +69,8 @@ class DashboardState:
         self._room_labels = {link.label for link in expected}
         self._motion_at: dict[str, float] = {}   # link label -> host time it was last seen in MOTION
         self._last_host: Optional[float] = None
-        self._tracker = Tracker()                # follows one person on the heatmap image, whatever drew it
+        # follows one person on the heatmap image, whatever drew it; inside the room's footprint when it has one
+        self._tracker = Tracker(footprint=room.footprint or None)
 
     def push(self, receiver: str, pkt: CSIPacket) -> None:
         self._monitor.push(receiver, pkt)
@@ -124,7 +128,7 @@ class DashboardState:
         links = [self._link_payload(row, now) for row in rows]
         heatmap = self._heatmap_payload()
         return {
-            "room": {"width_m": self._room.width_m, "depth_m": self._room.depth_m},
+            "room": self._room_payload(),
             "nodes": self._nodes(),
             "links": links,
             "heatmap": heatmap,
@@ -169,6 +173,12 @@ class DashboardState:
             "since_motion_s": _round(self._since_motion(row["id"], now)),
             **health,
         }
+
+    def _room_payload(self) -> dict:
+        room = {"width_m": self._room.width_m, "depth_m": self._room.depth_m}
+        if self._room.footprint:                  # only a real outline: a rectangle room's payload is unchanged
+            room["footprint"] = [[x, y] for x, y in self._room.footprint]
+        return room
 
     def _nodes(self) -> list[dict]:
         nodes = list(self._room.receivers) + list(self._room.senders)

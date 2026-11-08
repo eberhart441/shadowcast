@@ -471,12 +471,25 @@
   }
 
   // ---- geometry: pure (tested with node) begin
-  // The map frame in metres: the room rectangle and every node, plus a margin. A node may sit outside the
-  // room (x or y below 0 or beyond the room size), so the frame follows the nodes.
+  // The room's footprint (payload room.footprint: its real outline, [[x, y], ...] in metres) as points, or null
+  // when there is none to draw: a rectangle room, or a log written before footprints. A malformed one is ignored.
+  function footprintPoints(room) {
+    var fp = room ? room.footprint : null;
+    if (!Array.isArray(fp) || fp.length < 3) return null;
+    var pts = [];
+    for (var i = 0; i < fp.length; i++) {
+      var p = fp[i];
+      if (!Array.isArray(p) || p.length < 2 || !Number.isFinite(p[0]) || !Number.isFinite(p[1])) return null;
+      pts.push({ x: p[0], y: p[1] });
+    }
+    return pts;
+  }
+  // The map frame in metres: the room rectangle, its footprint and every node, plus a margin. A node may sit
+  // outside the room (x or y below 0 or beyond the room size), so the frame follows the nodes.
   var MAP_MARGIN_M = 0.3;
   function mapBounds(room, nodes) {
     var x0 = 0, y0 = 0, x1 = room.width_m, y1 = room.depth_m;
-    (nodes || []).forEach(function (n) {
+    (nodes || []).concat(footprintPoints(room) || []).forEach(function (n) {
       x0 = Math.min(x0, n.x); y0 = Math.min(y0, n.y);
       x1 = Math.max(x1, n.x); y1 = Math.max(y1, n.y);
     });
@@ -546,9 +559,18 @@
       W: cssWFinal, H: cssH, s: s, b: b,
       rx0: MAP_PAD.left + (0 - b.x0) * s, ry0: MAP_PAD.top + (0 - b.y0) * s,   // room rectangle, in css px
       rw: room.width_m * s, rh: room.depth_m * s,
+      outline: footprintPoints(room),   // the room's footprint, or null: heat is clipped to it and it is drawn
       X: function (x) { return MAP_PAD.left + (x - b.x0) * s; },
       Y: function (y) { return MAP_PAD.top + (y - b.y0) * s; }
     };
+  }
+
+  // the footprint as a closed sub-path of the current path, in css px
+  function addOutline(points, g) {
+    points.forEach(function (pt, i) {
+      if (i === 0) ctx.moveTo(g.X(pt.x), g.Y(pt.y)); else ctx.lineTo(g.X(pt.x), g.Y(pt.y));
+    });
+    ctx.closePath();
   }
 
   function drawHeat(hm, g) {
@@ -566,6 +588,11 @@
     }
     heatCtx.putImageData(img, 0, 0);
     ctx.save();
+    if (g.outline) {   // a room with a footprint: no heat outside it, not even the smoothing's bleed at its edge
+      ctx.beginPath();
+      addOutline(g.outline, g);
+      ctx.clip();
+    }
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = "high";
     ctx.drawImage(heatCanvas, g.rx0, g.ry0, g.rw, g.rh);   // row 0 is y = 0, the top edge; heat is room-only
@@ -604,7 +631,8 @@
     var X = g.X, Y = g.Y;
     ctx.clearRect(0, 0, g.W, g.H);
 
-    // room floor, then the heat (room rectangle only), then a faint metre grid over the room
+    // room floor, then the heat (room rectangle only, and inside the footprint when the room has one), then a
+    // faint metre grid over the room
     ctx.fillStyle = "#070a0f";
     ctx.fillRect(g.rx0, g.ry0, g.rw, g.rh);
     drawHeat(p.heatmap, g);
@@ -617,12 +645,34 @@
     ctx.stroke();
     ctx.restore();
 
+    // a room with a footprint (room.footprint): the part of the rectangle outside it is shaded, the rectangle
+    // is only the coordinate frame (thin, dashed), and the footprint is the room outline drawn over the heat
+    if (g.outline) {
+      ctx.save();
+      ctx.fillStyle = "rgba(139, 148, 158, 0.16)";
+      ctx.beginPath();
+      ctx.rect(g.rx0, g.ry0, g.rw, g.rh);
+      addOutline(g.outline, g);
+      ctx.fill("evenodd");
+      ctx.restore();
+    }
+
     // room outline and metre ticks (x along the bottom edge, y down the left edge); the room's own
     // coordinates, 0 to width and 0 to depth, and nothing beyond the room rectangle
     ctx.save();
     ctx.strokeStyle = "#8b949e";
-    ctx.lineWidth = 2;
+    ctx.lineWidth = g.outline ? 1 : 2;
+    if (g.outline) ctx.setLineDash([4, 4]);
     ctx.strokeRect(g.rx0, g.ry0, g.rw, g.rh);
+    ctx.setLineDash([]);
+    if (g.outline) {
+      ctx.strokeStyle = "#c9d1d9";
+      ctx.lineWidth = 2.5;
+      ctx.lineJoin = "round";
+      ctx.beginPath();
+      addOutline(g.outline, g);
+      ctx.stroke();
+    }
     ctx.strokeStyle = "#9aa7b4";
     ctx.lineWidth = 1;
     ctx.fillStyle = "#9aa7b4";
