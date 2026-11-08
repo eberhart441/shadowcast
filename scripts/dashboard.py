@@ -37,6 +37,7 @@ from csi.detect import DEFAULT_MARGIN  # noqa: E402
 from csi.links import load_thresholds  # noqa: E402
 from csi.multisource import parse_port_specs  # noqa: E402
 from csi.gateway import gateway_streams  # noqa: E402
+from csi.rawlog import tee_sources  # noqa: E402
 from csi.ports import PortResolutionError, resolve_receiver_ports  # noqa: E402
 from csi.parser import Stream, serial_stream  # noqa: E402
 from csi.replay import ReplayError, ReplayServer, load_log, session_dashboard  # noqa: E402
@@ -102,6 +103,9 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--margin", type=margin_arg, default=None, metavar="X",
                    help=f"with --replay-session and no --thresholds: calibration margin, threshold = X x p99 of "
                         f"the session's empty recording (default {DEFAULT_MARGIN:g})")
+    ap.add_argument("--raw-log", type=Path, default=None, metavar="raw.tsv",
+                    help="also append every CSI line the receivers deliver, with its host time, to this file "
+                         "(host_ts, receiver, line; for exact offline replays: scripts/accuracy_eval.py)")
     ap.add_argument("--log", type=Path, metavar="run.jsonl",
                     help="append the state stream to this file: a header line (room, thresholds, start time) and "
                          "then one payload per line, the same as /api/events")
@@ -208,11 +212,15 @@ def build_sources(args: argparse.Namespace, room: Room) -> tuple[dict[str, Strea
                 print("calibrating the simulated empty room...", flush=True)
                 thresholds = simulated_thresholds(room)
         quiet = looping_room_streams(room, default_walk(room), seed=args.seed, quiet_first_s=args.sim_quiet_first)
+        if args.raw_log is not None:
+            quiet = tee_sources(quiet, args.raw_log)
         return quiet, thresholds
     if args.gateway is not None:
         sources = gateway_streams(args.gateway, room, args.baud)
     else:
         sources = {name: serial_stream(path, args.baud) for name, path in parse_port_specs(args.port)}
+    if args.raw_log is not None:
+        sources = tee_sources(sources, args.raw_log)
     return sources, load_link_thresholds(args.thresholds) if fixed else None
 
 
