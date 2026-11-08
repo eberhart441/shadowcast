@@ -14,6 +14,8 @@ returns one JSON-serialisable dict:
                 sender is the node name, None if the MAC is unknown
     heatmap   {cols, rows, extents, cells, max, contributing}
                 cells: flat row-major floats in 0..1 (row 0 is the top edge, y = 0)
+    track     {x, y, vx, vy, confidence} or None: the motion track, a Kalman-smoothed dot following the
+                heatmap's hot blob (csi/tracker.py). Where change is, like the heatmap; not a person count.
     status    {time_s, links_by_state, parameters, room}
                 room: {state, elevated (labels), mode}: room-level MOTION from link agreement (csi/adaptive.py)
 
@@ -29,6 +31,7 @@ from .heatmap import Heatmap
 from .links import LinkId, LinkMonitor, NO_SIGNAL, UNCALIBRATED, WARMUP
 from .parser import CSIPacket
 from .room import Room
+from .tracker import Tracker
 
 STATES = ("EMPTY", "MOTION", WARMUP, UNCALIBRATED, NO_SIGNAL)
 PAYLOAD_DECIMALS = 4
@@ -41,6 +44,7 @@ class DashboardState:
         expected = [LinkId(rx.name, tx.mac) for rx, tx in room.links()]
         self._monitor = LinkMonitor(thresholds or {}, mode=mode, expected=expected)
         self._heat = Heatmap(room, **heatmap_params)
+        self._track = Tracker(room.width_m, room.depth_m, self._heat.centres)
         self._senders = {tx.mac: tx.name for tx in room.senders}
         self._receivers = {rx.name for rx in room.receivers}
         self._last_host: Optional[float] = None
@@ -50,6 +54,7 @@ class DashboardState:
         self._last_host = pkt.host_ts
         if self._heat.due(pkt.host_ts):
             self._heat.advance(pkt.host_ts, self._monitor.snapshot(pkt.host_ts))
+            self._track.update(pkt.host_ts, self._heat.values)
 
     @property
     def thresholds(self) -> dict[str, float]:
@@ -89,12 +94,14 @@ class DashboardState:
             now = self._last_host if self._last_host is not None else time.time()
         rows = self._monitor.snapshot(now)
         self._heat.advance(now, rows)
+        self._track.update(now, self._heat.values)
         links = [self._link_payload(row) for row in rows]
         return {
             "room": {"width_m": self._room.width_m, "depth_m": self._room.depth_m},
             "nodes": self._nodes(),
             "links": links,
             "heatmap": self._heatmap_payload(),
+            "track": self._track_payload(now),
             "status": self._status_payload(now, rows),
         }
 
@@ -138,6 +145,10 @@ class DashboardState:
             "max": max(cells) if cells else 0.0,
             "contributing": sorted(heat.contributing),
         }
+
+    def _track_payload(self, now: float) -> Optional[dict]:
+        track = self._track.state(now)
+        return None if track is None else {k: _round(v) for k, v in track.items()}
 
     def _status_payload(self, now: float, rows: list[Mapping]) -> dict:
         by_state = {state: 0 for state in STATES}

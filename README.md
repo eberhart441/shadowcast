@@ -448,6 +448,18 @@ What the page shows (`web/index.html`, one static file with no network assets):
 - The map shows change, not presence: a person who stands still for more than about
   30 s is absorbed into the baseline and fades.
 
+### Motion track
+
+The ringed dot on the map (`track` in the payload, `csi/tracker.py`) follows the heatmap's hot blob with a
+Kalman filter, so it glides instead of jumping. It is the heat-weighted centre of the cells within 45% of the
+hottest one, smoothed over time; it fades as its confidence (the blob's heat) drops, and disappears 3 s after
+the map goes cold. Like the heatmap it shows where change is, not where a person is: it assumes one moving
+person, and with four links it is drawn towards the link lines and where they cross.
+
+On the simulator (`python scripts/track_eval.py`, the demo walk at 0.5 m/s, 37 Hz) the dot is a median 0.54 m
+from the true position (p90 0.79 m), against 0.91 m for the hottest cell, and moves about as much as the
+person does. No track appeared in a simulated empty room. Not yet measured on the rig.
+
 ### Dashboard options
 
 - `--port [NAME=]PATH`: a receiver's serial port; repeat for each receiver.
@@ -649,6 +661,7 @@ nodes      [{name, role, chip, x, y}]          receivers, then senders
 links      [{id, receiver, sender, state, score, threshold, normalised, baseline,
              evidence, pkt_rate, drops, rssi, age_s, weight, contributes}]
 heatmap    {cols, rows, extents, cells, max, contributing}   cells: row-major 0..1, row 0 = y 0
+track      {x, y, vx, vy, confidence} or null                the motion track (metres, m/s, 0..1)
 status     {time_s, links_by_state, parameters, receivers, errors, finished,
             calibrated_links, uncalibrated_links, messages, calibration, commands}
 ```
@@ -668,6 +681,7 @@ status     {time_s, links_by_state, parameters, receivers, errors, finished,
 | `csi/multisource.py` | Reads several receivers concurrently into one stream. |
 | `csi/room.py` | Room and node geometry, links (every enabled receiver with every enabled sender), disabled nodes, simulated person positions. |
 | `csi/heatmap.py` | The motion-likelihood heatmap. |
+| `csi/tracker.py` | The motion track: a Kalman filter following the heatmap's hot blob. |
 | `csi/dashboard.py` | `DashboardState`: receiver packets in, the JSON payload out. |
 | `csi/server.py` | HTTP server: page, `/api/state`, `/api/events`, commands. |
 | `csi/live_calibration.py` | The dashboard's calibration run (countdown, clips, processing). |
@@ -683,6 +697,7 @@ status     {time_s, links_by_state, parameters, receivers, errors, finished,
 | `scripts/live.py` | Matplotlib viewer: amplitude heatmap, variance trace, threshold keys. |
 | `scripts/record.py` | Labelled recorder with a countdown and label keys. |
 | `scripts/evaluate.py` | Offline evaluation over recorded sessions. |
+| `scripts/track_eval.py` | Scores the motion track against the simulator's known walk. |
 | `web/index.html` | The dashboard page. |
 
 ## Results and known limits

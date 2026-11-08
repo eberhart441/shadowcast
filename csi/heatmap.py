@@ -127,7 +127,7 @@ class Heatmap:
         self.rise_tau, self.decay_tau, self.step = rise_tau_s, decay_tau_s, step_s
         self._weights: Mapping[str, float] = dict(room.link_weights)
         self._room = room
-        self._centres = cell_centres(cols, rows, room.width_m, room.depth_m)
+        self.centres = cell_centres(cols, rows, room.width_m, room.depth_m)
         self._falloff: dict[str, np.ndarray] = {}
         self._build_falloff(falloff_m)
         self._baselines: dict[str, QuietBaseline] = {
@@ -143,7 +143,7 @@ class Heatmap:
     def _build_falloff(self, falloff_m: float) -> None:
         for rx, tx in self._room.links():
             label = LinkId(rx.name, tx.mac).label
-            self._falloff[label] = segment_falloff(self._centres, (rx.x, rx.y), (tx.x, tx.y), falloff_m)
+            self._falloff[label] = segment_falloff(self.centres, (rx.x, rx.y), (tx.x, tx.y), falloff_m)
 
     def set_params(self, **kwargs) -> None:
         """Change live tunables: sensitivity, rise_tau, decay_tau, falloff_m (attribute names).

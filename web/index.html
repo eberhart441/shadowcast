@@ -644,6 +644,21 @@
       if (outside) lines.push({ text: "outside room", font: TICK_FONT, colour: "#e3a008" });
       labelBlock(lines, x + side.dx, y + side.dy, side.hAlign, side.vAlign);
     });
+
+    // motion track (csi/tracker.py): a smoothed dot on the hot blob, fading with its confidence
+    if (p.track) {
+      var tx = X(p.track.x), ty = Y(p.track.y);
+      ctx.save();
+      ctx.globalAlpha = clamp(0.35 + p.track.confidence, 0.35, 1);
+      ctx.fillStyle = "#ffffff";
+      ctx.strokeStyle = "#ff4d6d";
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      ctx.arc(tx, ty, 10, 0, 2 * Math.PI);
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+    }
   }
 
   function drawWaiting() {
