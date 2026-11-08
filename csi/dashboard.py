@@ -16,9 +16,6 @@ returns one JSON-serialisable dict:
                 cells: flat row-major floats in 0..1 (row 0 is the top edge, y = 0)
     track     {x, y, vx, vy, confidence} or None: the motion track, a Kalman-smoothed dot following the
                 heatmap's hot blob (csi/tracker.py). Where change is, like the heatmap; not a person count.
-    location  {calibrated, state, present, level, links_used, since_motion_s, x, y, sigma, ghost} from
-                csi/locator.py: presence and position from each link's raw CSI, with its uncertainty.
-                state: uncalibrated, no_data, empty, moving or maybe_still (stopped moving; still may be there)
     status    {time_s, links_by_state, parameters, room}
                 room: {state, elevated (labels), mode}: room-level MOTION from link agreement (csi/adaptive.py)
 
@@ -34,7 +31,6 @@ from .heatmap import Heatmap
 from .links import LinkId, LinkMonitor, NO_SIGNAL, UNCALIBRATED, WARMUP
 from .parser import CSIPacket
 from .room import Room
-from .locator import Locator
 from .tracker import Tracker
 
 STATES = ("EMPTY", "MOTION", WARMUP, UNCALIBRATED, NO_SIGNAL)
@@ -49,15 +45,12 @@ class DashboardState:
         self._monitor = LinkMonitor(thresholds or {}, mode=mode, expected=expected)
         self._heat = Heatmap(room, **heatmap_params)
         self._track = Tracker(room.width_m, room.depth_m, self._heat.centres)
-        self.locator = Locator(room)
         self._senders = {tx.mac: tx.name for tx in room.senders}
         self._receivers = {rx.name for rx in room.receivers}
         self._last_host: Optional[float] = None
 
     def push(self, receiver: str, pkt: CSIPacket) -> None:
         self._monitor.push(receiver, pkt)
-        self.locator.push(receiver, pkt)
-        self.locator.step(pkt.host_ts)
         self._last_host = pkt.host_ts
         if self._heat.due(pkt.host_ts):
             self._heat.advance(pkt.host_ts, self._monitor.snapshot(pkt.host_ts))
@@ -102,7 +95,6 @@ class DashboardState:
         rows = self._monitor.snapshot(now)
         self._heat.advance(now, rows)
         self._track.update(now, self._heat.target)
-        self.locator.step(now)
         links = [self._link_payload(row) for row in rows]
         return {
             "room": {"width_m": self._room.width_m, "depth_m": self._room.depth_m},
@@ -110,7 +102,6 @@ class DashboardState:
             "links": links,
             "heatmap": self._heatmap_payload(),
             "track": self._track_payload(now),
-            "location": self.locator.payload(),
             "status": self._status_payload(now, rows),
         }
 

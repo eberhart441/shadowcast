@@ -44,44 +44,26 @@ def load_jsonl(path: Path) -> list[dict]:
 
 
 def clock_offset(live: list[dict]) -> tuple[Optional[float], dict]:
-    """Laptop time minus Pi time, from /api/state samples (each carries the Pi's time_s).
-
-    Uses only the reply leg: t1 (laptop, reply received) - time_s (Pi, reply built) is the offset plus the reply's
-    travel time, which is short. The request leg is not: through the SSH tunnel a request can wait seconds for its
-    channel to open, so the midpoint of t0 and t1 was off by a second on the rig (checked against SSH `date`
-    round trips of 3 ms: -0.031 s, against -0.028 s from this and -1.048 s from the midpoint).
-    """
+    """Laptop time minus Pi time, from /api/state samples (each carries the Pi's time_s)."""
     rows = [r for r in live if r.get("time_s") and r.get("t1")]
     if not rows:
         return None, {}
-    reply = np.array([r["t1"] - r["time_s"] for r in rows])
+    off = np.array([(r["t0"] + r["t1"]) / 2 - r["time_s"] for r in rows])
     rtt = np.array([r["t1"] - r["t0"] for r in rows])
-    return float(np.percentile(reply, 5)), {"samples": len(rows), "reply_leg_median_s": float(np.median(reply)),
-                                             "rtt_median_s": float(np.median(rtt))}
+    return float(np.median(off)), {"samples": len(rows), "iqr_s": float(np.subtract(*np.percentile(off, [75, 25]))),
+                                   "rtt_median_s": float(np.median(rtt))}
 
 
 # --------------------------------------------------------------------------- replay
 
-def replay(raw: Path, room, thresholds: dict, t_from: float, t_to: float, freeze_after: Optional[float] = None,
-           ref_window: Optional[tuple[float, float]] = None, accuracy_map: Optional[dict] = None):
-    """Frames (every 0.2 s of host time) and heat targets (every heatmap step) of the dashboard pipeline.
-
-    ``ref_window`` (host times): an empty-room stretch the locator learns its reference from, as the dashboard
-    does from its calibration clips. Like live, the reference takes effect when that stretch ends."""
+def replay(raw: Path, room, thresholds: dict, t_from: float, t_to: float, freeze_after: Optional[float] = None):
+    """Frames (every 0.2 s of host time) and heat targets (every heatmap step) of the dashboard pipeline."""
     streams = read_raw(raw, t_from, t_to)
 
     def tag(name, lines):   # a function, so each generator keeps its own receiver name
         return ((pkt.host_ts, name, pkt) for pkt in parse_stream(iter(lines), CSIParser()))
     tagged = [tag(name, lines) for name, lines in streams.items()]
     state = DashboardState(room, thresholds)
-    if accuracy_map is not None:
-        state.locator.set_accuracy_map(accuracy_map)
-    clip = None
-    if ref_window is not None:
-        ref = read_raw(raw, *ref_window)
-        clip = sorted(((pkt.host_ts, name, pkt) for name, lines in ref.items()
-                       for pkt in parse_stream(iter(lines), CSIParser())), key=lambda item: item[0])
-        clip = [(name, pkt) for _, name, pkt in clip]
     heat = state._heat
     if freeze_after is not None:   # a baseline learned only before freeze_after (the empty room), then held
         orig = heat._update_baseline
@@ -91,9 +73,6 @@ def replay(raw: Path, room, thresholds: dict, t_from: float, t_to: float, freeze
         heat._update_baseline = frozen
     frames, targets, next_frame, last_heat = [], [], None, None
     for ts, name, pkt in heapq.merge(*tagged, key=lambda item: item[0]):
-        if clip is not None and ts >= ref_window[1]:
-            state.locator.reference_from_clips([clip])
-            clip = None
         state.push(name, pkt)
         if heat._last_t != last_heat:
             last_heat = heat._last_t
@@ -104,14 +83,8 @@ def replay(raw: Path, room, thresholds: dict, t_from: float, t_to: float, freeze
             snap = state.snapshot(ts)
             m = heat_measurement(heat.target, heat.centres)
             tr = snap["track"]
-            loc = snap.get("location") or {}
             frames.append({
                 "t": ts,
-                "location": (loc["x"], loc["y"]) if loc.get("state") == "moving" else None,
-                "loc_state": loc.get("state"),
-                "loc_level": loc.get("level"),
-                "loc_sigma": loc.get("sigma"),
-                "loc_ghost": loc.get("ghost"),
                 "track": None if tr is None else (tr["x"], tr["y"]),
                 "conf": None if tr is None else tr["confidence"],
                 "centroid": None if m is None else (m[0], m[1]),
@@ -151,7 +124,6 @@ def static_metrics(rows, truth, mark, key="track") -> dict:
         "cep95_m": round(float(np.percentile(d_mean, 95)), 3),
         "std_xy": [round(float(E[:, 0].std()), 3), round(float(E[:, 1].std()), 3)],
         "err_median_m": round(float(np.median(err)), 3),
-        "err_p68_m": round(float(np.percentile(err, 68)), 3),
         "err_p90_m": round(float(np.percentile(err, 90)), 3),
         "zone_correct": round(sum(z == mark for z in zone) / len(zone), 3),
         "zones": {str(k): zone.count(k) for k in sorted(set(zone))},
@@ -184,10 +156,10 @@ def walk_metrics(rows, seg, key="track") -> dict:
     return out
 
 
-def empty_metrics(rows, key="track") -> dict:
+def empty_metrics(rows) -> dict:
     if not rows:
         return {"frames": 0}
-    track = np.array([r[key] is not None for r in rows])
+    track = np.array([r["track"] is not None for r in rows])
     hm = np.array([r["heat_max"] for r in rows])
     motion = np.mean([any(v[0] == "MOTION" for v in r["links"].values()) for r in rows])
     return {"frames": len(rows), "false_track": round(float(track.mean()), 3),
@@ -195,10 +167,10 @@ def empty_metrics(rows, key="track") -> dict:
             "any_link_motion": round(float(motion), 3)}
 
 
-def still_metrics(rows, seg, key="track") -> dict:
+def still_metrics(rows, seg) -> dict:
     if not rows:
         return {"frames": 0}
-    have = [(r["t"] - seg.t0, r[key] is not None) for r in rows]
+    have = [(r["t"] - seg.t0, r["track"] is not None) for r in rows]
     lost_at = next((t for t, h in have if not h), None)
     return {"frames": len(rows), "available": round(sum(h for _, h in have) / len(have), 3),
             "dot_lost_after_s": None if lost_at is None else round(lost_at, 1)}
@@ -224,9 +196,9 @@ def score(frames, segs, key="track") -> dict:
         if seg.kind == "hold":
             out["marks"][seg.mark] = static_metrics(rows, A.MARKS[seg.mark], seg.mark, key)
         elif seg.kind == "empty":
-            out["empty"].append(dict(empty_metrics(rows, key), final=seg.meta.get("final", False)))
+            out["empty"].append(dict(empty_metrics(rows), final=seg.meta.get("final", False)))
         elif seg.kind == "still":
-            out["still"] = still_metrics(rows, seg, key)
+            out["still"] = still_metrics(rows, seg)
         elif seg.kind == "move_again":
             out["move_again"] = static_metrics(rows, A.MARKS[5], 5, key)
         elif seg.kind == "walk":
@@ -242,68 +214,6 @@ def score(frames, segs, key="track") -> dict:
             "twin_confused": round(float(np.mean([m["twin_confused"] for m in marks if "twin_confused" in m])), 3),
             "available": round(float(np.mean([m["available"] for m in out["marks"].values()])), 3),
         }
-    return out
-
-
-def error_given_estimate(frames, segs, room, cols: int = 14, rows: int = 9, kernel_m: float = 0.3) -> dict:
-    """How wrong is the dot when it is shown here? Over every hold frame, the 68th percentile of the error,
-    weighted by how close each frame's estimate is to each grid cell. Conditioned on the estimate, not the truth:
-    a wrong estimate often lands where the system is otherwise good, and must not inherit that confidence."""
-    pairs = []
-    for s in segs:
-        if s.kind == "hold":
-            for f in in_window(frames, s):
-                if f["location"] is not None:
-                    pairs.append((*f["location"], float(np.hypot(f["location"][0] - A.MARKS[s.mark][0],
-                                                                  f["location"][1] - A.MARKS[s.mark][1]))))
-    if not pairs:
-        return {}
-    P = np.array(pairs)
-    xs = (np.arange(cols) + 0.5) * room.width_m / cols
-    ys = (np.arange(rows) + 0.5) * room.depth_m / rows
-    overall = float(np.percentile(P[:, 2], 68))
-    grid = []
-    for y in ys:
-        row = []
-        for x in xs:
-            w = np.exp(-((P[:, 0] - x) ** 2 + (P[:, 1] - y) ** 2) / (2 * kernel_m ** 2))
-            if w.sum() < 5:              # too few estimates landed here: fall back to the whole room
-                row.append(round(overall, 3))
-                continue
-            order = np.argsort(P[:, 2])
-            cum = np.cumsum(w[order]) / w.sum()
-            row.append(round(float(P[order, 2][np.searchsorted(cum, 0.68)]), 3))
-        grid.append(row)
-    return {"cols": cols, "rows": rows, "p68_m": grid, "overall_p68_m": round(overall, 3), "frames": len(P)}
-
-
-def locator_extras(frames, segs) -> dict:
-    """Presence per segment kind, and how often the true position falls inside the reported 1-sigma ellipse."""
-    out = {"presence": {}, "ellipse": None}
-    for kind in ("empty", "hold", "still", "move_again", "walk"):
-        rows = [f for s in segs if s.kind == kind for f in in_window(frames, s)]
-        if rows:
-            states = [f["loc_state"] for f in rows]
-            out["presence"][kind] = {st: round(states.count(st) / len(states), 3) for st in sorted(set(map(str, states)))}
-    inside, total, ghosts = 0, 0, 0
-    for s in segs:
-        if s.kind != "hold":
-            continue
-        tx, ty = A.MARKS[s.mark]
-        for f in in_window(frames, s):
-            if f["location"] is None or not f["loc_sigma"]:
-                continue
-            sg = f["loc_sigma"]
-            a = np.radians(sg["angle_deg"])
-            dx, dy = tx - f["location"][0], ty - f["location"][1]
-            u = dx * np.cos(a) + dy * np.sin(a)
-            v = -dx * np.sin(a) + dy * np.cos(a)
-            inside += (u / sg["major_m"]) ** 2 + (v / sg["minor_m"]) ** 2 <= 1
-            total += 1
-            ghosts += f["loc_ghost"] is not None
-    if total:
-        out["ellipse"] = {"truth_inside_1sigma": round(inside / total, 3), "frames": total,
-                          "ghost_shown": round(ghosts / total, 3)}
     return out
 
 
@@ -393,8 +303,6 @@ def main() -> None:
                                                              "else config/room.json)")
     ap.add_argument("--offset", type=float, default=None, help="laptop minus Pi time, s (default: from live.jsonl)")
     ap.add_argument("--variants", action="store_true")
-    ap.add_argument("--accuracy-map", type=Path, default=None,
-                    help="load this measured accuracy map into the locator (checks the reported uncertainty)")
     a = ap.parse_args()
 
     labels = load_jsonl(a.run / "labels.jsonl")
@@ -410,32 +318,14 @@ def main() -> None:
     print(f"clock offset (laptop - Pi) {offset:+.3f} s {off_info}; {len(segs)} segments; "
           f"thresholds {sorted(thresholds)}")
 
-    cal = [e for e in labels if e["event"] in ("calibration_start", "calibration_end")]
-    ref_window = None
-    starts = [e["t"] - offset for e in cal if e["event"] == "calibration_start"]
-    ends = [e["t"] - offset for e in cal if e["event"] == "calibration_end"]
-    if starts and ends:   # the last calibration's recording: lead-in over, before its end
-        s0 = max(starts)
-        e0 = min(t for t in ends if t > s0)
-        ref_window = (s0 + 4.0, e0 - 1.0)
-    acc = json.loads(a.accuracy_map.read_text()) if a.accuracy_map else None
-    frames, targets, centres = replay(a.run / "raw.tsv", room, thresholds, t_from, t_to, ref_window=ref_window,
-                                      accuracy_map=acc)
-    print(f"locator reference from {'the calibration window' if ref_window else 'nothing (no calibration labels)'}")
+    frames, targets, centres = replay(a.run / "raw.tsv", room, thresholds, t_from, t_to)
     report = {"offset_s": offset, "offset_info": off_info, "thresholds": thresholds,
               "live_vs_replay": live_vs_replay(live, frames, offset) if live else None}
     print("live vs replay:", report["live_vs_replay"])
-    for key in ("location", "track", "centroid", "hottest"):
+    for key in ("track", "centroid", "hottest"):
         report[key] = score(frames, segs, key)
-        print_report(report[key], {"location": "LOCATOR (raw CSI, no high-pass; csi/locator.py)",
-                                   "track": "Kalman dot on the heatmap (the old dot)", "centroid": "raw blob centroid",
+        print_report(report[key], {"track": "Kalman dot (what the dashboard shows)", "centroid": "raw blob centroid",
                                    "hottest": "hottest cell"}[key])
-        if key == "location":
-            report["locator"] = locator_extras(frames, segs)
-            print("locator presence by segment (share of frames per state):")
-            for kind, shares in report["locator"]["presence"].items():
-                print(f"  {kind:10s} {shares}")
-            print(f"locator uncertainty: {report['locator']['ellipse']}")
     print("\nlink health per segment (median pkt/s, min, share not scoring):")
     for name, h in report["track"]["health"].items():
         bad = {k: v for k, v in h.items() if v["rate_min"] < 15 or v["not_scoring"] > 0.05}
@@ -456,14 +346,11 @@ def main() -> None:
             print("  " + "  ".join(f"{k}={v}" for k, v in r.items()))
     (a.run / "report.json").write_text(json.dumps(report, indent=1, default=str))
     (a.run / "accuracy_map.json").write_text(json.dumps({
-        "note": f"measured on the accuracy run in {a.run.name}: the locator's error at each mark (in-sample)",
         "marks": {str(k): {"truth": A.MARKS[k], **{x: m.get(x) for x in ("mean", "bias_m", "cep50_m", "cep95_m",
-                                                                            "err_median_m", "err_p68_m", "err_p90_m",
-                                                                            "available", "twin_confused",
-                                                                            "zone_correct")}}
-                  for k, m in report["location"]["marks"].items()},
-        "summary": report["location"].get("summary"), "walk": report["location"].get("walk"),
-        "error_given_estimate": error_given_estimate(frames, segs, room)}, indent=1))
+                                                                            "err_median_m", "available",
+                                                                            "twin_confused", "zone_correct")}}
+                  for k, m in report["track"]["marks"].items()},
+        "summary": report["track"].get("summary"), "walk": report["track"].get("walk")}, indent=1))
     print(f"\nwrote {a.run / 'report.json'} and {a.run / 'accuracy_map.json'}")
 
 

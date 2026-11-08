@@ -451,28 +451,6 @@
     display: inline-block; flex: none; width: 20px; height: 12px; border: 1px solid var(--line-2);
     background: repeating-linear-gradient(135deg, var(--blind) 0 1.5px, transparent 1.5px 5px);
   }
-  /* the person (csi/locator.py): a dot while moving, its 68% area, a hollow ring while they may be standing still,
-     a dashed "?" where they could also be; the tested accuracy as coloured spots */
-  .lg-pdot { display: inline-block; flex: none; width: 12px; height: 12px; border-radius: 50%; background: var(--accent); }
-  .lg-parea {
-    display: inline-block; flex: none; width: 22px; height: 12px; border-radius: 50%;
-    border: 1.5px dashed var(--accent); background: var(--accent-soft);
-  }
-  .lg-pstill {
-    display: inline-block; flex: none; width: 12px; height: 12px; border-radius: 50%; border: 2.5px solid var(--accent);
-  }
-  .lg-pghost {
-    display: inline-grid; place-content: center; flex: none; width: 14px; height: 14px; border-radius: 50%;
-    border: 1.5px dashed var(--accent); font-size: 9px; font-weight: 600; color: var(--accent);
-  }
-  .lg-acc { display: inline-block; flex: none; width: 10px; height: 10px; border-radius: 50%; background: var(--h-unknown); }
-  .lg-acc.good { background: var(--h-good); }
-  .lg-acc.warn { background: var(--h-warn); }
-  .lg-acc.fail { background: var(--h-fail); }
-  .lg-group li:has(.lg-acc) { flex-wrap: wrap; }
-  .person-block { display: flex; flex-direction: column; gap: var(--s1); min-width: 0; }   /* not a grid: the legend's nth-child placements must not apply inside */
-  .person-caption { margin: 0; font-size: var(--t0); font-weight: 600; line-height: 20px; color: var(--accent); }
-  .demo .person-caption { font-size: var(--t1); line-height: 24px; }
   /* the view: Map / 3D, and in 3D its reset and links switches; the 3D scene fills the map box over the map */
   .lg-group .seg { justify-self: start; margin: 2px 0 var(--s1) 22px; }
   .view3d-ctl { display: grid; justify-items: start; gap: 2px; padding-left: 22px; }
@@ -739,13 +717,11 @@
   @container room (max-aspect-ratio: 7/5) {
     .room { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto; grid-template-areas: "map" "key"; }
     .key-panel {
-      display: grid; grid-template-columns: 224px minmax(0, 1fr); grid-template-rows: auto auto 1fr auto;
-      grid-template-areas: "person legend" "cap legend" "notes legend" "notes sub"; gap: var(--s1) var(--s6);
+      display: grid; grid-template-columns: 224px minmax(0, 1fr); grid-template-rows: auto 1fr auto;
+      grid-template-areas: "cap legend" "notes legend" "notes sub"; gap: var(--s1) var(--s6);
       padding: var(--s3) 0 0; border-left: 0; border-top: 1px solid var(--line); overflow: visible;
     }
     .notes { grid-area: notes; gap: var(--s1); font-size: var(--t-1); line-height: 16px; }
-    .person-block { grid-area: person; padding-bottom: var(--s2); }
-    .person-block .lg-group ul { padding-left: 0; }
     .map-notes { display: contents; }
     .caption { grid-area: cap; margin: 0; }
     .caption-sub { grid-area: sub; padding-top: var(--s1); }
@@ -793,7 +769,7 @@
     }
     .metrics { border-left: 0; border-top: 1px solid var(--line); }
     .room { grid-template-columns: minmax(0, 1fr); grid-template-rows: none; grid-template-areas: "map" "key"; }
-    .notes, .person-block { grid-column: 1 / -1; }
+    .notes { grid-column: 1 / -1; }
     .key-panel { padding: var(--s3) 0 0; border-left: 0; border-top: 1px solid var(--line); overflow: visible; }
     .key-panel { display: grid; grid-template-columns: repeat(auto-fit, minmax(188px, 1fr)); gap: var(--s3) var(--s6); }
     .legend { grid-column: 1 / -1; grid-template-columns: repeat(auto-fit, minmax(188px, 1fr)); gap: var(--s3) var(--s6); }
@@ -883,25 +859,6 @@
       </div>
     </div>
     <div class="key-panel">
-      <div class="person-block">
-        <p class="person-caption" id="person-caption">Person: waiting for data</p>
-        <div class="lg-group">
-          <label class="toggle"><input type="checkbox" id="layer-person" checked> Person</label>
-          <ul>
-            <li><span class="lg-pdot"></span>moving here</li>
-            <li><span class="lg-parea"></span>inside it 2 times in 3</li>
-            <li><span class="lg-pstill"></span>no motion: still here, or gone</li>
-            <li><span class="lg-pghost">?</span>fits almost as well</li>
-          </ul>
-          <label class="toggle" title="The person dot's typical error (68th percentile) at each spot of the test run">
-            <input type="checkbox" id="layer-accuracy"> Tested accuracy</label>
-          <ul>
-            <li><span class="lg-acc good"></span>&lt; 0.5 m <span class="lg-acc warn"></span>0.5-0.9
-              <span class="lg-acc fail"></span>&gt; 0.9 m</li>
-            <li id="accuracy-note">no accuracy measured yet</li>
-          </ul>
-        </div>
-      </div>
       <div class="notes">
         <p class="note busy-note" id="busy-note" role="status" hidden></p>
         <p class="note coverage-note" id="coverage-note" hidden></p>
@@ -2318,12 +2275,11 @@
     pause: $("pause"), demo: $("demo"), drawerToggle: $("drawer-toggle"), theme: $("theme"),
     msgbar: $("msgbar"), messages: $("messages"),
     mapCard: $("map-card"), mapBox: $("map-box"), map: $("map"), caption: $("map-caption"), busy: $("busy-note"),
-    coverage: $("coverage-note"), heatPeak: $("heat-peak"), person: $("person-caption"), accNote: $("accuracy-note"),
+    coverage: $("coverage-note"), heatPeak: $("heat-peak"),
     counts: $("link-counts"), sortAttention: $("sort-attention"), sortName: $("sort-name"), links: $("links"),
     pucks: $("pucks"), pucksSummary: $("pucks-summary"), controls: $("controls"), drawerClose: $("drawer-close")
   };
-  var LAYER_INPUTS = { heat: "layer-heat", links: "layer-links", coverage: "layer-coverage", person: "layer-person",
-    accuracy: "layer-accuracy" };
+  var LAYER_INPUTS = { heat: "layer-heat", links: "layer-links", coverage: "layer-coverage" };
   var ctx = els.map.getContext("2d");
   var heatCanvas = document.createElement("canvas");
   var heatCtx = heatCanvas.getContext("2d");
@@ -2355,7 +2311,7 @@
   var puckOrder = null;
   var known = { room: null, nodes: [] };   // the last room and nodes, for a frame without them
   var coverage = { key: null };
-  var layers = { heat: true, links: true, coverage: false, person: true, accuracy: false };
+  var layers = { heat: true, links: true, coverage: false };
   var demo = false;
   var drawerOpen = false;
   var sortMode = "attention";
@@ -3610,109 +3566,6 @@
     queue3d();
   }
 
-  // The person (payload.location, csi/locator.py). Moving: a solid dot, its 68% area (the ellipse never claims to be
-  // tighter than the error measured there) and, when a second spot fits almost as well, a dashed "?" there. No
-  // motion lately: a hollow ring where they were last seen, as they may be standing still (a still person is mostly
-  // invisible to the links) or may have left. Empty, uncalibrated or no data: nothing on the map, the caption says.
-  function drawPerson(loc, g) {
-    if (!loc || (loc.state !== "moving" && loc.state !== "maybe_still")) return;
-    if (!Number.isFinite(loc.x) || !Number.isFinite(loc.y)) return;
-    var k = mapScale(), cx = g.X(loc.x), cy = g.Y(loc.y), moving = loc.state === "moving", sg = loc.sigma;
-    ctx.save();
-    ctx.beginPath();
-    ctx.rect(g.rx0, g.ry0, g.rw, g.rh);   // nobody stands in the walls: the area and the "?" stay in the room
-    ctx.clip();
-    ctx.strokeStyle = PAL.accent;
-    ctx.fillStyle = PAL.accent;
-    if (sg && sg.major_m > 0 && sg.minor_m > 0) {
-      ctx.beginPath();
-      ctx.ellipse(cx, cy, sg.major_m * g.s, sg.minor_m * g.s, (sg.angle_deg || 0) * Math.PI / 180, 0, 2 * Math.PI);
-      ctx.globalAlpha = moving ? 0.16 : 0.07;
-      ctx.fill();
-      ctx.globalAlpha = moving ? 0.75 : 0.35;
-      ctx.lineWidth = 1.5 * k;
-      ctx.setLineDash([5 * k, 4 * k]);
-      ctx.stroke();
-      ctx.setLineDash([]);
-    }
-    if (moving && loc.ghost && Number.isFinite(loc.ghost.x) && Number.isFinite(loc.ghost.y)) {
-      var gx = g.X(loc.ghost.x), gy = g.Y(loc.ghost.y);
-      ctx.globalAlpha = 0.85;
-      ctx.lineWidth = 1.5 * k;
-      ctx.setLineDash([3 * k, 3 * k]);
-      ctx.beginPath();
-      ctx.arc(gx, gy, 8 * k, 0, 2 * Math.PI);
-      ctx.stroke();
-      ctx.setLineDash([]);
-      ctx.font = smallFont;
-      ctx.textAlign = "center";
-      ctx.textBaseline = "middle";
-      ctx.fillText("?", gx, gy);
-    }
-    ctx.restore();
-    ctx.save();
-    ctx.beginPath();
-    ctx.arc(cx, cy, 6.5 * k, 0, 2 * Math.PI);
-    if (moving) {
-      ctx.fillStyle = PAL.accent;
-      ctx.fill();
-      ctx.strokeStyle = PAL.floor;
-      ctx.lineWidth = 2 * k;
-      ctx.stroke();
-    } else {
-      ctx.strokeStyle = PAL.accent;
-      ctx.lineWidth = 2.5 * k;
-      ctx.stroke();
-    }
-    ctx.restore();
-  }
-
-  // The tested accuracy (payload.location.accuracy_map): the spots of the accuracy run, coloured by the dot's typical
-  // error there (68th percentile), labelled in metres.
-  function drawAccuracy(loc, g) {
-    var pts = loc && loc.accuracy_map;
-    if (!Array.isArray(pts) || !pts.length) return;
-    var k = mapScale();
-    ctx.save();
-    ctx.font = smallFont;
-    ctx.textAlign = "center";
-    ctx.textBaseline = "top";
-    pts.forEach(function (pt) {
-      if (!Array.isArray(pt) || !Number.isFinite(pt[0]) || !Number.isFinite(pt[1]) || !Number.isFinite(pt[2])) return;
-      var x = g.X(pt[0]), y = g.Y(pt[1]), e = pt[2];
-      ctx.fillStyle = e < 0.5 ? PAL.good : (e <= 0.9 ? PAL.warn : PAL.fail);
-      ctx.beginPath();
-      ctx.arc(x, y, 4.5 * k, 0, 2 * Math.PI);
-      ctx.fill();
-      ctx.fillStyle = PAL.muted;
-      ctx.fillText("\u00b1" + fmt(e, 1) + " m", x, y + 7 * k);
-    });
-    ctx.restore();
-  }
-
-  function personCaption(loc) {
-    if (!loc) return "Person: not located by this server";
-    if (loc.state === "uncalibrated") return "Person: calibrate (room empty) to locate";
-    if (loc.state === "no_data") return "Person: too few links to locate";
-    if (loc.state === "empty") return "Nobody moving";
-    if (loc.state === "moving") {
-      var err = Number.isFinite(loc.measured_error_m) ? loc.measured_error_m : (loc.sigma && loc.sigma.major_m);
-      return "Someone moving" + (Number.isFinite(err) ? ", usually within " + fmt(err, 1) + " m" : "") +
-        (loc.ghost ? " (or at ?)" : "");
-    }
-    if (loc.state === "maybe_still") {
-      return "No motion for " + Math.round(loc.since_motion_s || 0) + " s: still there, or gone";
-    }
-    return "Person: " + loc.state;
-  }
-
-  function renderPerson(p) {
-    var loc = p.location;
-    els.person.hidden = !layers.person;
-    setText(els.person, personCaption(loc));
-    setText(els.accNote, (loc && loc.accuracy_note) || "no accuracy measured yet");
-  }
-
   function drawMap(p) {
     var room = p.room;
     if (!room || !(room.width_m > 0) || !(room.depth_m > 0)) { drawWaiting("no room in this frame"); return; }
@@ -3738,8 +3591,6 @@
 
     if (layers.links) drawLinks(p, at, g, focus);
     drawPucks(p, frame, g, focus);
-    if (layers.accuracy) drawAccuracy(p.location, g);
-    if (layers.person) drawPerson(p.location, g);
   }
 
   function drawWaiting(text) {
@@ -4540,7 +4391,6 @@
     p = withGeometry(p);
     shown = p;
     drawMap(p);
-    renderPerson(p);
     renderRoom(p);
     renderBusy(p);
     renderCoverage(p);
