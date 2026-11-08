@@ -1,9 +1,12 @@
+import dataclasses
+import json
+
 import numpy as np
 import pytest
 
 from csi.detect import (EMPTY, LEGACY_SCORER, LIVE_SCORER, MOTION, STILL_PRESENT, CalibrationError, MotionScorer,
                         ScorerConfig, calibrate, detect, detect_packets, load_threshold)
-from csi.parser import CSIParser, parse_stream
+from csi.parser import CSIPacket, CSIParser, parse_stream
 from csi.simulate import Segment, simulate_stream
 
 THRESHOLD = 2.0  # manual threshold: between simulated empty/still (~0.2) and motion (~7+)
@@ -232,7 +235,6 @@ def test_the_trapezoidal_update_keeps_the_empty_score_scale_across_packet_rates(
 
 
 def test_the_median_prefilter_removes_single_sample_spikes():
-    import dataclasses
     rng = np.random.default_rng(1)
     clean = list(parse_stream(simulate_stream(scenario=[Segment("empty", 20)], seed=7)))
     spiky = []
@@ -280,3 +282,85 @@ def test_a_scorer_note_names_a_mismatch_or_a_missing_record_and_nothing_for_the_
     other = scorer_note(LEGACY_SCORER, "links.json")
     assert "another motion scorer" in other and "window 1 s" in other and "recalibrate" in other
     assert "does not record" in scorer_note(None, "links.json")
+
+
+# --- per-subcarrier noise weighting: an option of the scorer configuration, off in the live one ---
+
+WEIGHTED = dataclasses.replace(LIVE_SCORER, noise_weight=1.0)
+QUIET = [1.0] * 20                  # 20 subcarriers with the same noise
+LOUD = [10.0, 10.0] + [1.0] * 18    # two of them 100x noisier (variance) in an empty room
+
+
+def noisy_packets(seconds, sd, rate_hz=50.0, seed=0, start_s=0.0, device_start_us=None):
+    """Packets whose subcarrier k is a flat 50 plus white noise of standard deviation ``sd[k]``; host time starts at
+    ``start_s`` (plus 1000 s) and device time at ``device_start_us`` (default: following on from the host time)."""
+    rng = np.random.default_rng(seed)
+    sd = np.asarray(sd, dtype=np.float64)
+    first_us = 1_000_000 + round(start_s * 1e6) if device_start_us is None else device_start_us
+    return [CSIPacket(host_ts=1000.0 + start_s + i / rate_hz, device_ts=first_us + round(i * 1e6 / rate_hz),
+                      rssi=-40, channel=6, amplitude=(50.0 + sd * rng.normal(0.0, 1.0, sd.size)).astype(np.float32),
+                      mac="1a:0c:12:00:00:00")
+            for i in range(int(seconds * rate_hz))]
+
+
+def test_noise_weighting_is_a_recorded_option_that_the_live_scorer_leaves_off():
+    # Off by design: on the recorded hw3/hw5 links it helped the weak link but cost the strong one (ScorerConfig).
+    assert LIVE_SCORER.noise_weight == 0.0 and "noise" not in LIVE_SCORER.describe()
+    assert MotionScorer.from_config(WEIGHTED).config == WEIGHTED != LIVE_SCORER
+    assert ScorerConfig.from_dict(WEIGHTED.as_dict()) == WEIGHTED
+    assert "noise-weight 1" in WEIGHTED.describe()
+    before = {k: v for k, v in LIVE_SCORER.as_dict().items() if k != "noise_weight"}  # a record from before the key
+    assert ScorerConfig.from_dict(before) == LIVE_SCORER
+    for bad in (-1.0, float("nan"), float("inf")):
+        with pytest.raises(ValueError):
+            dataclasses.replace(LIVE_SCORER, noise_weight=bad)
+    with pytest.raises(ValueError):
+        ScorerConfig.from_dict(dict(LIVE_SCORER.as_dict(), noise_weight="loud"))
+
+
+def test_noise_weighting_mutes_subcarriers_that_are_noisy_in_an_empty_room():
+    # Equal weights: the two loud subcarriers make the mean about 11x the quiet one. Weighted by their learned
+    # noise, they count about 1/100 as much, and the score stays near the quiet level (about 1.1x).
+    assert median_score(noisy_packets(30, LOUD), LIVE_SCORER) > 5 * median_score(noisy_packets(30, QUIET), LIVE_SCORER)
+    assert median_score(noisy_packets(30, LOUD), WEIGHTED) < 1.5 * median_score(noisy_packets(30, QUIET), WEIGHTED)
+
+
+def test_noise_weighting_does_not_learn_movement_as_noise():
+    # 30 s of empty room, then 15 s in which half of the subcarriers move (100x the variance). The noise profile
+    # freezes while the score is elevated, so the weighted score keeps up with the equal-weight one (about 50x the
+    # quiet level). Had it learned the movement, it would mute exactly the moving subcarriers (about 4x by the end).
+    packets = noisy_packets(30, QUIET, seed=1) + noisy_packets(15, [10.0] * 10 + [1.0] * 10, seed=2, start_s=30.0)
+
+    def last_5_s_median(config):
+        scorer = MotionScorer.from_config(config)
+        scores = [scorer.push(p) for p in packets]
+        return float(np.median(scores[-250:]))  # 50 packets/s: the window is all movement by then
+
+    assert last_5_s_median(WEIGHTED) > 0.8 * last_5_s_median(LIVE_SCORER)
+
+
+def test_a_receiver_reboot_makes_the_noise_weighting_start_over():
+    before = noisy_packets(20, LOUD, seed=3)
+    after = noisy_packets(20, LOUD, seed=4, start_s=20.0, device_start_us=5_000)  # device time restarts near 0
+    weighted, plain = MotionScorer.from_config(WEIGHTED), MotionScorer.from_config(LIVE_SCORER)
+    w = [weighted.push(p) for p in before + after]
+    u = [plain.push(p) for p in before + after]
+    reboot = len(before)
+    assert w[reboot - 1] < 0.5 * u[reboot - 1]                # learned: the loud subcarriers are muted
+    first = next(i for i in range(reboot, len(u)) if u[i] is not None)
+    assert w[reboot:first] == [None] * (first - reboot)       # both refill their window after the reboot
+    assert w[first] == u[first]                               # the profile was dropped: equal weights again
+    assert w[first + 1] < 0.5 * u[first + 1]                  # and it is relearned from the new first window
+
+
+def test_a_weighted_calibration_records_its_scorer_in_the_thresholds_file(tmp_path):
+    from csi.links import calibrate_links_report, read_thresholds, save_thresholds, threshold_file_notes
+    report = calibrate_links_report([("rx1", p) for p in noisy_packets(20, LOUD, seed=5)], scorer=WEIGHTED)
+    assert set(report.thresholds) == {"rx1<-00"} and report.calibrations["rx1<-00"].scorer == WEIGHTED
+    path = tmp_path / "links.json"
+    save_thresholds(path, report.thresholds, report.record())
+    assert json.loads(path.read_text())["scorer"]["noise_weight"] == 1.0
+    recorded = read_thresholds(path)
+    assert recorded.scorer == WEIGHTED
+    (note,) = threshold_file_notes(recorded, "links.json")   # the live scorer leaves it off: another scale
+    assert "another motion scorer" in note and "noise-weight 1" in note
