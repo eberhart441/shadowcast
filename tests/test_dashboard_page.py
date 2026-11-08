@@ -3,6 +3,7 @@
 The page's drawing and behaviour are checked by hand (see the ticket); these tests read the page source and
 one response from a running server.
 """
+import copy
 import json
 import re
 import shutil
@@ -12,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+from csi.dashboard import DashboardState
 from csi.room import load_room
 from csi.server import DashboardServer
 from csi.simulate import simulate_room
@@ -75,6 +77,13 @@ def test_controls_container_holds_the_calibrate_panel_threshold_editors_and_tuni
         assert needle in controls, needle
     # the rest of the page is intact: the status bar and the links card are still there
     assert html.index('id="calib"') < start and html.index('id="links"') < start
+
+
+def test_noisy_room_calibration_is_off_by_default():
+    # the quiet-room rules (movement in a clip is refused) are the default; "noisy room" is an explicit choice
+    html = PAGE.read_text(encoding="utf-8")
+    tag = re.search(r'<input[^>]*id="cal-noisy"[^>]*>', html).group(0)
+    assert "checked" not in tag
 
 
 def test_page_talks_to_the_command_endpoints_and_shows_the_countdown_text():
@@ -254,3 +263,110 @@ def test_rx3_is_outside_the_room_with_a_leader_to_the_top_wall_and_labels_point_
         assert by_name[name]["outside"] is False, name
     assert by_name["tx1"]["side"]["dy"] < 0 and by_name["tx1"]["side"]["dx"] > 0   # bottom-left: up and right
     assert by_name["rx2"]["side"]["dx"] > 0 and by_name["rx2"]["side"]["dy"] > 0   # top-left: right and down
+
+
+# ---------------------------------------------------------------- link health, last motion, near-node veto
+
+FIVE = Path(__file__).resolve().parent / "fixtures" / "room_5node.json"
+HEALTH = {"seq_rate": 36.4, "seq_loss": 0.125, "clip_pct": 0.032, "agc_gain": 32, "fft_gain": -6,
+          "noise_floor": -92, "since_motion_s": 3.2}
+RENDER_STUB = r"""
+const fs = require("fs");
+const input = JSON.parse(fs.readFileSync(0, "utf8"));
+const script = input.html.split("<script>")[1].split("</script>")[0];
+const mapLog = [];
+const texts = [];
+function recorder(log) {
+  const target = {};
+  return new Proxy(target, {
+    get(t, k) {
+      if (k in t) return t[k];
+      if (k === "measureText") return (s) => ({ width: String(s).length * 7 });
+      if (k === "createImageData") return (w, h) => ({ data: new Uint8ClampedArray(w * h * 4) });
+      return (...args) => {
+        if (log) log.push([k, ...args.map((a) => (typeof a === "object" && a !== null ? "obj" : a))]);
+      };
+    },
+    set(t, k, v) { t[k] = v; return true; },
+  });
+}
+const mapCtx = recorder(mapLog), heatCtx = recorder(null);
+function element(id, tag) {
+  const t = { clientWidth: 600, clientHeight: 40, width: 0, height: 0, firstChild: null, style: {}, hidden: false,
+    className: "", textContent: "", classList: { toggle() {} } };
+  if (tag === "canvas" || id === "map") t.getContext = () => (id === "map" ? mapCtx : heatCtx);
+  return new Proxy(t, {
+    get(obj, k) { return k in obj ? obj[k] : () => undefined; },
+    set(obj, k, v) { obj[k] = v; if (k === "textContent") texts.push(String(v)); return true; },
+  });
+}
+const elements = {};
+const document = {
+  getElementById(id) { return (elements[id] = elements[id] || element(id, "div")); },
+  createElement(tag) { return element("tmp", tag); },
+  createTextNode(text) { return { text }; },
+  activeElement: null,
+};
+const window = { devicePixelRatio: 1, addEventListener() {}, requestAnimationFrame() {} };
+const noop = () => 0;
+let stream = null;
+function FakeEventSource() { this.close = noop; stream = this; }
+const errors = [];
+const busyHidden = [];
+try {
+  // no /api/state: the page goes straight to the event stream, which this stub drives payload by payload
+  new Function("window", "document", "fetch", "EventSource", "setTimeout", "clearTimeout", script)(
+    window, document, () => Promise.reject(new Error("no server")), FakeEventSource, noop, noop);
+} catch (err) { errors.push(String(err)); }
+(async () => {
+  for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
+  for (const payload of input.payloads) {
+    try {
+      if (!stream) throw new Error("the page opened no event stream");
+      stream.onmessage({ data: JSON.stringify(payload) });   // render errors surface here, not in a promise
+    } catch (err) { errors.push(String((err && err.stack) || err)); }
+    busyHidden.push(elements["busy-note"] ? elements["busy-note"].hidden : null);
+  }
+  console.log(JSON.stringify({ calls: mapLog, texts, errors, busyHidden }));
+})();
+"""
+
+
+def render_payloads_with_stub(tmp_path, payloads):
+    """Run the page script under a DOM stub and feed it ``payloads`` as events; texts set and map calls made."""
+    script = tmp_path / "render_stub.js"
+    script.write_text(RENDER_STUB, encoding="utf-8")
+    html = PAGE.read_text(encoding="utf-8")
+    proc = subprocess.run(["node", str(script)], input=json.dumps({"html": html, "payloads": payloads}),
+                          capture_output=True, text=True, timeout=60)
+    assert proc.returncode == 0, proc.stderr
+    return json.loads(proc.stdout)
+
+
+def health_payloads():
+    """A five-node payload with link health, last motion and a busy node, and the same payload as an old log
+    (or an older server) would have it: none of those keys."""
+    new = DashboardState(load_room(FIVE)).snapshot(now=1_700_000_000.0)
+    new["heatmap"]["busy_nodes"] = ["tx0"]
+    new["links"][0].update(HEALTH)
+    new["status"]["room"]["since_motion_s"] = 12.4
+    old = copy.deepcopy(new)
+    del old["heatmap"]["busy_nodes"], old["status"]["room"]["since_motion_s"]
+    for row in old["links"]:
+        for key in HEALTH:                    # the six health keys and since_motion_s
+            row.pop(key, None)
+    return new, old
+
+
+@pytest.mark.slow
+@needs_node
+def test_page_shows_link_health_last_motion_and_activity_near_a_node_and_still_renders_old_payloads(tmp_path):
+    new, old = health_payloads()
+    result = render_payloads_with_stub(tmp_path, [new, old])
+    assert result["errors"] == []
+    texts = result["texts"]
+    for shown in ("12.5 %", "36.4", "3.2 %", "32 / -6", "-92", "3 s ago", "12 s ago"):
+        assert shown in texts, shown                                  # loss, sent/s, clipped, gains, noise, motion
+    assert any(t.startswith("activity near tx0") for t in texts)      # the note under the map
+    assert any(c[0] == "fillText" and c[1] == "activity near tx0" for c in result["calls"])   # and on the map
+    assert result["busyHidden"] == [False, True]                      # the old payload has no busy node

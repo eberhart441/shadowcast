@@ -176,6 +176,9 @@ def test_person_near_the_bottom_left_corner_puts_heat_in_the_corner_from_the_lin
     assert not contributing & {"rx1<-00", "rx3<-00"}              # the links 2+ m away stay out
     hot = hot_cell_centre(payload)
     assert hot[0] < ROOM.width_m / 2 and hot[1] > ROOM.depth_m / 2  # hottest cell is in the bottom-left quarter
+    # all three of tx1's links are raised and none of tx0's: the near-node veto names tx1 and mutes (not hides)
+    # its links, so the heat stays in this corner instead of fanning out along them
+    assert payload["heatmap"]["busy_nodes"] == ["tx1"]
 
 
 def test_bottom_centre_person_is_about_1_2_m_from_the_rx3_diagonals_and_no_footprint_reaches_them():
