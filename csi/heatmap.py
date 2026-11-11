@@ -18,7 +18,7 @@ than one link alone, and a lone noisy spike is suppressed. The result goes throu
 decay, so an empty room settles to cold. All time is host time from the packets, never the wall clock.
 
 In a room with transceivers (spec #2) the spatial step is radio tomography instead (``imaging="rti"``,
-csi/rti.py, ADR-0023): the weighted evidence of every link forms one vector, and one matrix precomputed from the
+csi/rti.py, ADR-0024): the weighted evidence of every link forms one vector, and one matrix precomputed from the
 room's geometry turns it into the image over the grid, so every link that covers a cell counts and more links
 sharpen the map. The footprints and the top-2 agreement rule are then not used, and ``falloff_m`` is refused.
 The evidence, the soft saturation and the time smoothing are the same in both.

@@ -23,7 +23,8 @@ HTTP:
     finished           True once every source has ended and its packets are drained
     calibrated_links   link labels with a threshold
     uncalibrated_links link labels without one
-    messages           human-readable notes (uncalibrated links, failed receivers)
+    messages           human-readable notes (uncalibrated links, failed receivers, unknown nodes, rejected or
+                       dropped round broadcasts)
 
 Frames: the pump emits a frame every ``frame_interval_s`` of packet time, so a fast finite stream still
 yields intermediate events. Frames are kept in a bounded log; an event stream opened after the sources
@@ -51,7 +52,7 @@ from .links import calibrate_links, room_link_ids, save_thresholds
 from .multisource import MultiSource
 from .parser import CSIPacket, Stream
 from .room import Room, Walk
-from .rounds import HeardBroadcast
+from .rounds import DUPLICATE, QUEUE_OVERFLOW, HeardBroadcast
 from .simulate import simulate_room, simulate_room_links, simulate_rounds
 
 DEFAULT_HOST = "127.0.0.1"
@@ -524,11 +525,13 @@ class DashboardServer(FrameServer):
             while not self._stop.is_set():
                 for receiver, pkt in self._ms.drain(timeout=0.05):
                     reorder.add(receiver, pkt)
+                self._count_dropped()
                 self._feed(reorder.pop_ready(self._connected_receivers()))
                 self._idle_frame()
                 if self._ms.finished():
                     break
             if not self._stop.is_set():
+                self._count_dropped()
                 self._feed(reorder.pop_ready(self._connected_receivers(), flush=True))
                 self._finish_run()
         except _PipelineError as e:
@@ -574,6 +577,14 @@ class DashboardServer(FrameServer):
     def _connected_receivers(self) -> set[str]:
         return {name for name, s in self._ms.status().items() if _receiver_state(s) == "connected"}
 
+    def _count_dropped(self) -> None:
+        """Round broadcasts the sources' queue dropped (the pump fell behind) go into the ingest's counters."""
+        dropped = self._ms.take_dropped()
+        if dropped:
+            with self._lock:
+                for source, n in dropped.items():
+                    self._state.count_dropped(source, n)
+
     def _feed(self, batch: list[tuple[str, CSIPacket]]) -> None:
         if not batch:
             return
@@ -588,7 +599,7 @@ class DashboardServer(FrameServer):
     def _push_packet(self, receiver: str, pkt: Union[CSIPacket, HeardBroadcast]) -> None:
         """Caller holds the lock."""
         if isinstance(pkt, HeardBroadcast):
-            self._state.push_broadcast(pkt.host_ts, pkt.data)
+            self._state.push_broadcast(pkt.host_ts, pkt.data, receiver)
         else:
             self._state.push(receiver, pkt)
             if self._calib is not None and self._calib.active:
@@ -638,10 +649,10 @@ class DashboardServer(FrameServer):
     def _payload(self, now: float) -> dict:
         """Caller holds the lock: DashboardState advances its smoothing to ``now``."""
         payload = self._state.snapshot(now)
-        payload["status"].update(self._status_extension(now, payload["links"]))
+        payload["status"].update(self._status_extension(now, payload["links"], payload["status"]["broadcasts"]))
         return payload
 
-    def _status_extension(self, now: float, links: Sequence[Mapping]) -> dict:
+    def _status_extension(self, now: float, links: Sequence[Mapping], broadcasts: Mapping) -> dict:
         receivers = {name: _receiver_state(s) for name, s in self._ms.status().items()}
         errors = self._errors()
         calibrated = sorted(self._state.thresholds)
@@ -649,7 +660,7 @@ class DashboardServer(FrameServer):
         uncalibrated = sorted(self._labels - set(calibrated) - set(adaptive))
         silent = sorted(row["id"] for row in links if row["id"] in uncalibrated and row["age_s"] is None)
         heard = [label for label in uncalibrated if label not in silent]
-        messages = list(self._notes)
+        messages = list(self._notes) + broadcast_messages(broadcasts)
         if heard:
             messages.append(f"{len(heard)} link(s) UNCALIBRATED ({', '.join(heard)}): no threshold. "
                             "Pass --thresholds links.json, or calibrate on an empty room first.")
@@ -813,6 +824,24 @@ class DashboardServer(FrameServer):
         self._state.set_threshold(label, value)
         self._commands.append(f"threshold {label} = {value:.4g} (calibration)")
 
+
+
+def broadcast_messages(counts: Mapping) -> list[str]:
+    """Operator lines for round broadcasts that were not used: unknown nodes, rejections, queue overflow."""
+    out = []
+    unknown = counts.get("unknown_nodes") or {}
+    if unknown:
+        named = ", ".join(f"{serial} ({n})" for serial, n in sorted(unknown.items()))
+        out.append(f"{len(unknown)} unknown node(s) heard, not in config/room.json: {named}. Their round "
+                   "broadcasts are counted but not used: add each serial to the room config, or switch the board off.")
+    rejected = counts.get("rejected") or {}
+    bad = {reason: n for reason, n in rejected.items() if n and reason not in (DUPLICATE, QUEUE_OVERFLOW)}
+    if bad:
+        out.append(f"{sum(bad.values())} round broadcast(s) rejected: "
+                   + ", ".join(f"{reason} {n}" for reason, n in sorted(bad.items())) + ".")
+    if rejected.get(QUEUE_OVERFLOW):
+        out.append(f"{rejected[QUEUE_OVERFLOW]} round broadcast(s) dropped because the host fell behind (queue full).")
+    return out
 
 
 class _PipelineError(Exception):

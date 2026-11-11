@@ -1,4 +1,4 @@
-# 0023. The transceiver heatmap is regularised radio tomography over every link
+# 0024. The transceiver heatmap is regularised radio tomography over every link
 
 - **Status:** Accepted
 - **Date:** 2026-11-11

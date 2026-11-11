@@ -130,7 +130,8 @@ def test_rejected_bytes_and_unknown_nodes_are_counted_not_dropped_silently():
     state.push_broadcast(T0, broadcast("n1", 0)[:-1])                                # truncated
     state.push_broadcast(T0, broadcast("n1", 0, node_id="02:00:00:00:99:5C"))         # not in the room config
     counts = state.snapshot(T0)["status"]["broadcasts"]
-    assert counts["rejected"] == {"version": 1, "length": 1}
+    assert counts["rejected"]["version"] == counts["rejected"]["length"] == 1
+    assert sum(counts["rejected"].values()) == 2
     assert counts["unknown_nodes"] == {"02:00:00:00:99:5C": 1}
     assert counts["accepted"] == 0
 

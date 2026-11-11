@@ -661,7 +661,7 @@ rise, decay and falloff can be changed live (`Heatmap.set_params`, `POST /api/pa
 
 ### 6.7 Transceiver rooms: regularised radio tomography
 
-`csi/rti.py`, used by `Heatmap` when the room has transceivers ([ADR-0023](adr/0023-radio-tomography-heatmap.md)).
+`csi/rti.py`, used by `Heatmap` when the room has transceivers ([ADR-0024](adr/0024-radio-tomography-heatmap.md)).
 Sections 6.3 to 6.4 stay for rooms of receivers and senders. With $M$ links and $N$ cells, let
 $y_\ell=w_\ell e_\ell$ be the weighted evidence of (6.1), $d_\ell$ the link length and $d_{\ell1}(\mathbf c)$,
 $d_{\ell2}(\mathbf c)$ the distances from a cell centre to the link's two nodes. The weight model is the
