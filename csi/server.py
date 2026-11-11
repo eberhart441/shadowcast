@@ -57,7 +57,7 @@ from .links import calibrate_links, room_link_ids, save_thresholds
 from .multisource import MultiSource
 from .parser import CSIPacket, Stream
 from .room import Room, Walk
-from .rounds import DUPLICATE, QUEUE_OVERFLOW, HeardBroadcast
+from .rounds import AUTH, DUPLICATE, QUEUE_OVERFLOW, HeardBroadcast
 from .simulate import simulate_room, simulate_room_links, simulate_rounds
 
 DEFAULT_HOST = "127.0.0.1"
@@ -894,8 +894,10 @@ def broadcast_messages(counts: Mapping) -> list[str]:
     rejected = counts.get("rejected") or {}
     bad = {reason: n for reason, n in rejected.items() if n and reason not in (DUPLICATE, QUEUE_OVERFLOW)}
     if bad:
+        hint = (" Failed authentication (auth) means a node has another kit key (compare `scripts/node.py PORT key` "
+                "with the host's) or someone is sending forged round broadcasts." if bad.get(AUTH) else "")
         out.append(f"{sum(bad.values())} round broadcast(s) rejected: "
-                   + ", ".join(f"{reason} {n}" for reason, n in sorted(bad.items())) + ".")
+                   + ", ".join(f"{reason} {n}" for reason, n in sorted(bad.items())) + "." + hint)
     if rejected.get(QUEUE_OVERFLOW):
         out.append(f"{rejected[QUEUE_OVERFLOW]} round broadcast(s) dropped because the host fell behind (queue full).")
     return out

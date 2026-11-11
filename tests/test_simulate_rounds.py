@@ -136,3 +136,12 @@ def test_two_people_each_raise_the_links_near_them():
                 if distance_to_link(row["id"], (person.x, person.y)) < 0.5 * FALLOFF_SIGMA_M
                 and distance_to_link(row["id"], (other.x, other.y)) > 4 * FALLOFF_SIGMA_M]
         assert near and near.count("MOTION") >= 0.8 * len(near), (person, near)
+
+
+def test_simulated_broadcasts_are_signed_with_the_test_key_or_the_kit_key_given():
+    from csi.round_auth import TEST_KIT_KEY, tag_ok
+    kit = bytes(range(50, 66))
+    default = [data for _, data in simulate_rounds(ROOM, duration_s=0.5, t0=T0)]
+    signed = [data for _, data in simulate_rounds(ROOM, duration_s=0.5, t0=T0, kit_key=kit)]
+    assert default and all(tag_ok(data, TEST_KIT_KEY) for data in default)
+    assert all(tag_ok(data, kit) and not tag_ok(data, TEST_KIT_KEY) for data in signed)
