@@ -14,7 +14,8 @@ round_broadcast.txt (fixture tests/fixtures/round_broadcast_v1.json, format docs
           <node_id hex> <tag hex> <n_reports> then per report: <transmitter_index> <score> <rssi> <heard> <since> <flags>
     invalid <name> <hex> <reason>
 
-The rssi of a report is the signed byte; -128 is "none" (null in the fixture).
+The rssi of a report is the signed byte; -128 is "none" (null in the fixture). <flags> is the whole flags byte:
+the fixture's flags (bits 0-2) plus its lateness code (default 0) in bits 3-7.
 
 gateway_record.txt (fixture tests/fixtures/gateway_record_v1.json, format docs/gateway-record.md):
 
@@ -46,7 +47,7 @@ def round_broadcast_lines(fixture: dict) -> list[str]:
                   b["node_id"].replace(":", "").lower(), b["tag"], len(b["reports"])]
         for r in b["reports"]:
             fields += [r["transmitter_index"], r["score"], RSSI_NONE if r["rssi"] is None else r["rssi"],
-                       r["heard"], r["since"], r["flags"]]
+                       r["heard"], r["since"], r["flags"] | r.get("lateness", 0) << 3]
         lines.append(" ".join(str(f) for f in fields))
     for case in fixture["invalid"]:
         lines.append(f"invalid {case['name']} {case['hex']} {case['reason']}")

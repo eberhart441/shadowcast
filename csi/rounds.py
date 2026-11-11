@@ -17,9 +17,12 @@ number) is placed; another copy within ``DEDUP_WINDOW_S`` of host time, from any
 
 A link report names its transmitter only by node index. The index of a node is learned from that node's own
 round broadcasts, per schedule version, so a report about a node the host has not heard from yet (this schedule
-version) cannot be placed: it is counted as unplaced. Nothing is dropped without being counted: every record a
-source delivered is accepted, rejected for one of ``REJECT_REASONS`` or from an unknown node, so
-``heard == accepted + sum(rejected) + sum(unknown_nodes)``. Memory is bounded: the de-duplication memory by
+version) cannot be placed: it is counted as unplaced. A join grant from the round scheduler (ticket #14) names
+the joining node and its index in the new schedule version, so reports about a joiner place from the start.
+Join frames (requests and grants) carry no link reports: each copy is counted in ``join_frames`` and never
+placed, de-duplicated or rejected. Nothing is dropped without being counted: every record a source delivered is
+accepted, rejected for one of ``REJECT_REASONS``, from an unknown node, or a join frame, so
+``heard == accepted + sum(rejected) + sum(unknown_nodes) + sum(join_frames)``. Memory is bounded: the de-duplication memory by
 time and ``DEDUP_MAX``, the unknown serials by ``UNKNOWN_NODES_KEPT``.
 """
 from __future__ import annotations
@@ -28,7 +31,7 @@ from collections import Counter, OrderedDict
 from dataclasses import dataclass
 from typing import Iterable, Optional
 
-from .broadcast import DECODE_REASONS, BroadcastError, LinkReport, decode_broadcast
+from .broadcast import DECODE_REASONS, FRAME_JOIN_GRANT, JOIN_FRAMES, BroadcastError, LinkReport, decode_broadcast
 from .links import NodeLinkId
 from .room import Room
 
@@ -42,6 +45,7 @@ QUEUE_OVERFLOW = "queue_overflow"
 UNKNOWN_NODES_KEPT = 32   # unknown serials counted by name; any further ones are counted together as OTHER_NODES
 OTHER_NODES = "other"
 REJECT_REASONS = DECODE_REASONS + (DUPLICATE, QUEUE_OVERFLOW)   # each has a counter in status.broadcasts.rejected
+JOIN_FRAME_KINDS = ("request", "grant")                          # status.broadcasts.join_frames
 
 
 @dataclass(frozen=True)
@@ -61,6 +65,7 @@ class RoundIngest:
         self._rejected: Counter[str] = Counter({reason: 0 for reason in REJECT_REASONS})
         self._unknown: Counter[str] = Counter()
         self._unplaced = 0
+        self._joins: Counter[str] = Counter({kind: 0 for kind in JOIN_FRAME_KINDS})
         self._sources: dict[str, Counter[str]] = {}
         self.last_node: Optional[str] = None   # sender of the round broadcast just placed (None: not placed)
 
@@ -78,6 +83,9 @@ class RoundIngest:
         except BroadcastError as e:
             self._rejected[e.reason] += 1
             return []
+        if broadcast.frame_type in JOIN_FRAMES:
+            self._join(broadcast)
+            return []
         serial = broadcast.node_id.upper()
         if self._duplicate((serial, broadcast.schedule_version, broadcast.round), host_ts):
             self._rejected[DUPLICATE] += 1
@@ -91,10 +99,8 @@ class RoundIngest:
         self._accepted += 1
         tally["accepted"] += 1
         self.last_node = receiver
-        indices = self._index.setdefault(broadcast.schedule_version, {})
+        indices = self._indices(broadcast.schedule_version)
         indices[broadcast.node_index] = receiver
-        while len(self._index) > SCHEDULES_KEPT:
-            del self._index[next(iter(self._index))]
         placed = []
         for report in broadcast.reports:
             transmitter = indices.get(report.transmitter_index)
@@ -103,6 +109,20 @@ class RoundIngest:
                 continue
             placed.append((NodeLinkId(receiver, transmitter), report))
         return placed
+
+    def _join(self, frame) -> None:
+        """A join request or grant: counted; a grant for a known node teaches its index in the new schedule."""
+        grant = frame.frame_type == FRAME_JOIN_GRANT
+        self._joins["grant" if grant else "request"] += 1
+        name = self._names.get(frame.node_id.upper())
+        if grant and name is not None:
+            self._indices(frame.schedule_version)[frame.node_index] = name
+
+    def _indices(self, schedule_version: int) -> dict[int, str]:
+        indices = self._index.setdefault(schedule_version, {})
+        while len(self._index) > SCHEDULES_KEPT:
+            del self._index[next(iter(self._index))]
+        return indices
 
     def count_dropped(self, source: str, n: int) -> None:
         """``n`` round broadcasts heard by ``source`` were dropped before they reached the ingest (queue full)."""
@@ -133,8 +153,8 @@ class RoundIngest:
     def counts(self) -> dict:
         """``status.broadcasts``: heard (records delivered, including those dropped on a full queue), accepted
         (placed), rejected {reason: n} for every one of REJECT_REASONS, unknown_nodes {serial: n} (beyond
-        UNKNOWN_NODES_KEPT serials, the rest under "other"), unplaced_reports, and per source
-        {heard, accepted, duplicate, queue_overflow}."""
+        UNKNOWN_NODES_KEPT serials, the rest under "other"), unplaced_reports, join_frames {request, grant}
+        (every copy), and per source {heard, accepted, duplicate, queue_overflow}."""
         return {"heard": self._heard, "accepted": self._accepted, "rejected": dict(self._rejected), "unknown_nodes": dict(self._unknown),
-                "unplaced_reports": self._unplaced,
+                "unplaced_reports": self._unplaced, "join_frames": dict(self._joins),
                 "sources": {name: dict(tally) for name, tally in self._sources.items()}}

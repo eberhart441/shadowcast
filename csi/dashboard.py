@@ -21,7 +21,8 @@ pipeline ``push_broadcast(host_ts, data)`` does the same from one round broadcas
     status    {time_s, links_by_state, parameters, room}
                 room: {state, elevated (labels), mode}: room-level MOTION from link agreement (csi/adaptive.py)
                 broadcasts: {heard, accepted, rejected {reason: n}, unknown_nodes {serial: n}, unplaced_reports,
-                sources {name: {heard, accepted, duplicate, queue_overflow}}}, the round broadcasts ingested
+                join_frames {request, grant}, sources {name: {heard, accepted, duplicate, queue_overflow}}}, the
+                round broadcasts ingested
                 (all 0 in the line pipeline); reasons are csi.rounds.REJECT_REASONS, each always present
     node_health [{name, state, heard_by, hears, peers, last_heard_s, link_rate_hz, slot_lateness}] per transceiver
                 state "ok" or "missing" (no round broadcast reached the host for > 2 s); slot_lateness is the
