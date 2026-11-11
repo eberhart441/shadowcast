@@ -69,6 +69,19 @@ _See_: `csi/round_auth.py` (`Freshness`), `firmware/core/round_auth.h` (`rb_auth
 The 4 bytes a receiving node sends about one of its links in its round broadcast: the quantised score, the RSSI, how many round broadcasts it heard from the transmitter in the last 15 rounds and how many rounds since the last one, flags (baseline warming, possible move, raw mode) and the transmitter's slot lateness. A heard count of 0 makes the link NO_SIGNAL.
 _See_: `csi/broadcast.py` (`LinkReport`), `csi/links.py` (`push_report`)
 
+**Raw mode**:
+A link streaming its full CSI (int8 I/Q of one HT20 long training field) for recording and algorithm work, besides its link reports. The host asks the receiving node with a raw mode request; the node then flags the link raw in its link reports and appends a raw CSI block to its round broadcasts. At most 400 bytes per round in the rig (three links) and two links per node; switched on and off from the dashboard (`POST /api/raw-mode`).
+_Avoid_: debug mode, CSI dump
+_See_: `csi/raw_mode.py`, `firmware/core/raw_mode.h`, [`docs/round-broadcast.md`](docs/round-broadcast.md#raw-mode), [ADR-0032](docs/adr/0032-raw-mode-in-the-join-slot-within-a-byte-budget.md)
+
+**Raw mode request**:
+The frame (round broadcast format, frame type 4) that tells one node which of its links to stream raw: the target's serial, its round number when asked, and up to two transmitter serials (none: raw mode off). Signed by the host with the kit key and sent by a gateway in the join slot of an even round.
+_See_: `csi/broadcast.py` (`RawModeRequest`), `firmware/core/gateway_tx.h`
+
+**Raw CSI block**:
+The 5 + up to 128 bytes a round broadcast with raw CSI (frame type 5) carries per raw link after its link reports: the transmitter's node index and round number, the RSSI, and the I/Q bytes as the Wi-Fi driver gave them.
+_See_: `csi/broadcast.py` (`RawCsi`), `csi/round_recording.py` (`raw_csi`)
+
 **Fixed round**:
 The round of the first transceiver image (ticket #13): a set number of members, node index = slot, a set round rate, no join slot, and slot timing taken from any heard round broadcast. Replaced by the round scheduler (#14); the code is gone.
 
@@ -93,7 +106,7 @@ How far into its slot a node's round broadcast starts on air, as another node's 
 _See_: `csi/coverage.py` (`SlotLateness`), `node_health[].slot_lateness`
 
 **Gateway**:
-A node of the transceiver rig on the dashboard host's USB that only listens: it sends nothing on the channel and writes every round broadcast it hears to USB as a heard record with its receive time. The same image as a transceiver, with the role setting `gateway`. (The hackathon's wireless receivers had a different gateway board, `CSI_GATEWAY=1`, that wrote text lines.)
+A node of the transceiver rig on the dashboard host's USB that listens: it writes every round broadcast it hears to USB as a heard record with its receive time, and sends nothing on the channel but the frames the host hands it (`send <hex>`: raw mode requests), in the join slot. The same image as a transceiver, with the role setting `gateway`. (The hackathon's wireless receivers had a different gateway board, `CSI_GATEWAY=1`, that wrote text lines.)
 _See_: `firmware/node/`, `csi/gateway_records.py` (`GatewaySource`), `dashboard.py --node-gateway`
 
 **Gateway record**:

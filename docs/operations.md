@@ -479,6 +479,7 @@ The server checks the combination at start and exits with an error when:
 | `POST /api/threshold` | Body `{link, value}` sets one link's threshold. `value` is a positive number, or `null` to return the link to auto in auto mode. |
 | `POST /api/thresholds/save` | Writes all thresholds as `{label: number}` to the save path and returns `{path, thresholds}`. 409 when there is nothing to save. |
 | `POST /api/params` | Body with any of `{sensitivity, decay, rise, falloff}` changes the heatmap live. Ranges: `sensitivity` 0.01 to 10, `decay` 0.05 to 60 s, `rise` 0.01 to 10 s, `falloff` 0.05 to 2 m. |
+| `POST /api/raw-mode` | Body `{link, on}` turns raw mode on or off for one transceiver link (`n1<-n5`): the gateway (or the simulated rig) sends the request; returns `{raw_mode, sent, via}`. 409 with a `reason` when refused: `budget` (400 B of raw CSI per round in the rig), `node_limit` (2 per node), `not_heard`, `no_gateway`. 400 for an unknown link. See `docs/round-broadcast.md` "Raw mode". |
 
 Status codes for the commands (the `POST` endpoints):
 
@@ -505,8 +506,8 @@ The server binds to `127.0.0.1` by default, so only this machine can reach it.
 - `--host 0.0.0.0` listens on the network with **no authentication**. Anyone who can reach the port can
   read the state, and the commands are refused unless you also pass `--allow-control`. Use it only on a
   network you trust.
-- The five command endpoints (`/api/calibrate`, `/api/calibrate/cancel`, `/api/threshold`,
-  `/api/thresholds/save`, `/api/params`) are enabled only when `--host` is a loopback address
+- The six command endpoints (`/api/calibrate`, `/api/calibrate/cancel`, `/api/threshold`,
+  `/api/thresholds/save`, `/api/params`, `/api/raw-mode`) are enabled only when `--host` is a loopback address
   (`localhost`, `127.0.0.0/8` or `::1`), or when you pass `--allow-control`. Otherwise they return 403.
   The page's controls and `scripts/calibrate.py` use the same endpoints.
 - Every command must also pass these checks, which the server makes before it runs anything:
