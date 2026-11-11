@@ -5,6 +5,7 @@ produces, never on the bytes the writer lays down (except to build files a reade
 """
 import json
 import math
+import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -19,7 +20,11 @@ from csi.server import DashboardServer
 from csi.simulate import simulate_rounds
 
 ROOT = Path(__file__).resolve().parents[1]
-ROOM = load_room(ROOT / "tests" / "fixtures" / "room_tr8.json")
+sys.path.insert(0, str(ROOT / "scripts"))
+import dashboard as cli  # noqa: E402
+
+TR8 = ROOT / "tests" / "fixtures" / "room_tr8.json"
+ROOM = load_room(TR8)
 T0 = 1_700_000_000.0
 
 
@@ -243,3 +248,70 @@ def test_the_dashboard_refuses_an_unsupported_recording_as_a_replay_error(tmp_pa
     (tmp_path / "x.rounds").write_bytes(b"SCROUNDS\x09\x00\x02\x00\x00\x00{}")
     with pytest.raises(ReplayError, match="format version 9"):
         rounds_dashboard(tmp_path / "x.rounds", port=0)
+
+
+# ---------------------------------------------------------------------------------------------- dashboard.py
+
+def cli_args(*argv):
+    args = cli.build_parser().parse_args([*argv, "--http-port", "0"])
+    cli.check_source(args)
+    return args
+
+
+def run_until(server, accepted):
+    payload = {}
+    for _ in range(200):
+        with urllib.request.urlopen(server.url + "/api/state", timeout=10) as response:
+            payload = json.loads(response.read())
+        if payload["status"]["broadcasts"]["accepted"] >= accepted or payload["status"]["finished"]:
+            break
+        server.wait_finished(timeout=0.05)
+    return payload
+
+
+def test_cli_records_a_simulated_run_with_its_labels_and_replays_it(tmp_path, capsys):
+    path = tmp_path / "sim.rounds"
+    args = cli_args("--simulate", "--room", str(TR8), "--record", str(path), "--label", "empty")
+    server = cli.build_server(args)
+    server.start()
+    try:
+        run_until(server, 24)
+        cli.read_labels(["walking mark=A3\n", "\n", "dancing\n"], args.recorder)
+    finally:
+        server.stop()
+    out = capsys.readouterr().out
+    assert "label walking" in out and "invalid label 'dancing'" in out
+    recording = load_rounds(path)
+    assert len(recording.broadcasts) >= 24 and recording.room == ROOM and recording.sources == ("sim-gateway",)
+    assert [(lab.label, lab.extra) for lab in recording.labels] == [("empty", {}), ("walking", {"mark": "A3"})]
+
+    args = cli_args("--replay-rounds", str(path), "--speed", "max")
+    assert cli.server_mode(args) == "auto"
+    replay = cli.build_server(args)
+    replay.start()
+    try:
+        assert replay.wait_finished(timeout=30)
+        payload = run_until(replay, 0)
+    finally:
+        replay.stop()
+    assert payload["status"]["broadcasts"]["accepted"] == len(recording.broadcasts)
+    assert payload["status"]["commands"]["available"] is False and len(payload["links"]) == 56
+
+
+@pytest.mark.parametrize("argv, message", [
+    (["--simulate-room", "--record", "x.rounds"], "--record"),
+    (["--simulate", "--label", "empty"], "--label needs --record"),
+    (["--replay-rounds", "x.rounds", "--thresholds", "links.json"], "adaptive"),
+    (["--replay-rounds", "x.rounds", "--raw-log", "raw.tsv"], "--raw-log"),
+    (["--replay-rounds", "x.rounds", "--simulate"], "one source"),
+])
+def test_cli_refuses_record_and_replay_flags_that_do_not_apply(argv, message):
+    args = cli.build_parser().parse_args(argv)
+    with pytest.raises(SystemExit) as err:
+        cli.check_source(args)
+    assert message in str(err.value)
+
+
+def test_cli_refuses_an_invalid_starting_label():
+    with pytest.raises(SystemExit):
+        cli.build_parser().parse_args(["--simulate", "--record", "x.rounds", "--label", "dancing"])

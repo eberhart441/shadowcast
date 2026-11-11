@@ -87,6 +87,7 @@ class RoundRecorder:
         self._pending = 0
         self._last_flush = time.monotonic()
         self.broadcasts = 0
+        self._open_tees = 0
         header = {"room": room_config(room), "sources": list(sources), "notes": notes, "started": clock()}
         body = json.dumps(header).encode("utf-8")
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -112,11 +113,16 @@ class RoundRecorder:
         ts = self._clock() if host_ts is None else float(host_ts)
         self._append(KIND_LABEL, ts, NO_SOURCE, json.dumps({"label": label, **extra}).encode("utf-8"))
 
-    def tee(self, sources: Mapping[str, BroadcastStream]) -> dict[str, Iterator[tuple[float, Optional[bytes]]]]:
-        """The same streams, each round broadcast also written here. Heartbeats pass through unwritten."""
-        return {name: self._tee(name, stream) for name, stream in sources.items()}
+    def tee(self, sources: Mapping[str, BroadcastStream], *,
+            close_when_done: bool = False) -> dict[str, Iterator[tuple[float, Optional[bytes]]]]:
+        """The same streams, each round broadcast also written here. Heartbeats pass through unwritten.
 
-    def _tee(self, name: str, stream: BroadcastStream) -> Iterator[tuple[float, Optional[bytes]]]:
+        ``close_when_done`` closes the recording once every one of these streams has ended or been closed (the
+        dashboard closes its sources when it stops)."""
+        self._open_tees += len(sources)
+        return {name: self._tee(name, stream, close_when_done) for name, stream in sources.items()}
+
+    def _tee(self, name: str, stream: BroadcastStream, close_when_done: bool) -> Iterator[tuple[float, Optional[bytes]]]:
         try:
             for host_ts, data in stream:
                 if data is not None:
@@ -126,7 +132,17 @@ class RoundRecorder:
             close = getattr(stream, "close", None)
             if close:
                 close()
-            self.flush()
+            with self._lock:
+                self._open_tees -= 1
+                last = self._open_tees == 0
+            if close_when_done and last:
+                self.close()
+            else:
+                self.flush()
+
+    @property
+    def closed(self) -> bool:
+        return self._out is None
 
     def _append(self, kind: int, host_ts: float, source: int, body: bytes) -> None:
         if not math.isfinite(host_ts):
