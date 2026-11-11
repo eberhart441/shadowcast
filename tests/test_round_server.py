@@ -45,7 +45,7 @@ def test_the_server_reads_round_broadcast_sources_into_link_states():
     assert payload["status"]["room"]["state"] == "MOTION"
     assert payload["status"]["receivers"] == {"gateway": "finished"}
     assert payload["status"]["broadcasts"]["accepted"] == 8 * 17 * 20
-    assert payload["status"]["broadcasts"]["rejected"] == {}
+    assert sum(payload["status"]["broadcasts"]["rejected"].values()) == 0
     assert payload["status"]["uncalibrated_links"] == []      # auto mode: every link judges itself
 
 
@@ -59,7 +59,8 @@ def test_a_source_mixing_bad_bytes_keeps_running_and_counts_them():
         payload = get_state(server)
     finally:
         server.stop()
-    assert payload["status"]["broadcasts"]["rejected"] == {"short": 1}
+    assert payload["status"]["broadcasts"]["rejected"]["short"] == 1
+    assert sum(payload["status"]["broadcasts"]["rejected"].values()) == 1
     assert payload["status"]["broadcasts"]["accepted"] == len(good)
     assert payload["status"]["receivers"] == {"gateway": "finished"}
 
@@ -141,7 +142,7 @@ def test_cli_node_gateway_serves_the_gateways_round_broadcasts_in_auto_mode(monk
         server.stop()
     assert opened == ["COM7"]
     assert payload["status"]["broadcasts"]["accepted"] == len(broadcasts)
-    assert payload["status"]["broadcasts"]["rejected"] == {}
+    assert sum(payload["status"]["broadcasts"]["rejected"].values()) == 0
     assert len(payload["links"]) == 56
 
 
@@ -164,3 +165,28 @@ def test_cli_node_gateway_needs_a_room_with_transceivers():
     with pytest.raises(SystemExit) as err:
         cli.build_server(args)
     assert "transceiver" in str(err.value)
+
+
+def test_cli_node_gateway_records_the_real_rigs_round_broadcasts(monkeypatch, tmp_path):
+    from csi.gateway_records import encode_heard
+    from csi.round_recording import load_rounds
+
+    broadcasts = list(simulate_rounds(ROOM, duration_s=0.5, t0=T0))
+    fake_gateway_port(monkeypatch, b"".join(encode_heard(int((ts - T0) * 1e6), -50, data) for ts, data in broadcasts))
+    out = tmp_path / "rig.rounds"
+    args = cli.build_parser().parse_args(["--node-gateway", "COM7", "--room", str(TR8), "--http-port", "0",
+                                          "--record", str(out), "--label", "empty"])
+    cli.check_source(args)
+    server = cli.build_server(args)
+    server.start()
+    try:
+        for _ in range(200):
+            if get_state(server)["status"]["broadcasts"]["accepted"] >= len(broadcasts):
+                break
+            server.wait_finished(timeout=0.05)
+    finally:
+        server.stop()
+        args.recorder.close()
+    recording = load_rounds(out)
+    assert [b.data for b in recording.broadcasts] == [data for _, data in broadcasts]
+    assert {b.source for b in recording.broadcasts} == {"gateway"}

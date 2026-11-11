@@ -17,12 +17,12 @@ import itertools
 import time
 from dataclasses import dataclass
 from operator import itemgetter
-from typing import Callable, Iterator, Mapping, Optional, Sequence
+from typing import Callable, Iterable, Iterator, Mapping, Optional, Sequence
 
 import numpy as np
 
 from .broadcast import (FLAG_WARMING, FORMAT_VERSION, FRAME_ROUND, HEARD_WINDOW_ROUNDS, MAX_NODES, SINCE_MAX,
-                        LinkReport, RoundBroadcast, encode_broadcast, quantise_score)
+                        LinkReport, RoundBroadcast, decode_broadcast, encode_broadcast, quantise_score)
 from .links import LinkId
 from .parser import DEFAULT_HEADER, CSIPacket, CSIParser, parse_stream
 from .room import FALLOFF_SIGMA_M, Person, Room, link_responses, load_room
@@ -425,3 +425,38 @@ def _round_response(person: Optional[Person], t: float, a: np.ndarray, b: np.nda
     u = np.clip(np.einsum("ij,ij->i", p - a, ab) / np.maximum(np.einsum("ij,ij->i", ab, ab), 1e-12), 0.0, 1.0)
     d = np.linalg.norm(p - (a + u[:, None] * ab), axis=1)
     return np.exp(-d ** 2 / (2 * FALLOFF_SIGMA_M ** 2))
+
+
+def simulate_gateways(
+    room: Room,
+    person: Optional[Person] = None,
+    *,
+    hears: Mapping[str, Iterable[str]],
+    loss: Optional[Mapping[str, float]] = None,
+    seed: int = 0,
+    **kwargs,
+) -> dict[str, Iterator[tuple[float, bytes]]]:
+    """One (host time, round broadcast) stream per gateway of the simulated rig, for ``DashboardServer``'s sources.
+
+    ``hears`` maps a gateway name to the names of the nodes it hears; gateways may overlap, and a node heard by
+    two gateways reaches the host twice, as on a real rig. Every gateway sees the same rig (``simulate_rounds``
+    with these ``kwargs`` and ``seed``, so the copies are byte-identical) and adds its own latency, up to
+    ``GATEWAY_LATENCY_S``. ``loss`` maps a gateway name to the chance that it misses one round broadcast it would
+    hear (default 0).
+    """
+    names = {node.name for node in room.transceivers}
+    for gateway, heard in hears.items():
+        unknown = sorted(set(heard) - names)
+        if unknown:
+            raise ValueError(f"gateway {gateway} hears no such transceiver: {', '.join(unknown)}")
+    serials = {node.serial.upper(): node.name for node in room.transceivers}
+    return {gateway: _gateway_view(simulate_rounds(room, person, seed=seed, **kwargs), set(heard), serials,
+                                   (loss or {}).get(gateway, 0.0), np.random.default_rng([seed, k]))
+            for k, (gateway, heard) in enumerate(hears.items())}
+
+
+def _gateway_view(stream: Iterator[tuple[float, bytes]], heard: set[str], serials: Mapping[str, str], loss: float,
+                  rng: np.random.Generator) -> Iterator[tuple[float, bytes]]:
+    for host_ts, data in stream:
+        if serials.get(decode_broadcast(data).node_id.upper()) in heard and rng.random() >= loss:
+            yield host_ts + float(rng.uniform(0.0, GATEWAY_LATENCY_S)), data

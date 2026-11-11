@@ -1,4 +1,4 @@
-# 0023. One node image: runtime settings over USB, binary gateway records, HT20 MCS0 broadcasts
+# 0025. One node image: runtime settings over USB, binary gateway records, HT20 MCS0 broadcasts
 
 - **Status:** Accepted
 - **Date:** 2026-11-11

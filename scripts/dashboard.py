@@ -4,6 +4,8 @@
     dashboard.py --simulate-room                                   # a simulated person walks the room, no hardware
     dashboard.py --simulate --room config/room_tr8.json            # simulated transceiver rig: round broadcasts
     dashboard.py --node-gateway COM7 --room config/room_tr2.json   # real transceivers, heard by a gateway node
+    dashboard.py --simulate --room config/room_tr8.json --record run.rounds --label empty   # record it, labelled
+    dashboard.py --replay-rounds run.rounds --speed 8              # replay a round recording through the pipeline
     dashboard.py --simulate-room --http-port 8000 --host 0.0.0.0   # reachable from the network (opt-in)
     dashboard.py --port rx1=/dev/cu.usbmodem2101 --port rx2=/dev/cu.usbmodem101   # fixed: links UNCALIBRATED until set
     dashboard.py --auto-ports                                      # each receiver's port found by its serial (scripts/ports.py)
@@ -24,6 +26,8 @@ A replay needs no serial port; when it has finished, the final state stays up (s
 --simulate runs the transceiver pipeline: the room's transceivers send round broadcasts (docs/round-broadcast.md)
 and every link is judged by its own adaptive baseline (WARMUP for its first 10 s or so). --node-gateway runs the same
 pipeline on real transceivers (firmware/node), from the binary records of a gateway node (docs/gateway-record.md).
+--record writes every round broadcast and the labels to a round recording (docs/round-recording.md); while it
+runs, type a label (and optional key=value extras, e.g. "walking mark=A3") and Enter to switch label.
 """
 from __future__ import annotations
 
@@ -31,6 +35,7 @@ import argparse
 import math
 import signal
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Mapping, Optional
@@ -46,8 +51,10 @@ from csi.gateway_records import gateway_source  # noqa: E402
 from csi.rawlog import tee_sources  # noqa: E402
 from csi.ports import PortResolutionError, resolve_receiver_ports  # noqa: E402
 from csi.parser import Stream, serial_stream  # noqa: E402
-from csi.replay import ReplayError, ReplayServer, load_log, session_dashboard  # noqa: E402
+from csi.recording import LABELS, validate_label  # noqa: E402
+from csi.replay import ReplayError, ReplayServer, load_log, rounds_dashboard, session_dashboard  # noqa: E402
 from csi.room import DEFAULT_ROOM_PATH, Room, load_room  # noqa: E402
+from csi.round_recording import RoundRecorder  # noqa: E402
 from csi.server import DEFAULT_HOST, DEFAULT_PORT, DEFAULT_THRESHOLDS_FILE, DashboardServer, FrameServer, \
     controls_allowed, \
     default_walk, looping_room_streams, simulated_rig_streams, simulated_thresholds  # noqa: E402
@@ -77,6 +84,14 @@ def quiet_seconds(text: str) -> float:
     if not value >= 0 or math.isinf(value):
         raise argparse.ArgumentTypeError(f"seconds must be a number >= 0, got {text!r}")
     return value
+
+
+def label_arg(text: str) -> str:
+    """--label: one of the recording labels."""
+    try:
+        return validate_label(text)
+    except ValueError as e:
+        raise argparse.ArgumentTypeError(str(e))
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -111,6 +126,9 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--replay-session", type=Path, metavar="DIR",
                    help="feed a recorded session (scripts/record.py) through the live pipeline, paced by its "
                         "recorded host times; with one-link recordings the heatmap has one link")
+    r.add_argument("--replay-rounds", type=Path, metavar="run.rounds",
+                   help="feed a round recording (--record) through the live transceiver pipeline, paced by its "
+                        "recorded host times, every link in auto mode; the room is the one recorded with the run")
     r.add_argument("--speed", type=speed_arg, default=None, metavar="1|N|max",
                    help="replay speed: 1 is the original pace, N is N times faster, max as fast as possible "
                         "(default 1)")
@@ -120,6 +138,12 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--raw-log", type=Path, default=None, metavar="raw.tsv",
                     help="also append every CSI line the receivers deliver, with its host time, to this file "
                          "(host_ts, receiver, line; for exact offline replays: scripts/accuracy_eval.py)")
+    ap.add_argument("--record", type=Path, default=None, metavar="run.rounds",
+                    help="with --simulate or --node-gateway: also write every round broadcast, with its host time and source, and the "
+                         "labels to this round recording (replay it with --replay-rounds)")
+    ap.add_argument("--label", type=label_arg, default=None, metavar="LABEL",
+                    help=f"with --record: the label from the start ({', '.join(LABELS)}); type another label and "
+                         "Enter while it runs to switch")
     ap.add_argument("--log", type=Path, metavar="run.jsonl",
                     help="append the state stream to this file: a header line (room, thresholds, start time) and "
                          "then one payload per line, the same as /api/events")
@@ -155,13 +179,15 @@ def check_source(args: argparse.Namespace) -> None:
                                     ("--gateway", args.gateway is not None),
                                     ("--node-gateway", args.node_gateway is not None),
                                     ("--replay", args.replay is not None),
-                                    ("--replay-session", args.replay_session is not None)) if on]
+                                    ("--replay-session", args.replay_session is not None),
+                                    ("--replay-rounds", args.replay_rounds is not None)) if on]
     if len(chosen) > 1:
         raise SystemExit(f"error: use one source, not {' and '.join(chosen)}")
     if not chosen:
         raise SystemExit("error: pass a source: --simulate-room, --simulate, --port [NAME=]PATH (repeat for each receiver), "
-                         "--auto-ports, --gateway PATH, --node-gateway PATH, --replay run.jsonl or --replay-session DIR")
-    replaying = args.replay is not None or args.replay_session is not None
+                         "--auto-ports, --gateway PATH, --node-gateway PATH, --replay run.jsonl, --replay-session DIR or "
+                         "--replay-rounds run.rounds")
+    replaying = args.replay is not None or args.replay_session is not None or args.replay_rounds is not None
     if args.speed is not None and not replaying:
         raise SystemExit("error: --speed applies to --replay and --replay-session only")
     if args.sim_quiet_first and not (args.simulate_room or args.simulate):
@@ -172,7 +198,17 @@ def check_source(args: argparse.Namespace) -> None:
                          "own adaptive baseline")
     if rounds and args.raw_log is not None:
         raise SystemExit(f"error: --raw-log records CSI lines; {rounds} carries round broadcasts, which it cannot "
-                         "record")
+                         "record (--record does)")
+    if args.replay_rounds is not None and args.thresholds is not None:
+        raise SystemExit("error: --thresholds does not apply to --replay-rounds: every transceiver link is judged by "
+                         "its own adaptive baseline")
+    if args.replay_rounds is not None and args.raw_log is not None:
+        raise SystemExit("error: --raw-log records CSI lines; a round recording holds round broadcasts")
+    if args.record is not None and not rounds:
+        raise SystemExit("error: --record writes round broadcasts and applies to --simulate and --node-gateway only "
+                         "(--raw-log records CSI lines from receivers)")
+    if args.label is not None and args.record is None:
+        raise SystemExit("error: --label needs --record")
     if args.margin is not None and args.replay_session is None:
         raise SystemExit("error: --margin applies to --replay-session only")
     if args.replay is not None and args.log is not None:
@@ -216,11 +252,24 @@ def load_link_thresholds(path: Optional[Path]) -> Optional[Mapping[str, float]]:
 def server_mode(args: argparse.Namespace) -> str:
     """"fixed" by default; "auto" only with --auto-threshold (live sources).
 
-    Replays are always fixed (from the log, or a calibration on the session's first empty recording).
+    Replays are fixed (from the log, or a calibration on the session's first empty recording), except a round
+    recording: the transceiver pipeline is always auto, as --simulate.
     """
+    if args.replay_rounds is not None:
+        return "auto"
     if args.replay is not None or args.replay_session is not None:
         return "fixed"
     return "auto" if args.auto_threshold or args.simulate or args.node_gateway is not None else "fixed"
+
+
+def record_rounds(args: argparse.Namespace, room: Room, streams: dict, notes: str) -> dict:
+    """With --record: tee the round broadcast streams into a round recording (args.recorder). Else unchanged."""
+    if args.record is None:
+        return streams
+    args.recorder = RoundRecorder(args.record, room, list(streams), notes=notes)
+    if args.label is not None:
+        args.recorder.label(args.label)
+    return args.recorder.tee(streams, close_when_done=True)
 
 
 def build_sources(args: argparse.Namespace, room: Room) -> tuple[dict[str, Stream], Optional[Mapping[str, float]]]:
@@ -231,12 +280,14 @@ def build_sources(args: argparse.Namespace, room: Room) -> tuple[dict[str, Strea
         if len(room.transceivers) < 2:
             raise SystemExit(f"error: --simulate needs a room with at least two transceivers; {args.room} has "
                              f"{len(room.transceivers)} (try --room config/room_tr8.json)")
-        return simulated_rig_streams(room, seed=args.seed, quiet_first_s=args.sim_quiet_first), None
+        streams = simulated_rig_streams(room, seed=args.seed, quiet_first_s=args.sim_quiet_first)
+        return record_rounds(args, room, streams, "dashboard.py --simulate"), None
     if args.node_gateway is not None:
         if len(room.transceivers) < 2:
             raise SystemExit(f"error: --node-gateway needs a room with at least two transceivers; {args.room} has "
                              f"{len(room.transceivers)} (try --room config/room_tr2.json)")
-        return {"gateway": gateway_source(args.node_gateway, args.baud)}, None
+        streams = {"gateway": gateway_source(args.node_gateway, args.baud)}
+        return record_rounds(args, room, streams, f"dashboard.py --node-gateway {args.node_gateway}"), None
     if args.simulate_room:
         thresholds = None
         if fixed:
@@ -258,11 +309,16 @@ def build_sources(args: argparse.Namespace, room: Room) -> tuple[dict[str, Strea
 
 
 def build_server(args: argparse.Namespace) -> FrameServer:
-    """The server for the chosen source, not yet started. Raises ReplayError for unusable replay inputs."""
+    """The server for the chosen source, not yet started. Raises ReplayError for unusable replay inputs.
+
+    With --record, ``args.recorder`` is set to the RoundRecorder (None otherwise); it closes when the server stops."""
     speed = 1.0 if args.speed is None else args.speed
     page = args.page  # None: the server's default, web/index.html
     if args.replay is not None:
         return ReplayServer(load_log(args.replay), speed=speed, host=args.host, port=args.http_port, web_index=page)
+    if args.replay_rounds is not None:
+        return rounds_dashboard(args.replay_rounds, speed=speed, host=args.host, port=args.http_port, log=args.log,
+                                web_index=page)
     room = load_room(args.room)
     if args.replay_session is not None:
         thresholds = load_link_thresholds(args.thresholds)
@@ -274,6 +330,7 @@ def build_server(args: argparse.Namespace) -> FrameServer:
         if page is not None:
             server._web_index = page  # session_dashboard takes no web_index; the page is read on each GET /
         return server
+    args.recorder = None
     sources, thresholds = build_sources(args, room)
     if args.simulate:
         source = "simulate (transceiver rig)"
@@ -297,6 +354,29 @@ def build_server(args: argparse.Namespace) -> FrameServer:
                            log_meta={"source": source, "thresholds_source": thresholds_source}, web_index=page)
 
 
+def read_labels(lines, recorder: RoundRecorder) -> None:
+    """--record: each line is a label, optionally followed by key=value extras ("walking mark=A3"), in force from
+    now. A bad line is reported and skipped; blank lines are ignored."""
+    for line in lines:
+        words = line.split()
+        if not words:
+            continue
+        extra = dict(word.split("=", 1) for word in words[1:] if "=" in word)
+        try:
+            recorder.label(words[0], **extra)
+        except ValueError as e:
+            print(f"label not recorded: {e}", flush=True)
+            continue
+        print(f"label {words[0]} from now" + "".join(f" {k}={v}" for k, v in extra.items()), flush=True)
+
+
+def _label_reader(recorder: RoundRecorder) -> None:
+    try:
+        read_labels(sys.stdin, recorder)
+    except (OSError, ValueError):  # stdin closed or not readable: labels just stop
+        pass
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     args = build_parser().parse_args(argv)
     check_source(args)
@@ -310,7 +390,13 @@ def main(argv: Optional[list[str]] = None) -> int:
         raise SystemExit(f"error: {e}")
     previous_sigterm = signal.signal(signal.SIGTERM, _stop_on_sigterm)
     print(f"dashboard at {server.url}  (listening on {server.address[0]})  Ctrl+C to stop", flush=True)
-    if not controls_allowed(args.host, args.allow_control) and not args.replay and not args.replay_session:
+    recorder = getattr(args, "recorder", None)
+    if recorder is not None:
+        print(f"recording round broadcasts to {recorder.path}; type a label ({', '.join(LABELS)}) and Enter to "
+              "switch", flush=True)
+        threading.Thread(target=_label_reader, args=(recorder,), name="record-labels", daemon=True).start()
+    replaying = args.replay or args.replay_session or args.replay_rounds
+    if not controls_allowed(args.host, args.allow_control) and not replaying:
         print("commands disabled: not bound to localhost (calibrate and tuning need --allow-control)", flush=True)
     if server_mode(args) == "auto":
         print("auto mode (--auto-threshold, experimental): each link learns its own baseline "
@@ -330,6 +416,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     finally:
         signal.signal(signal.SIGTERM, previous_sigterm)
         server.stop()
+        if recorder is not None:
+            recorder.close()
     print("stopped", flush=True)
     return 0
 

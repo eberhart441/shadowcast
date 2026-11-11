@@ -40,6 +40,7 @@ FLAG_WARMING = 0x01              # the receiving node's per-link score is still 
 FLAG_POSSIBLE_MOVE = 0x02        # the receiving node suspects a node moved (its baseline shifted)
 FLAG_RAW_MODE = 0x04             # raw mode is active on this link
 FLAGS_KNOWN = FLAG_WARMING | FLAG_POSSIBLE_MOVE | FLAG_RAW_MODE
+DECODE_REASONS = ("short", "version", "frame_type", "length", "membership")   # every BroadcastError.reason
 
 
 

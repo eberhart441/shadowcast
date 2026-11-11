@@ -295,6 +295,8 @@ static csi_layout_t s_layout;
 static int64_t s_armed_at;
 static volatile uint16_t s_armed_round;
 static bool s_armed;
+static bool s_sent_any;
+static uint16_t s_last_sent_round;
 static uint32_t s_gain_frames;
 
 /* Wi-Fi task: copy and queue, nothing else. */
@@ -345,6 +347,11 @@ static void arm_next_slot(bool force)
     int64_t now = esp_timer_get_time();
     uint16_t round;
     int64_t at = fixed_round_next_tx(&s_round, now + 200, &round);
+    if (s_sent_any && round == s_last_sent_round) {
+        /* After a phase jump the next slot can carry the round just sent; the host drops a second broadcast with
+         * the same round number as a duplicate (docs/round-broadcast.md), so take the slot after it. */
+        at = fixed_round_next_tx(&s_round, at, &round);
+    }
     if (!force && s_armed && llabs(at - s_armed_at) < REARM_TOLERANCE_US) {
         return;
     }
@@ -370,6 +377,8 @@ static void send_round_broadcast(uint16_t round)
     memset(b.tag, 0, RB_TAG_BYTES);
     b.n_reports = link_table_close_round(&s_links, b.membership, s_settings.index, b.reports);
     size_t n = rb_encode(&b, bytes, sizeof bytes);
+    s_sent_any = true;
+    s_last_sent_round = round;
     if (n && esp_now_send(BROADCAST_MAC, bytes, n) == ESP_OK) {
         count(GR_COUNT_SENT);
     } else {

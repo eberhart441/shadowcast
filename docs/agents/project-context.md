@@ -35,7 +35,7 @@ sender boards (ESP-NOW, ch 6, 40 Hz)
       -> csi/server.py  (HTTP: page, /api/state, SSE /api/events, commands)  -> web/index.html
 ```
 
-The seam that matters most: every source, serial, simulated, replayed or recorded, is a stream of `(host_ts, line)`. Anything that produces that stream plugs in without touching the pipeline, which is how a future UDP receiver would. The transceiver pipeline of spec #2 has its own seam, `(host time, round broadcast bytes)` ([ADR-0022](../adr/0022-host-time-round-broadcast-seam.md), format in [`docs/round-broadcast.md`](../round-broadcast.md)); `python scripts/dashboard.py --simulate --room config/room_tr8.json` runs it with no hardware. The README's "How it works" and `docs/architecture.md` give each stage; read them before changing one.
+The seam that matters most: every source, serial, simulated, replayed or recorded, is a stream of `(host_ts, line)`. Anything that produces that stream plugs in without touching the pipeline, which is how a future UDP receiver would. The transceiver pipeline of spec #2 has its own seam, `(host time, round broadcast bytes)` ([ADR-0022](../adr/0022-host-time-round-broadcast-seam.md), format in [`docs/round-broadcast.md`](../round-broadcast.md)); `python scripts/dashboard.py --simulate --room config/room_tr8.json` runs it with no hardware; `--record run.rounds` writes a labelled round recording of it ([`docs/round-recording.md`](../round-recording.md)) and `--replay-rounds run.rounds` replays one. The README's "How it works" and `docs/architecture.md` give each stage; read them before changing one.
 
 Where to start, by task:
 

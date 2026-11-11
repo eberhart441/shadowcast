@@ -213,6 +213,12 @@ class GatewaySource:
         """{"records": {type: n}, "rejected": {reason: n}, "skipped_bytes": n}."""
         return self._reader.counts()
 
+    def close(self) -> None:
+        """Close the chunk source (a serial port's reader releases the port). MultiSource calls this on stop."""
+        close = getattr(self._chunks, "close", None)
+        if close:
+            close()
+
 
 def gateway_source(port: str, baud: int = 921600) -> GatewaySource:
     """The gateway on serial ``port`` as a transceiver source. The port opens on first read."""

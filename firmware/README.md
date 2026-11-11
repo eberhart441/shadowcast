@@ -9,7 +9,7 @@ the hackathon rig.
 
 ## Node image (transceiver rig)
 
-`node/` is one image for every board of the transceiver rig, ESP32-C5 only ([ADR-0023](../docs/adr/0023-one-node-image-runtime-settings-gateway-records.md)).
+`node/` is one image for every board of the transceiver rig, ESP32-C5 only ([ADR-0025](../docs/adr/0025-one-node-image-runtime-settings-gateway-records.md)).
 There are no build flags and no per-board build directories: what a board does is its node settings, set over USB
 after flashing.
 

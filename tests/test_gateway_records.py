@@ -138,3 +138,22 @@ def test_a_simulated_rig_through_the_gateway_reaches_the_same_payload_as_direct(
     assert a["status"]["broadcasts"] == b["status"]["broadcasts"]
     assert b["status"]["broadcasts"]["accepted"] == len(direct)
     assert {r["id"]: r["state"] for r in a["links"]} == {r["id"]: r["state"] for r in b["links"]}
+
+
+def test_closing_the_source_closes_the_port():
+    # MultiSource and the round recorder release a port by calling the stream's close().
+    closed = []
+
+    def chunks():
+        try:
+            while True:
+                yield 1.0, None
+        finally:
+            closed.append(True)
+
+    gen = chunks()
+    source = GatewaySource(gen)
+    it = iter(source)
+    next(it)
+    source.close()
+    assert closed == [True]
