@@ -86,8 +86,9 @@ typedef enum {
     OTA_ACT_REPORT,       /* store a report job and restart into maintenance mode */
 } ota_action_t;
 
-/* True when a maintenance network on ap_channel cannot overlap a 20 MHz sensing channel: 5 GHz (36..177), or a
- * 2.4 GHz channel at least 5 away. 0 (scan) is allowed here; the channel found must pass again. */
+/* True when a maintenance network on ap_channel cannot overlap a 20 MHz sensing channel. Sensing on 2.4 GHz: 5 GHz
+ * (36..177), or a 2.4 GHz channel at least 5 away. Sensing on 5 GHz: 2.4 GHz, or a 5 GHz channel in another 80 MHz
+ * block. 0 (scan) is allowed here; the channel found must pass again. */
 bool ota_channels_clear(uint8_t sensing_channel, uint8_t ap_channel);
 
 /* What a node does with a command that verified. `last_issued`: the newest command it ran (0: none);

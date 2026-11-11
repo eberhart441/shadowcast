@@ -173,6 +173,10 @@ static void check_actions(void)
     CHECK(!ota_channels_clear(6, 6) && !ota_channels_clear(6, 2) && !ota_channels_clear(6, 10)
               && !ota_channels_clear(13, 14), "an overlapping 2.4 GHz network is allowed");
     CHECK(ota_channels_clear(6, 0), "channel 0 (scan for the network) is refused before the scan");
+    CHECK(ota_channels_clear(36, 6) && ota_channels_clear(36, 52) && ota_channels_clear(36, 149)
+              && ota_channels_clear(149, 36), "sensing on 5 GHz: 2.4 GHz or another 80 MHz block of 5 GHz is clear");
+    CHECK(!ota_channels_clear(36, 36) && !ota_channels_clear(36, 48) && !ota_channels_clear(165, 177)
+              && !ota_channels_clear(100, 112), "sensing on 5 GHz: the same 80 MHz block is not");
     CHECK(!ota_channels_clear(6, 15) && !ota_channels_clear(6, 35) && !ota_channels_clear(6, 178),
           "a channel that does not exist is allowed");
     ota_command_t near = command(OTA_CMD_UPDATE, 1000, 8);

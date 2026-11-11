@@ -40,6 +40,22 @@ int main(void)
     CHECK(memcmp(&s, &before, sizeof s) == 0, "a refused set changes nothing, not even the good values");
     CHECK(strncmp(reply, "error ", 6) == 0 && strstr(reply, "channel"), "the error names the setting: %s", reply);
 
+    /* 5 GHz is a configuration choice (spec #2): the 20 MHz channels the ESP32-C5 supports, nothing between them */
+    static const uint8_t five_ghz[] = {36, 40, 48, 52, 64, 100, 120, 144, 149, 161, 165, 177};
+    for (size_t k = 0; k < sizeof five_ghz; k++) {
+        char line[32];
+        snprintf(line, sizeof line, "set channel=%u", five_ghz[k]);
+        node_settings_t t = s;
+        CHECK(run(&t, line, reply) == NODE_CMD_SAVE_AND_RESTART && t.channel == five_ghz[k], "5 GHz channel %u: %s",
+              five_ghz[k], reply);
+        CHECK(node_channel_is_5ghz(five_ghz[k]), "channel %u is 5 GHz", five_ghz[k]);
+    }
+    static const uint8_t not_channels[] = {0, 14, 35, 37, 66, 96, 146, 150, 178, 255};
+    for (size_t k = 0; k < sizeof not_channels; k++) {
+        CHECK(!node_channel_valid(not_channels[k]), "channel %u is refused", not_channels[k]);
+    }
+    CHECK(node_channel_valid(1) && node_channel_valid(13) && !node_channel_is_5ghz(6), "2.4 GHz stays the default band");
+
     CHECK(run(&s, "set index=2", reply) == NODE_CMD_ERROR && strstr(reply, "index") && strstr(reply, "scheduler"),
           "the node index is no longer a setting: %s", reply);
     CHECK(run(&s, "set nodes=8", reply) == NODE_CMD_ERROR, "nor is the member count");

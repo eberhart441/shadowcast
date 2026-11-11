@@ -289,7 +289,9 @@ static void wifi_start(uint8_t channel)
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
     ESP_ERROR_CHECK(esp_wifi_start());
-    ESP_ERROR_CHECK(esp_wifi_set_band_mode(WIFI_BAND_MODE_2G_ONLY));
+    /* the band follows from the kit's channel (node_settings.h): 2.4 GHz by default, 5 GHz when configured */
+    ESP_ERROR_CHECK(esp_wifi_set_band_mode(node_channel_is_5ghz(channel) ? WIFI_BAND_MODE_5G_ONLY
+                                                                         : WIFI_BAND_MODE_2G_ONLY));
     wifi_protocols_t protocols = {.ghz_2g = WIFI_PROTOCOL_11N, .ghz_5g = WIFI_PROTOCOL_11N};
     ESP_ERROR_CHECK(esp_wifi_set_protocols(WIFI_IF_STA, &protocols));
     wifi_bandwidths_t bandwidths = {.ghz_2g = WIFI_BW20, .ghz_5g = WIFI_BW20};   /* HT20, not the hackathon's HT40 */

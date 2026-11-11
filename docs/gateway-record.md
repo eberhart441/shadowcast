@@ -47,7 +47,7 @@ one place, and counts what it rejects (ADR-0022).
 | 6 | 8 | uptime | Device time in µs, u64. |
 | 14 | 1 | reset reason | `esp_reset_reason()` of the last boot (1 power-on, 3 software, 4 panic, 7 task watchdog, ...). |
 | 15 | 1 | role | `0` transceiver, `1` gateway. |
-| 16 | 1 | channel | The 2.4 GHz channel the node is on. |
+| 16 | 1 | channel | The channel the node is on (2.4 GHz 1 to 13, or 5 GHz 36 and up). |
 | 17 | 1 | reserved | 0. |
 | 18 | 4 × *k* | counters | u32 each, counted since boot (never reset), in this order; a reader ignores counters past the ones it knows. |
 

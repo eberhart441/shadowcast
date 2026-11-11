@@ -11,7 +11,8 @@
     node.py PORT key                                     # the node's kit key check value, or "none"
 
 Every board runs the same image; what it does is these settings, kept in the node's flash. Settings: role
-(transceiver or gateway), channel (2.4 GHz, 1 to 13), round_hz (rounds per second), guard_us (the slot guard, 50 to
+(transceiver or gateway), channel (2.4 GHz 1 to 13, default 6, or a 20 MHz 5 GHz channel such as 36 or 149:
+the band follows from it), round_hz (rounds per second), guard_us (the slot guard, 50 to
 5000 us). A transceiver needs none of them: with the defaults it joins the round on its own (the round scheduler
 gives it a node index and a slot; there is no index or member count to set).
 

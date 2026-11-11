@@ -151,10 +151,25 @@ const char *ota_status_name(ota_status_t st)
 
 /* ---------------------------------------------------------------- what a node does with a command */
 
+/* The 80 MHz block a 5 GHz channel lies in (36-48, 52-64, 100-112, ...; 149-161, 165-177): an access point may use
+ * all of it. */
+static int block_80mhz(uint8_t channel)
+{
+    return channel >= 149 ? 100 + (channel - 149) / 16 : (channel - 36) / 16;
+}
+
 bool ota_channels_clear(uint8_t sensing_channel, uint8_t ap_channel)
 {
-    if (ap_channel == 0 || (ap_channel >= 36 && ap_channel <= 177)) {
-        return true;   /* scan (checked again on the channel found), or 5 GHz */
+    bool ap_5ghz = ap_channel >= 36 && ap_channel <= 177;
+    if (ap_channel == 0) {
+        return true;   /* scan (checked again on the channel found) */
+    }
+    if (sensing_channel >= 36) {   /* sensing on 5 GHz: 2.4 GHz, or another 80 MHz block */
+        return (ap_channel >= 1 && ap_channel <= 14)
+               || (ap_5ghz && block_80mhz(ap_channel) != block_80mhz(sensing_channel));
+    }
+    if (ap_5ghz) {
+        return true;
     }
     if (ap_channel > 14) {
         return false;

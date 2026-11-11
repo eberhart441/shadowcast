@@ -55,7 +55,10 @@ def test_the_host_will_not_build_a_command_a_node_would_refuse():
 
 
 @pytest.mark.parametrize("sensing,ap,clear", [(6, 36, True), (6, 1, True), (6, 11, True), (6, 2, False),
-                                              (6, 6, False), (1, 5, False), (6, 0, True), (6, 20, False)])
+                                              (6, 6, False), (1, 5, False), (6, 0, True), (6, 20, False),
+                                              # sensing on 5 GHz: 2.4 GHz or another 80 MHz block is clear
+                                              (36, 6, True), (36, 52, True), (149, 36, True), (36, 36, False),
+                                              (36, 48, False), (165, 177, False), (100, 112, False)])
 def test_a_maintenance_network_must_not_overlap_the_sensing_channel(sensing, ap, clear):
     assert ota.channels_clear(sensing, ap) is clear
 

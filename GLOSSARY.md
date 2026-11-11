@@ -114,7 +114,7 @@ One framed binary record on a node's USB port: heard (receive time, RSSI, a roun
 _See_: `csi/gateway_records.py`, `firmware/core/gateway_record.h`, [ADR-0026](docs/adr/0026-one-node-image-runtime-settings-gateway-records.md)
 
 **Node settings**:
-What differs between boards running the one node image: role (transceiver or gateway), channel, round rate and slot guard. Kept in the node's flash and set over USB with `scripts/node.py`, never by a build flag. A transceiver needs none of them (the defaults join any round on channel 6); the node index is not a setting but given out by the round scheduler.
+What differs between boards running the one node image: role (transceiver or gateway), channel, round rate and slot guard. Kept in the node's flash and set over USB with `scripts/node.py`, never by a build flag. A transceiver needs none of them (the defaults join any round on channel 6, 2.4 GHz); the channel may also be a 20 MHz 5 GHz channel, and the band follows from it; the node index is not a setting but given out by the round scheduler.
 _Avoid_: build flags, SENDER_ID (for these nodes)
 _See_: `firmware/core/node_settings.h`, `scripts/node.py`
 
