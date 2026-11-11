@@ -163,6 +163,19 @@
   .tune-row { display: grid; grid-template-columns: 110px 1fr 56px; gap: 8px; align-items: center; margin: 8px 0; }
   .tune-row output { font-variant-numeric: tabular-nums; text-align: right; }
 
+  .coverage {
+    padding: 12px 16px; background: #3a1716; border-bottom: 2px solid var(--motion); color: #ffd7d3;
+  }
+  .coverage strong { font-size: 1.15rem; letter-spacing: 0.06em; color: #fff; }
+  .coverage ul { margin: 4px 0; padding-left: 20px; }
+  .coverage p { margin: 0; }
+  .side { display: grid; gap: 16px; min-width: 0; }
+  .ntable { width: 100%; border-collapse: collapse; font-size: 0.92rem; }
+  .ntable th, .ntable td { text-align: left; padding: 3px 6px; border-bottom: 1px solid var(--line); }
+  .ntable th { color: var(--muted); font-weight: 650; font-size: 0.78rem; text-transform: uppercase; }
+  .ntable tr.missing td { color: #ffb4ae; background: #3a1716; }
+  #matrix { display: block; width: 100%; cursor: pointer; }
+
   @media (max-width: 820px) {
     main.layout { grid-template-columns: 1fr; padding: 12px; gap: 12px; }
     header.top { padding: 10px 12px; }
@@ -191,6 +204,12 @@
   <div class="group"><span class="label">Messages</span><ul class="msgs" id="messages"><li class="muted">none</li></ul></div>
 </section>
 
+<section class="coverage" id="coverage" role="alert" hidden>
+  <strong>COVERAGE DEGRADED</strong>
+  <ul id="coverage-reasons"></ul>
+  <p>The rig cannot see the whole room: no motion here does not mean nobody is there.</p>
+</section>
+
 <main class="layout">
   <section class="card" id="map-card">
     <h2>Room</h2>
@@ -207,10 +226,29 @@
     </div>
   </section>
 
+  <div class="side">
+  <section class="card" id="nodes-card" aria-labelledby="nodes-title" hidden>
+    <h2 id="nodes-title">Nodes</h2>
+    <table class="ntable">
+      <thead><tr><th>Node</th><th>State</th><th>Heard by</th><th>Hears</th><th>Last heard</th><th>Link rate</th>
+        <th>Slot lateness</th></tr></thead>
+      <tbody id="node-rows"></tbody>
+    </table>
+    <p class="muted" id="link-agg"></p>
+  </section>
+
+  <section class="card" id="matrix-card" aria-labelledby="matrix-title" hidden>
+    <h2 id="matrix-title">Links by node pair</h2>
+    <canvas id="matrix" role="img" aria-label="link states: one cell per link, receiving node by row, transmitting node by column"></canvas>
+    <p class="muted">Row: receiving node. Column: transmitting node. Click a cell for that link.</p>
+    <div id="link-detail"><p class="muted">no link selected</p></div>
+  </section>
+
   <section class="card" id="links-card" aria-labelledby="links-title">
     <h2 id="links-title">Links</h2>
     <div id="links"><p class="muted">waiting for data</p></div>
   </section>
+  </div>
 </main>
 
 <section class="controls" id="controls" aria-label="Controls">
@@ -307,7 +345,9 @@
     connDot: $("conn-dot"), connText: $("conn-text"), pause: $("pause"), pausedFlag: $("paused-flag"),
     receivers: $("receivers"), counts: $("link-counts"), calib: $("calib"), packet: $("pkt-time"),
     messages: $("messages"), map: $("map"), mapCard: $("map-card"), links: $("links"),
-    caption: $("map-caption")
+    caption: $("map-caption"), linksCard: $("links-card"), nodesCard: $("nodes-card"), nodeRows: $("node-rows"),
+    linkAgg: $("link-agg"), matrixCard: $("matrix-card"), matrix: $("matrix"), detail: $("link-detail"),
+    coverage: $("coverage"), coverageReasons: $("coverage-reasons")
   };
   var ctx = els.map.getContext("2d");
   var heatCanvas = document.createElement("canvas");
@@ -325,6 +365,12 @@
   var history = {};             // link id -> [[packet time, normalised or null], ...] for the last WINDOW_S
   var lastTime = null;
   var rows = {};                // link id -> DOM row, built once and updated per payload
+  var nodeRows = {};            // node name -> its row in the node health table
+  var matrixView = null;        // layout of the link matrix on screen, for clicks
+  var selected = null;          // id of the link whose detail is shown, or null
+  var detail = null;            // the newest GET /api/link row of the selected link
+  var detailCard = null;        // its card (makeRow), rebuilt when another link is selected
+  var detailBusy = false;       // a detail request is in flight
 
   // ------------------------------------------------------------------ connection and data
 
@@ -338,19 +384,26 @@
     var t = p.status.time_s;
     if (lastTime !== null && t < lastTime - 1) history = {};   // a new server run: start the sparklines again
     lastTime = t;
-    p.links.forEach(function (row) {
-      var list = history[row.id] || (history[row.id] = []);
-      list.push([t, row.normalised]);
-      while (list.length && list[0][0] < t - WINDOW_S) list.shift();
-    });
+    (p.links || []).forEach(function (row) { pushHistory(row, t); });
   }
 
+  function pushHistory(row, t) {
+    var list = history[row.id] || (history[row.id] = []);
+    if (list.length && list[list.length - 1][0] >= t) return;
+    list.push([t, row.normalised]);
+    while (list.length && list[0][0] < t - WINDOW_S) list.shift();
+  }
+
+  // a transceiver rig (spec #2): per-node health and the link matrix instead of one card per link
+  function isNodeRig(p) { return !!(p.link_matrix && p.link_matrix.nodes && p.link_matrix.nodes.length); }
+  function linkCount(p) { return p.links ? p.links.length : (p.link_health ? p.link_health.links : 0); }
+
   function ingest(p) {
-    if (!p || !p.status || !p.links) return;
+    if (!p || !p.status || !(p.links || p.link_matrix)) return;
     recordHistory(p);
     latest = p;
     // the count follows the payload, so a room with more links reads right
-    els.caption.textContent = "Rough motion-likelihood estimate from " + p.links.length +
+    els.caption.textContent = "Rough motion-likelihood estimate from " + linkCount(p) +
       " links, not a position track.";
     // A finished run must not reconnect: the server would replay the run from its log.
     if (p.status.finished) {
@@ -579,10 +632,14 @@
     ctx.fillText("metres: x across, y down", g.rx0 + g.rw / 2, Y(room.depth_m) + 26);
     ctx.restore();
 
-    // links: colour by state, width and opacity by normalised score
+    // links: colour by state, width and opacity by normalised score. A transceiver rig has up to 870: only
+    // its MOTION links are drawn, from the link matrix.
     var nodes = {};
     p.nodes.forEach(function (n) { nodes[n.name] = n; });
-    p.links.forEach(function (row) {
+    var health = {};
+    (p.node_health || []).forEach(function (h) { health[h.name] = h; });
+    if (isNodeRig(p)) drawMotionLinks(p, nodes, X, Y);
+    (isNodeRig(p) ? [] : p.links || []).forEach(function (row) {
       var rx = nodes[row.receiver], tx = nodes[row.sender];
       if (!rx || !tx) return;
       var colour = COLOR[row.state] || COLOR.NO_SIGNAL;
@@ -629,7 +686,7 @@
         ctx.fillRect(x - 7, y - 7, 14, 14);
         ctx.strokeRect(x - 7, y - 7, 14, 14);
       } else {
-        ctx.fillStyle = "#58a6ff";
+        ctx.fillStyle = health[n.name] && health[n.name].state === "missing" ? COLOR.NO_SIGNAL : "#58a6ff";
         ctx.beginPath();
         ctx.arc(x, y, 8, 0, 2 * Math.PI);
         ctx.fill();
@@ -642,6 +699,9 @@
         { text: n.chip, font: TICK_FONT, colour: "#9aa7b4" }
       ];
       if (outside) lines.push({ text: "outside room", font: TICK_FONT, colour: "#e3a008" });
+      if (health[n.name] && health[n.name].state === "missing") {
+        lines.push({ text: "missing", font: TICK_FONT, colour: "#ffb4ae" });
+      }
       labelBlock(lines, x + side.dx, y + side.dy, side.hAlign, side.vAlign);
     });
 
@@ -659,6 +719,26 @@
       ctx.stroke();
       ctx.restore();
     }
+  }
+
+  function drawMotionLinks(p, nodes, X, Y) {
+    var m = p.link_matrix;
+    m.states.forEach(function (line, r) {
+      for (var t = 0; t < line.length; t++) {
+        if (line.charAt(t) !== "M") continue;
+        var rx = nodes[m.nodes[r]], tx = nodes[m.nodes[t]];
+        if (!rx || !tx) continue;
+        ctx.save();
+        ctx.strokeStyle = COLOR.MOTION;
+        ctx.globalAlpha = 0.6;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(X(rx.x), Y(rx.y));
+        ctx.lineTo(X(tx.x), Y(tx.y));
+        ctx.stroke();
+        ctx.restore();
+      }
+    });
   }
 
   function drawWaiting() {
@@ -790,6 +870,156 @@
     Object.keys(rows).forEach(function (id) { if (!seen[id]) delete rows[id]; });
     if (!p.links.length) els.links.appendChild(el("p", "muted", "no links"));
   }
+
+  // ------------------------------------------------------------------ transceiver rig: nodes, matrix, detail
+
+  function renderCoverage(p) {
+    var cov = p.coverage;
+    var degraded = !!cov && cov.state === "degraded";
+    els.coverage.hidden = !degraded;
+    clearChildren(els.coverageReasons);
+    if (degraded) cov.reasons.forEach(function (r) { els.coverageReasons.appendChild(el("li", null, r)); });
+  }
+
+  function ago(s) { return s == null ? "never" : fmt(s, 1) + " s ago"; }
+  function lateness(v) { return typeof v === "number" ? fmt(v, 0) + " Âµs" : String(v == null ? "-" : v); }
+
+  function renderNodes(p) {
+    var seen = {};
+    (p.node_health || []).forEach(function (h) {
+      var r = nodeRows[h.name];
+      if (!r) {
+        var tr = el("tr");
+        var cells = [];
+        for (var i = 0; i < 7; i++) cells.push(tr.appendChild(el("td")));
+        r = nodeRows[h.name] = { tr: tr, cells: cells };
+        els.nodeRows.appendChild(tr);
+      }
+      seen[h.name] = true;
+      r.tr.className = h.state;
+      var text = [h.name, h.state, h.heard_by + " of " + h.peers, h.hears + " of " + h.peers, ago(h.last_heard_s),
+                  fmt(h.link_rate_hz, 1) + " Hz", lateness(h.slot_lateness)];
+      text.forEach(function (t, i) { if (r.cells[i].textContent !== t) r.cells[i].textContent = t; });
+    });
+    Object.keys(nodeRows).forEach(function (name) {
+      if (!seen[name]) { els.nodeRows.removeChild(nodeRows[name].tr); delete nodeRows[name]; }
+    });
+    var agg = p.link_health || {}, rate = agg.rate_hz || {};
+    els.linkAgg.textContent = (agg.heard || 0) + " of " + (agg.links || 0) + " links heard, " + (agg.silent || 0) +
+      " silent; packet rate " + fmt(rate.min, 1) + " / " + fmt(rate.median, 1) + " / " + fmt(rate.max, 1) +
+      " Hz (min / median / max)";
+  }
+
+  // ---- matrix: pure (tested with node) begin
+  // The link matrix canvas: n x n cells after a left and top margin for the node labels; row r is the receiving
+  // node, column t the transmitting node.
+  var MATRIX_LABEL_PX = 34;
+  function matrixLayout(n, width) {
+    var cell = Math.max(4, Math.floor((width - MATRIX_LABEL_PX - 2) / Math.max(1, n)));
+    return { n: n, cell: cell, left: MATRIX_LABEL_PX, top: MATRIX_LABEL_PX, size: MATRIX_LABEL_PX + cell * n + 2 };
+  }
+  function matrixCellAt(x, y, layout) {
+    var t = Math.floor((x - layout.left) / layout.cell), r = Math.floor((y - layout.top) / layout.cell);
+    if (x < layout.left || y < layout.top || r >= layout.n || t >= layout.n) return null;
+    return { r: r, t: t };
+  }
+  function matrixCellCentre(layout, r, t) {
+    return { x: layout.left + (t + 0.5) * layout.cell, y: layout.top + (r + 0.5) * layout.cell };
+  }
+  // ---- matrix: pure (tested with node) end
+
+  var CODE_COLOR = { E: COLOR.EMPTY, M: COLOR.MOTION, W: COLOR.WARMUP, U: COLOR.UNCALIBRATED, N: COLOR.NO_SIGNAL };
+
+  function renderMatrix(p) {
+    var m = p.link_matrix, n = m.nodes.length;
+    var dpr = window.devicePixelRatio || 1;
+    var g = matrixLayout(n, els.matrix.clientWidth || 300);
+    matrixView = g;
+    els.matrix.style.height = g.size + "px";
+    els.matrix.width = Math.round(g.size * dpr);
+    els.matrix.height = Math.round(g.size * dpr);
+    var c = els.matrix.getContext("2d");
+    c.setTransform(dpr, 0, 0, dpr, 0, 0);
+    c.clearRect(0, 0, g.size, g.size);
+    m.states.forEach(function (line, r) {
+      for (var t = 0; t < line.length; t++) {
+        var code = line.charAt(t);
+        c.fillStyle = code === "-" ? "#070a0f" : CODE_COLOR[code] || COLOR.NO_SIGNAL;
+        c.fillRect(g.left + t * g.cell, g.top + r * g.cell, g.cell - 1, g.cell - 1);
+      }
+    });
+    c.fillStyle = "#9aa7b4";
+    c.font = TICK_FONT;
+    var step = g.cell >= 14 ? 1 : Math.ceil(14 / g.cell);
+    for (var k = 0; k < n; k += step) {
+      c.textAlign = "right"; c.textBaseline = "middle";
+      c.fillText(m.nodes[k], g.left - 4, g.top + (k + 0.5) * g.cell);
+      c.save();
+      c.translate(g.left + (k + 0.5) * g.cell, g.top - 4);
+      c.rotate(-Math.PI / 2);
+      c.textAlign = "left";
+      c.fillText(m.nodes[k], 0, 0);
+      c.restore();
+    }
+    if (selected) {
+      var at = m.nodes.indexOf(selected.split("<-")[0]), from = m.nodes.indexOf(selected.split("<-")[1]);
+      if (at >= 0 && from >= 0) {
+        c.strokeStyle = "#ffffff";
+        c.lineWidth = 2;
+        c.strokeRect(g.left + from * g.cell - 1, g.top + at * g.cell - 1, g.cell + 1, g.cell + 1);
+      }
+    }
+  }
+
+  function selectLink(id) {
+    if (id === selected) return;
+    selected = id;
+    detail = null;
+    detailCard = null;
+    clearChildren(els.detail);
+    els.detail.appendChild(el("p", "muted", "loading " + id));
+    fetchDetail();
+  }
+
+  // GET /api/link for the selected link: one request at a time, at most once per frame
+  function fetchDetail() {
+    if (!selected || detailBusy) return;
+    var id = selected;
+    detailBusy = true;
+    fetch("/api/link?id=" + encodeURIComponent(id), { cache: "no-store" })
+      .then(function (res) { return res.json().then(function (j) { return { ok: res.ok, body: j }; }); })
+      .then(function (r) {
+        detailBusy = false;
+        if (id !== selected) return;
+        if (!r.ok || !r.body.link) {
+          clearChildren(els.detail);
+          els.detail.appendChild(el("p", "ctl-error", (r.body && r.body.error) || "no detail for " + id));
+          return;
+        }
+        detail = r.body.link;
+        if (r.body.time_s != null) pushHistory(detail, r.body.time_s);
+        renderDetail(r.body.time_s);
+      }, function () { detailBusy = false; });
+  }
+
+  function renderDetail(now) {
+    if (!detail) return;
+    if (!detailCard) {
+      clearChildren(els.detail);
+      detailCard = makeRow(detail.id);
+      els.detail.appendChild(detailCard.art);
+    }
+    updateRow(detailCard, detail, now == null ? (shown ? shown.status.time_s : 0) : now);
+  }
+
+  els.matrix.addEventListener("click", function (ev) {
+    if (!matrixView || !shown || !isNodeRig(shown)) return;
+    var cell = matrixCellAt(ev.offsetX, ev.offsetY, matrixView);
+    if (!cell || cell.r === cell.t) return;
+    var names = shown.link_matrix.nodes;
+    selectLink(names[cell.r] + "<-" + names[cell.t]);
+    renderMatrix(shown);
+  });
 
   // ------------------------------------------------------------------ status bar
 
@@ -947,7 +1177,8 @@
     renderCalibrationResult(cal);
 
     var list = $("thr-list");
-    p.links.forEach(function (row) {
+    // a transceiver rig has hundreds of links, each judged against its own baseline: no editor per link here
+    (isNodeRig(p) ? [] : p.links || []).forEach(function (row) {
       if (!thrRows[row.id]) {
         if (!Object.keys(thrRows).length) clearChildren(list);
         var made = thresholdRow(row.id);
@@ -1001,11 +1232,23 @@
 
   function render(p) {
     shown = p;
+    var nodeRig = isNodeRig(p);
     drawMap(p);
-    renderLinks(p);
+    renderCoverage(p);
+    els.linksCard.hidden = nodeRig;
+    els.nodesCard.hidden = !nodeRig;
+    els.matrixCard.hidden = !nodeRig;
+    if (nodeRig) {
+      renderNodes(p);
+      renderMatrix(p);
+      fetchDetail();
+    } else {
+      renderLinks(p);
+    }
     renderStatus(p);
     renderControls(p);
   }
+
 
   var resizeQueued = false;
   window.addEventListener("resize", function () {

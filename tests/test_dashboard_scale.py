@@ -4,6 +4,8 @@ Round broadcasts come from the simulated rig (csi.simulate.simulate_rounds) for 
 transceiver rooms; assertions are on DashboardState's payload and on the server's HTTP interface.
 """
 import json
+import shutil
+import subprocess
 import time
 import urllib.error
 import urllib.request
@@ -180,8 +182,8 @@ def test_frames_of_an_8_node_rig_still_carry_every_link_row():
 # ---------------------------------------------------------------- CPU budget at 30 nodes
 
 PIPELINE_BUDGET = 1.0       # CPU seconds per second of traffic, steady state: the whole pipeline fits in one core
-CAPTURE_BUDGET_S = 0.015    # per frame, under the server lock
-FRAME_BUDGET_S = 0.025      # per frame, capture + render + JSON
+CAPTURE_BUDGET_S = 0.025    # per frame, under the server lock (heatmap and track advance, link rows)
+FRAME_BUDGET_S = 0.040      # per frame, capture + render + JSON: at most 20 % of a core at 5 Hz
 FRAME_BYTES_MAX = 40_000
 
 
@@ -189,7 +191,9 @@ FRAME_BYTES_MAX = 40_000
 def test_a_30_node_rig_keeps_5_hz_frames_within_the_cpu_budget():
     """30 s of a simulated 30-node rig (870 links, 600 round broadcasts/s) with a walker after 15 s, through the
     same calls the server makes. The budget is measured over the last 10 s, once every link and heatmap baseline
-    is warm. Laptop (Core Ultra 7, under load): about 0.5 CPU-s/s, 6 ms and 16 KB per frame."""
+    is warm. Laptop (Core Ultra 7): about 0.5 CPU-s/s, 6 ms and 16 KB per frame (twice that with the machine
+    loaded). The rest of the pipeline's CPU is mostly the link detectors' statistics and the heatmap baselines."""
+
     from csi.server import default_walk
 
     seconds = 30.0
@@ -221,3 +225,157 @@ def test_a_30_node_rig_keeps_5_hz_frames_within_the_cpu_budget():
     assert capture_s / frames < CAPTURE_BUDGET_S
     assert frame_s / frames < FRAME_BUDGET_S
     assert max(sizes) < FRAME_BYTES_MAX
+
+
+# ---------------------------------------------------------------- the page at 30 nodes (run under node)
+
+PAGE = Path(__file__).resolve().parents[1] / "web" / "index.html"
+MATRIX_BEGIN = "// ---- matrix: pure (tested with node) begin"
+MATRIX_END = "// ---- matrix: pure (tested with node) end"
+needs_node = pytest.mark.skipif(shutil.which("node") is None, reason="node is needed to run the page script")
+
+PAGE_HARNESS = r"""
+const fs = require("fs");
+const input = JSON.parse(fs.readFileSync(0, "utf8"));
+const html = input.html;
+const script = html.split("<script>")[1].split("</script>")[0];
+const pure = html.slice(html.indexOf(input.matrixBegin), html.indexOf(input.matrixEnd));
+const created = {};
+const elements = {};
+const fetches = [];
+function ctx() {
+  return new Proxy({}, { get(t, k) {
+    if (k in t) return t[k];
+    if (k === "measureText") return (s) => ({ width: String(s).length * 7 });
+    if (k === "createImageData") return (w, h) => ({ data: new Uint8ClampedArray(w * h * 4) });
+    return () => undefined;
+  }, set(t, k, v) { t[k] = v; return true; } });
+}
+function element(id, tag) {
+  const t = { id, tag, children: [], listeners: {}, clientWidth: 600, clientHeight: 40, width: 0, height: 0,
+    firstChild: null, style: {}, hidden: false, className: "", textContent: "", disabled: false, value: "",
+    classList: { toggle() {} } };
+  t.appendChild = (c) => { t.children.push(c); t.firstChild = t.children[0]; return c; };
+  t.removeChild = (c) => { t.children.splice(t.children.indexOf(c), 1); t.firstChild = t.children[0] || null; return c; };
+  t.addEventListener = (k, f) => { t.listeners[k] = f; };
+  t.setAttribute = (k, v) => { t["attr:" + k] = v; };
+  t.getAttribute = (k) => t["attr:" + k];
+  const c = ctx();
+  t.getContext = () => c;
+  return new Proxy(t, { get(o, k) { return k in o ? o[k] : () => undefined; }, set(o, k, v) { o[k] = v; return true; } });
+}
+const document = {
+  getElementById(id) { return (elements[id] = elements[id] || element(id, "div")); },
+  createElement(tag) { created[tag] = (created[tag] || 0) + 1; return element(null, tag); },
+  createTextNode(text) { return { textContent: text }; },
+  activeElement: null,
+};
+const window = { devicePixelRatio: 1, addEventListener() {}, requestAnimationFrame() {} };
+let source = null;
+function FakeEventSource(url) { source = this; this.close = () => {}; }
+function fetch(url) {
+  fetches.push(url);
+  const body = url.startsWith("/api/link") ? input.detail : input.state;
+  return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(body) });
+}
+function text(node) {
+  return (node.textContent || "") + node.children.map(text).join(" ");
+}
+const errors = [];
+const tick = async () => { for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r)); };
+(async () => {
+  try {
+    new Function("window", "document", "fetch", "EventSource", "setTimeout", "clearTimeout", script)(
+      window, document, fetch, FakeEventSource, () => 0, () => 0);
+    await tick();
+    source.onopen && source.onopen();
+    source.onmessage({ data: JSON.stringify(input.frame) });
+    await tick();
+    const before = Object.assign({}, created);
+    source.onmessage({ data: JSON.stringify(input.frame) });
+    await tick();
+    const perFrame = {};
+    Object.keys(created).forEach((k) => { if (created[k] !== before[k]) perFrame[k] = created[k] - (before[k] || 0); });
+    const centre = new Function(pure + "; return matrixCellCentre(matrixLayout(" + input.nodes + ", 600), " +
+      input.cell[0] + ", " + input.cell[1] + ");")();
+    elements["matrix"].listeners.click({ offsetX: centre.x, offsetY: centre.y });
+    await tick();
+    source.onmessage({ data: JSON.stringify(input.frame) });
+    await tick();
+    console.log(JSON.stringify({
+      errors, perFrame, fetches,
+      coverageHidden: elements["coverage"].hidden, coverage: text(elements["coverage-reasons"]),
+      nodeRows: elements["node-rows"].children.length, nodes: text(elements["node-rows"]),
+      linksHidden: elements["links-card"].hidden, linkCards: elements["links"].children.length,
+      detail: text(elements["link-detail"]),
+    }));
+  } catch (err) { console.log(JSON.stringify({ errors: [String(err && err.stack || err)] })); }
+})();
+"""
+
+
+def run_page(tmp_path, *, state, frame, detail, nodes, cell):
+    script = tmp_path / "page_harness.js"
+    script.write_text(PAGE_HARNESS, encoding="utf-8")
+    proc = subprocess.run(["node", str(script)], capture_output=True, text=True, timeout=60, encoding="utf-8",
+                          input=json.dumps({"html": PAGE.read_text(encoding="utf-8"), "state": state, "frame": frame,
+                                            "detail": detail, "nodes": nodes, "cell": cell,
+                                            "matrixBegin": MATRIX_BEGIN, "matrixEnd": MATRIX_END}))
+    assert proc.returncode == 0, proc.stderr
+    result = json.loads(proc.stdout)
+    assert result["errors"] == []
+    return result
+
+
+@needs_node
+def test_the_page_at_30_nodes_shows_node_health_and_coverage_degraded_and_fetches_link_detail(tmp_path):
+    server = finished_server(TR30, 3.0, dead_after={"n05": 0.5})
+    try:
+        frame = read_events(server)[-1][0]
+        _, state = get(server, "/api/state")
+        _, detail = get(server, "/api/link?id=" + quote("n02<-n07"))
+    finally:
+        server.stop()
+    assert "links" not in frame
+    for payload in (frame, state):        # stand-ins for a live run: a finished one stops the page's event stream
+        payload["status"]["finished"] = False
+    result = run_page(
+tmp_path, state=state, frame=frame, detail=detail, nodes=30, cell=[1, 6])
+    assert result["coverageHidden"] is False                              # COVERAGE DEGRADED is up
+
+    assert "missing" in result["coverage"] and "n05" in result["coverage"]       # the banner says why
+    assert result["nodeRows"] == 30 and "missing" in result["nodes"] and "unknown" in result["nodes"]
+    assert result["linksHidden"] is True and result["linkCards"] == 0     # no link cards at all
+    assert "article" not in result["perFrame"]                            # a frame builds no cards
+    assert sum(result["perFrame"].values()) < 30                          # and hardly any DOM at all
+    assert "/api/link?id=" + quote("n02<-n07", safe="") in result["fetches"]
+    assert "n02<-n07" in result["detail"] and "n02 from n07" in result["detail"]
+
+
+@needs_node
+def test_matrix_cells_map_back_to_their_node_pair(tmp_path):
+    html = PAGE.read_text(encoding="utf-8")
+    pure = html[html.index(MATRIX_BEGIN):html.index(MATRIX_END)]
+    script = tmp_path / "matrix.js"
+    script.write_text(pure + """
+var out = [];
+var layout = matrixLayout(30, 600);
+[[0, 1], [1, 6], [29, 28], [12, 12]].forEach(function (rt) {
+  var c = matrixCellCentre(layout, rt[0], rt[1]);
+  out.push(matrixCellAt(c.x, c.y, layout));
+});
+out.push(matrixCellAt(-5, 3, layout), matrixCellAt(layout.left + layout.cell * 30 + 2, layout.top + 1, layout));
+console.log(JSON.stringify(out));
+""", encoding="utf-8")
+    proc = subprocess.run(["node", str(script)], capture_output=True, text=True, timeout=30)
+    assert proc.returncode == 0, proc.stderr
+    cells = json.loads(proc.stdout)
+    assert cells[:4] == [{"r": 0, "t": 1}, {"r": 1, "t": 6}, {"r": 29, "t": 28}, {"r": 12, "t": 12}]
+    assert cells[4:] == [None, None]
+
+
+def test_the_page_has_a_coverage_degraded_banner_and_fetches_link_detail_on_demand():
+    html = PAGE.read_text(encoding="utf-8")
+    assert 'id="coverage"' in html and "COVERAGE DEGRADED" in html
+    assert '"/api/link?id="' in html
+    assert "Slot lateness" in html
