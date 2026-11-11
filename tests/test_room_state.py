@@ -15,7 +15,7 @@ from csi.adaptive import Reading
 from csi.links import LinkMonitor, NodeLinkId, room_link_ids
 from csi.room_state import RoomState, ZoneMap
 from csi.rounds import RoundIngest
-from csi.room import load_room
+from csi.room import WalkAndStop, load_room
 from csi.simulate import simulate_rounds
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -37,10 +37,11 @@ class Frame:
         self.links = monitor.snapshot(T0 + t) if links else None
 
 
-def run(room, stream, times, links=False):
-    """Feed ``stream`` into the host pipeline of ``room``; a Frame at each time (seconds since T0) in ``times``."""
+def run(room, stream, times, links=False, **monitor):
+    """Feed ``stream`` into the host pipeline of ``room``; a Frame at each time (seconds since T0) in ``times``.
+    ``monitor`` are LinkMonitor settings."""
     ingest = RoundIngest(room)
-    monitor = LinkMonitor(expected=[link_id for link_id, _, _ in room_link_ids(room)], room=room)
+    monitor = LinkMonitor(expected=[link_id for link_id, _, _ in room_link_ids(room)], room=room, **monitor)
     out, pending = [], sorted(times)
     for host_ts, data in stream:
         while pending and host_ts > T0 + pending[0]:
@@ -263,3 +264,27 @@ def test_the_possibly_occupied_hold_is_a_setting_and_zero_turns_it_off():
         assert "POSSIBLY_OCCUPIED" not in after[empty_at][1].values(), hold_s
     with pytest.raises(ValueError):
         held_room(TR8, possibly_occupied_s=-1.0)
+
+
+@pytest.mark.parametrize("hold_s", [pytest.param(None, marks=pytest.mark.slow), 10.0])
+def test_a_simulated_walker_who_stops_reads_possibly_occupied_for_the_hold_then_empty(hold_s):
+    """A person walks 2 s across the 8-node room into B2 and stands still there. Their links fall within about 1.5 s
+    of the stop (a still person is static to the score), the room leaves MOTION 1 s later, reads POSSIBLY_OCCUPIED
+    for the hold (the default 60 s, or 10 s set on the monitor), then EMPTY although the person is still there:
+    decision support, not a guarantee."""
+    settings = {} if hold_s is None else {"possibly_occupied_s": hold_s}
+    hold_s, walk_s = hold_s or 60.0, 2.0
+    person = WalkAndStop(((0.5, 1.5), (1.5, 1.5)), speed_mps=0.5)
+    stop = WARM_S + walk_s
+    stream = simulate_rounds(TR8, person, duration_s=stop + hold_s + 8.0, quiet_first_s=WARM_S, seed=4, t0=T0)
+    frames = {round(f.t, 2): f for f in run(TR8, stream, steps(WARM_S - 1.0, stop + hold_s + 7.0, every_s=0.25),
+                                            **settings)}
+    at = lambda t: frames[round(t, 2)]  # noqa: E731
+    assert at(WARM_S - 0.25).room == "EMPTY"
+    assert any(at(t).room == "MOTION" for t in steps(WARM_S, stop, every_s=0.25))
+    for t in steps(stop + 4.0, stop + hold_s, every_s=0.25):
+        assert at(t).room == "POSSIBLY_OCCUPIED", t
+        assert at(t).zones["B2"] == "POSSIBLY_OCCUPIED", t
+    for t in steps(stop + hold_s + 4.0, stop + hold_s + 7.0, every_s=0.25):
+        assert at(t).room == "EMPTY", t
+        assert "POSSIBLY_OCCUPIED" not in at(t).zones.values(), t
