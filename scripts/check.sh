@@ -2,6 +2,7 @@
 # One command for the checks: ruff, then the test suite (fast tier by default).
 #   scripts/check.sh          ruff check, then pytest -m "not slow" in parallel (fast tier)
 #   scripts/check.sh --full   ruff check, then the whole suite in parallel
+# Both then build and run the node-core C tests (firmware/core/test.sh) when a C compiler is on PATH.
 # Python: $PYTHON if set, else .venv/bin/python in the repo root if it exists, else python.
 set -euo pipefail
 
@@ -11,7 +12,7 @@ case "${1:-}" in
   "")      MARKER=(-m "not slow") ;;
   --full)  MARKER=() ;;
   -h|--help)
-    sed -n '2,4p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,5p' "$0" | sed 's/^# \{0,1\}//'
     exit 0 ;;
   *)
     echo "usage: scripts/check.sh [--full]" >&2
@@ -38,3 +39,10 @@ echo "== ruff check ."
 echo "== pytest ${MARKER[*]:-(full suite)} -n auto"
 # ${arr[@]+...} keeps an empty array from tripping `set -u` on macOS bash 3.2.
 "$PY" -m pytest -q -n auto ${MARKER[@]+"${MARKER[@]}"}
+
+echo "== firmware/core/test.sh (node-core C tests)"
+if [ -n "${CC:-}" ] || command -v cc >/dev/null 2>&1 || command -v gcc >/dev/null 2>&1 || command -v clang >/dev/null 2>&1; then
+  firmware/core/test.sh
+else
+  echo "check.sh: no C compiler on PATH, node-core C tests skipped (CI runs them with gcc)"
+fi

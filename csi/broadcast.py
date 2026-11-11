@@ -10,15 +10,16 @@ three together and bump ``FORMAT_VERSION`` when the layout changes.
 A round broadcast is a 26-byte round header and one 4-byte link report per other member of the round, in
 ascending node index. Little-endian throughout.
 
-The score byte is the C scorer ticket's score code (``csi/score_code.py`` and ``firmware/core/motion_score.h``
-on that branch): 0 is no score, code c >= 1 is 2 ** ((c - 1) / 10 - 10). ``quantise_score`` and
-``dequantise_score`` reproduce it here until that module is merged; then they should delegate to it.
+The score byte is the score code of ``csi/score_code.py`` (ADR-0021; ``firmware/core/motion_score.h`` on the node):
+0 is no score, code c >= 1 is 2 ** ((c - 1) / 10 - 10). ``quantise_score`` and ``dequantise_score`` are its
+encode and decode under the names this module uses.
 """
 from __future__ import annotations
 
-import math
 import struct
 from typing import NamedTuple, Optional
+
+from .score_code import decode_score, encode_score
 
 FORMAT_VERSION = 1
 FRAME_ROUND = 1                  # the only frame type in v1: a round broadcast carrying link reports
@@ -40,11 +41,6 @@ FLAG_POSSIBLE_MOVE = 0x02        # the receiving node suspects a node moved (its
 FLAG_RAW_MODE = 0x04             # raw mode is active on this link
 FLAGS_KNOWN = FLAG_WARMING | FLAG_POSSIBLE_MOVE | FLAG_RAW_MODE
 
-# the score code (see the module doc): 10 codes per octave from 2 ** -10 (code 1) to 2 ** 15.4 (code 255)
-NO_SCORE = 0
-STEPS_PER_OCTAVE = 10
-MIN_LOG2 = -10
-MAX_CODE = 255
 
 
 class BroadcastError(ValueError):
@@ -144,19 +140,13 @@ def encode_broadcast(broadcast: RoundBroadcast) -> bytes:
 
 
 def quantise_score(score: Optional[float]) -> int:
-    """A score as the link report's score code: 0 for no score, else 1..255, saturating at both ends."""
-    if score is None:
-        return NO_SCORE
-    if not score > 0:
-        return 1
-    return int(min(MAX_CODE, max(1, round(STEPS_PER_OCTAVE * (math.log2(score) - MIN_LOG2)) + 1)))
+    """A score as the link report's score code (``csi.score_code.encode_score``): 0 for no score, else 1..255."""
+    return encode_score(score)
 
 
 def dequantise_score(code: int) -> Optional[float]:
-    """The score a score code stands for (None for 0, no score yet)."""
-    if code == NO_SCORE:
-        return None
-    return 2.0 ** ((code - 1) / STEPS_PER_OCTAVE + MIN_LOG2)
+    """The score a score code stands for (``csi.score_code.decode_score``): None for 0, no score yet."""
+    return decode_score(code)
 
 
 def _format_id(raw: bytes) -> str:
