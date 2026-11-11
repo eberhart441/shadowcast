@@ -471,6 +471,8 @@ static void a_node_powered_on_into_a_running_round_joins_within_a_few_rounds(voi
     /* it listens up to 7 rounds before it may found; it hears the rig in its first round; then a request, a grant */
     CHECK(worst <= 12 * P_US, "a powered-on node is a member within 12 rounds (worst of 10: %.1f rounds)",
           (double)worst / P_US);
+    printf("round_scheduler: a node powered on into a running round of 5 joined within %.1f rounds (worst of 10)\n",
+           (double)worst / P_US);
     CHECK(!any_left_member(sim), "no member of the running round restarted or left while a node joined");
     CHECK(!any_duplicate_round(sim), "no node sends one round number twice in a schedule version");
 }
@@ -536,6 +538,164 @@ static void unplugging_a_node_and_plugging_it_back_restarts_nobody_and_its_repor
     CHECK(heard_2, "node 0's link reports about node 2 show it heard again");
 }
 
+/* ---------------------------------------------------------------- merging, drift, scale */
+
+static void split_groups_merge_into_the_schedule_with_the_lower_scheduler_id(void)
+{
+    sim_t *sim = &g_sim;
+    sim_setup(sim, 8, HZ, 53);
+    for (int a = 0; a < 8; a++) {
+        for (int b = 0; b < 8; b++) {
+            sim->cut[a][b] = (a < 4) != (b < 4);   /* nodes 0-3 and 4-7 cannot hear each other */
+        }
+    }
+    for (int i = 7; i >= 0; i--) {
+        sim_power_on(sim, i);
+        sim_run(sim, sim->now + 3000);
+    }
+    sim_run(sim, sim->now + 3000000);
+    CHECK(sim->node[0].rs.state == RS_MEMBER && sim->node[4].rs.state == RS_MEMBER
+              && popcount(sim->node[0].rs.membership) == 4 && popcount(sim->node[4].rs.membership) == 4,
+          "while split, each half runs its own schedule of four");
+    uint8_t low[RB_NODE_ID_BYTES], high[RB_NODE_ID_BYTES];
+    const rs_t *g1 = &sim->node[0].rs, *g2 = &sim->node[4].rs;
+    bool g1_lower = memcmp(g1->sched_id, g2->sched_id, RB_NODE_ID_BYTES) < 0;
+    memcpy(low, g1_lower ? g1->sched_id : g2->sched_id, RB_NODE_ID_BYTES);
+    memcpy(high, g1_lower ? g2->sched_id : g1->sched_id, RB_NODE_ID_BYTES);
+    memset(sim->cut, 0, sizeof sim->cut);   /* the halves come into range */
+    int64_t took = sim_until_one_schedule(sim, 5000000);
+    CHECK(took >= 0, "the two halves merge into one schedule of eight within 5 s (%.1f rounds)",
+          (double)took / P_US);
+    bool low_wins = true;
+    for (int i = 0; i < 8; i++) {
+        low_wins = low_wins && memcmp(sim->node[i].rs.sched_id, low, RB_NODE_ID_BYTES) == 0;
+    }
+    CHECK(low_wins, "the merged schedule is the one with the lower scheduler ID");
+    CHECK(!any_duplicate_round(sim), "no node sends one round number twice in a schedule version");
+    sim_reset_counts(sim);
+    sim_run(sim, sim->now + 1000000);
+    CHECK(sim->collisions == 0, "after the merge no round broadcasts collide (%u)", sim->collisions);
+    (void)high;
+}
+
+static void drifting_clocks_stay_in_their_slots(void)
+{
+    sim_t *sim = &g_sim;
+    settled_rig(sim, 8, HZ, 67, 0, 4000000);
+    sim->node[0].ppm = 40;    /* the worst crystals of two boards, far apart */
+    sim->node[7].ppm = -40;
+    sim_reset_counts(sim);
+    sim_run(sim, sim->now + 120 * 1000000LL);   /* two minutes: 9.6 ms of relative drift if nothing corrected it */
+    uint32_t delivered = 0, lost = 0;
+    for (int i = 0; i < 8; i++) {
+        delivered += sim->node[i].delivered;
+        lost += sim->node[i].lost;
+    }
+    CHECK(sim->collisions == 0 && lost == 0, "no round broadcast is lost to overlap in two minutes (%u lost)", lost);
+    CHECK(delivered >= (uint32_t)(8 * 7 * HZ * 120) * 999 / 1000, "every link is heard every round (%u)", delivered);
+    CHECK(sim_one_schedule(sim, NULL) && !any_left_member(sim), "still one schedule, nobody restarted");
+}
+
+/* Report codes about each member, as the receiving nodes would send them (glue: one per round per link). */
+static void lateness_reported_on_links(sim_t *sim, int receiver, uint8_t *lo, uint8_t *hi)
+{
+    *lo = RS_LATENESS_MAX_CODE;
+    *hi = 0;
+    rs_t copy = sim->node[receiver].rs;
+    for (uint8_t i = 0; i < RB_MAX_NODES; i++) {
+        if ((copy.membership >> i & 1u) && i != copy.my_index) {
+            uint8_t c = rs_take_lateness(&copy, i);
+            if (c != RS_LATENESS_NONE) {
+                *lo = c < *lo ? c : *lo;
+                *hi = c > *hi ? c : *hi;
+            }
+        }
+    }
+}
+
+static void slot_lateness_shows_how_late_each_node_starts_in_its_slot(void)
+{
+    CHECK(rs_lateness_code(0) == 1 && rs_lateness_code(31) == 1 && rs_lateness_code(32) == 2
+              && rs_lateness_code(-50) == 1 && rs_lateness_code(959) == 30 && rs_lateness_code(5000) == 31,
+          "lateness codes are 32 us steps from 1, saturating at 31");
+    sim_t *sim = &g_sim;
+    sim_setup(sim, 4, HZ, 71);
+    for (int i = 0; i < 4; i++) {
+        sim->node[i].tx_latency_us = 200;   /* every node starts on air 200 to 220 us after its slot */
+        sim->node[i].tx_jitter_us = 20;
+    }
+    for (int i = 0; i < 4; i++) {
+        sim_power_on(sim, i);
+    }
+    CHECK(sim_until_one_schedule(sim, 3000000) >= 0, "four nodes settle");
+    sim_run(sim, sim->now + 2000000);
+    uint8_t lo, hi;
+    lateness_reported_on_links(sim, 0, &lo, &hi);
+    /* each node compensates for its own send latency, so a node like the others reads about that latency */
+    CHECK(lo >= rs_lateness_code(120) && hi <= rs_lateness_code(300),
+          "with 200 us send latency everywhere, lateness reads 120 to 300 us (codes %u..%u)", lo, hi);
+    sim->node[3].tx_latency_us = 600;   /* one node starts sending 400 us later than the others */
+    sim_run(sim, sim->now + 2000000);
+    rs_t copy = sim->node[0].rs;
+    uint8_t late3 = rs_take_lateness(&copy, index_of(sim, 3)), late1 = rs_take_lateness(&copy, index_of(sim, 1));
+    CHECK(late3 >= late1 + 5, "the late node reads later than the others (codes %u vs %u)", late3, late1);
+}
+
+static void thirty_nodes_powered_at_once_fill_a_full_round(void)
+{
+    sim_t *sim = &g_sim;
+    uint32_t hz = 20;
+    int64_t period = 1000000 / hz;
+    sim_setup(sim, 30, hz, 89);
+    CHECK(rs_max_members(hz, RS_GUARD_DEFAULT_US) >= 30, "20 Hz fits 30 members (%u)", rs_max_members(hz, 250));
+    CHECK(rs_max_members(40, RS_GUARD_DEFAULT_US) >= 16, "40 Hz fits 16 members (%u)", rs_max_members(40, 250));
+    for (int i = 0; i < 30; i++) {   /* all switched on within half a second */
+        sim_run(sim, sim->now + (int64_t)(sim_rand(sim) % 33000u));
+        sim_power_on(sim, i);
+    }
+    int64_t took = sim_until_one_schedule(sim, 60 * 1000000LL);
+    CHECK(took >= 0, "30 nodes switched on together share one schedule within 60 s (%.1f s)", (double)took / 1e6);
+    sim_run(sim, sim->now + 10 * period);
+    sim_reset_counts(sim);
+    int64_t seconds = 10;
+    sim_run(sim, sim->now + seconds * 1000000);
+    uint32_t delivered = 0, lost = 0;
+    for (int i = 0; i < 30; i++) {
+        delivered += sim->node[i].delivered;
+        lost += sim->node[i].lost;
+    }
+    uint32_t expected = (uint32_t)(30 * 29 * hz * seconds);
+    CHECK(delivered >= expected * 999 / 1000 && sim->collisions == 0,
+          "in a full round every node hears all 29 others every round (%u of %u, %u lost)", delivered, expected, lost);
+    CHECK(popcount(sim->node[0].rs.membership) == 30 && rs_slot_of(sim->node[0].rs.membership, 31) == 30,
+          "30 members, slots 0 to 29 and the join slot");
+    CHECK(!any_duplicate_round(sim), "no node sends one round number twice in a schedule version");
+    printf("round_scheduler: 30 nodes settled in %.1f s\n", (double)took / 1e6);
+}
+
+static void the_scheduler_admits_no_more_members_than_the_slots_hold(void)
+{
+    sim_t *sim = &g_sim;
+    uint8_t max = rs_max_members(HZ, RS_GUARD_DEFAULT_US);
+    sim_setup(sim, max + 2, HZ, 97);
+    for (int i = 0; i < sim->n; i++) {
+        sim_power_on(sim, i);
+        sim_run(sim, sim->now + 1000);
+    }
+    sim_run(sim, sim->now + 40 * 1000000LL);
+    int members = 0, joining = 0;
+    for (int i = 0; i < sim->n; i++) {
+        members += sim->node[i].rs.state == RS_MEMBER;
+        joining += sim->node[i].rs.state == RS_JOINING;
+    }
+    CHECK(members == max && joining == 2 && popcount(sim->node[0].rs.membership) == max,
+          "at 40 Hz the round holds %u members; the other two keep asking (%d members, %d joining)", max, members,
+          joining);
+    sim_reset_counts(sim);
+    sim_run(sim, sim->now + 1000000);
+    CHECK(sim->collisions == 0, "the full round runs without collisions (%u)", sim->collisions);
+}
+
 int main(void)
 {
     a_lone_node_listens_then_founds_its_own_schedule();
@@ -544,6 +704,11 @@ int main(void)
     a_node_missing_for_three_rounds_is_dropped();
     when_the_scheduler_dies_the_next_member_takes_over();
     unplugging_a_node_and_plugging_it_back_restarts_nobody_and_its_reports_resume();
+    split_groups_merge_into_the_schedule_with_the_lower_scheduler_id();
+    drifting_clocks_stay_in_their_slots();
+    slot_lateness_shows_how_late_each_node_starts_in_its_slot();
+    thirty_nodes_powered_at_once_fill_a_full_round();
+    the_scheduler_admits_no_more_members_than_the_slots_hold();
     printf("round_scheduler: %d failures\n", failures);
     return failures ? 1 : 0;
 }
