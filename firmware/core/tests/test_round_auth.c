@@ -113,6 +113,21 @@ static void check_table_is_bounded(void)
           "the newest node is still remembered");
 }
 
+/* The kit key as scripts/node.py sends it: 32 hex digits, either case; anything else is refused. */
+static void check_key_text(void)
+{
+    uint8_t key[RB_AUTH_KEY_BYTES];
+    CHECK(rb_auth_parse_key("00112233445566778899AABBCCDDEEFF", key) && key[0] == 0x00 && key[9] == 0x99
+              && key[15] == 0xff, "a key in hex parses");
+    CHECK(!rb_auth_parse_key("00112233445566778899aabbccddeef", key), "31 digits are refused");
+    CHECK(!rb_auth_parse_key("00112233445566778899aabbccddeeff00", key), "34 digits are refused");
+    CHECK(!rb_auth_parse_key("00112233445566778899aabbccddeegg", key), "a non-hex digit is refused");
+    CHECK(!rb_auth_parse_key("", key), "an empty key is refused");
+    CHECK(rb_auth_is_test_key((const uint8_t *)"\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0a\x0b\x0c\x0d\x0e\x0f"),
+          "the published test key is recognised");
+    CHECK(!rb_auth_is_test_key(key), "another key is not the test key");
+}
+
 int main(int argc, char **argv)
 {
     if (argc != 2) {
@@ -160,6 +175,7 @@ int main(int argc, char **argv)
     CHECK(signed_n > 0 && forged_n > 0 && fresh_n > 0, "no vectors read");
     check_whole_broadcasts();
     check_table_is_bounded();
+    check_key_text();
     printf("round_auth: %d signed, %d forged and %d freshness cases, %d failures\n", signed_n, forged_n, fresh_n,
            failures);
     return failures ? 1 : 0;

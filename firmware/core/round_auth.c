@@ -104,6 +104,48 @@ bool rb_auth_key_check(const rb_auth_t *a, uint8_t out[RB_AUTH_CHECK_BYTES])
     return true;
 }
 
+static int nibble(char c)
+{
+    if (c >= '0' && c <= '9') {
+        return c - '0';
+    }
+    if (c >= 'a' && c <= 'f') {
+        return c - 'a' + 10;
+    }
+    if (c >= 'A' && c <= 'F') {
+        return c - 'A' + 10;
+    }
+    return -1;
+}
+
+bool rb_auth_parse_key(const char *hex, uint8_t key[RB_AUTH_KEY_BYTES])
+{
+    uint8_t out[RB_AUTH_KEY_BYTES];
+    for (int i = 0; i < RB_AUTH_KEY_BYTES; i++) {
+        int hi = nibble(hex[2 * i]);
+        int lo = hi < 0 ? -1 : nibble(hex[2 * i + 1]);
+        if (lo < 0) {
+            return false;   /* also stops at the end of a short string: '\0' is not a digit */
+        }
+        out[i] = (uint8_t)(hi << 4 | lo);
+    }
+    if (hex[2 * RB_AUTH_KEY_BYTES] != '\0') {
+        return false;
+    }
+    memcpy(key, out, sizeof out);
+    return true;
+}
+
+bool rb_auth_is_test_key(const uint8_t key[RB_AUTH_KEY_BYTES])
+{
+    for (int i = 0; i < RB_AUTH_KEY_BYTES; i++) {
+        if (key[i] != i) {
+            return false;
+        }
+    }
+    return true;
+}
+
 const char *rb_auth_status_name(rb_auth_status_t st)
 {
     switch (st) {

@@ -71,6 +71,12 @@ rb_auth_status_t rb_auth_check(rb_auth_t *a, const uint8_t *bytes, size_t len, i
 /* The key check value, which names the key without revealing it (scripts/node.py and the dashboard show it). */
 bool rb_auth_key_check(const rb_auth_t *a, uint8_t out[RB_AUTH_CHECK_BYTES]);
 
+/* Parse a kit key written as 32 hex digits (scripts/node.py PORT key). Leaves key unchanged on failure. */
+bool rb_auth_parse_key(const char *hex, uint8_t key[RB_AUTH_KEY_BYTES]);
+
+/* True for the published test key of the fixtures and the simulator (00 01 .. 0f), which no kit may use. */
+bool rb_auth_is_test_key(const uint8_t key[RB_AUTH_KEY_BYTES]);
+
 /* "ok", "auth" or "replay": the host's rejection reasons. */
 const char *rb_auth_status_name(rb_auth_status_t st);
 
