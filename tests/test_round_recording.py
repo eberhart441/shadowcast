@@ -17,7 +17,7 @@ from csi.room import Walk, load_room
 from csi.replay import ReplayError, rounds_dashboard
 from csi.round_recording import RecordingFormatError, RoundRecorder, load_rounds
 from csi.server import DashboardServer
-from csi.simulate import simulate_rounds
+from csi.simulate import simulate_gateways, simulate_rounds
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -222,26 +222,45 @@ def post(server, path, body):
         return e.code
 
 
-def test_the_dashboard_replays_a_recording_frame_for_frame_like_the_live_run(tmp_path):
-    stream = simulate_rounds(ROOM, WALK, duration_s=17.0, quiet_first_s=14.0, dead_after={"n6": 15.0}, seed=5, t0=T0)
-    with RoundRecorder(tmp_path / "run.rounds", ROOM, ["gw1"]) as rec:
-        live = DashboardServer(ROOM, rec.tee({"gw1": stream}), mode="auto", port=0, log=tmp_path / "live.jsonl")
+def live_then_replay(tmp_path, sources):
+    """Run ``sources`` live through the dashboard while recording them, then replay the recording at full speed.
+    Returns (live frames, replay frames, live final broadcast counts, replay final counts, a command's status)."""
+    with RoundRecorder(tmp_path / "run.rounds", ROOM, list(sources)) as rec:
+        live = DashboardServer(ROOM, rec.tee(sources), mode="auto", port=0, log=tmp_path / "live.jsonl")
         live.start()
         try:
             assert live.wait_finished(timeout=60)
+            live_counts = json.loads(live.state_json())["status"]["broadcasts"]
         finally:
             live.stop()
     replay = rounds_dashboard(tmp_path / "run.rounds", speed=math.inf, port=0, log=tmp_path / "replay.jsonl")
     replay.start()
     try:
         assert replay.wait_finished(timeout=60)
+        replay_counts = json.loads(replay.state_json())["status"]["broadcasts"]
         status = post(replay, "/api/params", {"sensitivity": 2.0})
     finally:
         replay.stop()
-    live_frames, replay_frames = frames(tmp_path / "live.jsonl"), frames(tmp_path / "replay.jsonl")
+    return frames(tmp_path / "live.jsonl"), frames(tmp_path / "replay.jsonl"), live_counts, replay_counts, status
+
+
+def test_the_dashboard_replays_a_recording_frame_for_frame_like_the_live_run(tmp_path):
+    stream = simulate_rounds(ROOM, WALK, duration_s=17.0, quiet_first_s=14.0, dead_after={"n6": 15.0}, seed=5, t0=T0)
+    live_frames, replay_frames, live_counts, replay_counts, status = live_then_replay(tmp_path, {"gw1": stream})
     assert replay_frames == live_frames and len(live_frames) > 80
     assert live_frames[-1][2] == "MOTION" and dict(live_frames[-1][1])["n6<-n1"] == "NO_SIGNAL"
+    assert replay_counts == live_counts
     assert status == 409                                                    # a replay is read-only
+
+
+def test_a_two_gateway_recording_replays_with_the_same_duplicates_per_gateway(tmp_path):
+    sources = simulate_gateways(ROOM, WALK, hears={"gw1": ["n1", "n2", "n3", "n4", "n5"],
+                                                   "gw2": ["n4", "n5", "n6", "n7", "n8"]},
+                                loss={"gw2": 0.1}, duration_s=16.0, quiet_first_s=14.0, seed=2, t0=T0)
+    live_frames, replay_frames, live_counts, replay_counts, _ = live_then_replay(tmp_path, sources)
+    assert replay_frames == live_frames
+    assert replay_counts == live_counts
+    assert live_counts["rejected"]["duplicate"] > 0 and set(live_counts["sources"]) == {"gw1", "gw2"}
 
 
 def test_the_dashboard_refuses_an_unsupported_recording_as_a_replay_error(tmp_path):

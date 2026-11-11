@@ -54,5 +54,6 @@ stages) need recordings to judge algorithm changes on real data, including runs 
 
 - `tests/test_round_recording.py`: the round trip, the live-versus-replay equivalence on an 8-node simulated
   run (with a dead node and lossy links) both in `DashboardState` and through the dashboard server's run logs,
-  pacing at 1x, 4x and full speed, and the refusals.
+  a two-gateway run that replays with the same duplicate counts per gateway, pacing at 1x, 4x and full speed,
+  and the refusals.
 - No recording from real hardware exists yet.
