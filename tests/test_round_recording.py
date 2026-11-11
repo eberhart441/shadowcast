@@ -10,7 +10,7 @@ import pytest
 
 from csi.dashboard import DashboardState
 from csi.room import Walk, load_room
-from csi.round_recording import RoundRecorder, load_rounds
+from csi.round_recording import RecordingFormatError, RoundRecorder, load_rounds
 from csi.simulate import simulate_rounds
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -76,3 +76,120 @@ def test_a_labelled_8_node_recording_replays_to_the_live_link_states_and_room_st
     assert room_end == "MOTION" and links_end["n8<-n4"] == "MOTION" and links_end["n4<-n3"] == "NO_SIGNAL"
     assert recording.label_at(T0 - 1) is None
     assert (recording.label_at(T0 + 5).label, recording.label_at(T0 + 15).label) == ("empty", "walking")
+
+
+def small_recording(path):
+    with RoundRecorder(path, ROOM, ["gw1"]) as rec:
+        rec.label("empty", host_ts=T0)
+        for host_ts, data in simulate_rounds(ROOM, duration_s=0.2, t0=T0):
+            rec.write("gw1", host_ts, data)
+    return path.read_bytes()
+
+
+def test_a_recording_of_another_format_version_is_refused_naming_the_version(tmp_path):
+    blob = bytearray(small_recording(tmp_path / "run.rounds"))
+    blob[8:10] = (2).to_bytes(2, "little")             # the version follows the 8-byte magic
+    (tmp_path / "v2.rounds").write_bytes(bytes(blob))
+    with pytest.raises(RecordingFormatError, match="format version 2; this build reads version 1 only"):
+        load_rounds(tmp_path / "v2.rounds")
+
+
+@pytest.mark.parametrize("content, message", [
+    (b"", "not a round recording"),
+    (b"host_ts,device_ts,rssi\n1.0,2,3\n", "not a round recording"),
+    (b"SCROUNDS\x01\x00\xff\x00\x00\x00{", "header is cut short"),
+])
+def test_a_file_that_is_not_a_round_recording_is_refused_cleanly(tmp_path, content, message):
+    path = tmp_path / "x.rounds"
+    path.write_bytes(content)
+    with pytest.raises(RecordingFormatError, match=message) as err:
+        load_rounds(path)
+    assert str(path) in str(err.value)
+
+
+def test_a_missing_file_is_refused_cleanly(tmp_path):
+    with pytest.raises(RecordingFormatError, match="cannot read"):
+        load_rounds(tmp_path / "nothing.rounds")
+
+
+def test_a_record_kind_the_version_does_not_define_is_refused(tmp_path):
+    blob = small_recording(tmp_path / "run.rounds")
+    (tmp_path / "odd.rounds").write_bytes(blob + bytes([7]) + bytes(8) + bytes([0]) + bytes(4))
+    with pytest.raises(RecordingFormatError, match="kind 7"):
+        load_rounds(tmp_path / "odd.rounds")
+
+
+def test_a_last_record_cut_short_is_left_out_and_counted(tmp_path):
+    blob = small_recording(tmp_path / "run.rounds")
+    whole = load_rounds(tmp_path / "run.rounds")
+    (tmp_path / "cut.rounds").write_bytes(blob[:-5])
+    cut = load_rounds(tmp_path / "cut.rounds")
+    assert cut.broadcasts == whole.broadcasts[:-1]
+    assert cut.truncated_bytes == 14 + len(whole.broadcasts[-1].data) - 5   # its 14-byte record head + what is left
+
+
+def test_the_recorder_refuses_unknown_sources_and_labels(tmp_path):
+    with RoundRecorder(tmp_path / "run.rounds", ROOM, ["gw1"]) as rec:
+        with pytest.raises(ValueError, match="gw9"):
+            rec.write("gw9", T0, b"\x01")
+        with pytest.raises(ValueError, match="invalid label"):
+            rec.label("dancing", host_ts=T0)
+
+
+class FakeClock:
+    def __init__(self):
+        self.now = 100.0
+
+    def __call__(self):
+        return self.now
+
+    def sleep(self, seconds):
+        assert seconds > 0
+        self.now += seconds
+
+
+def replay_times(recording, speed, clock=None):
+    """(wall offset from the first broadcast, recorded host time) for each broadcast of the only source."""
+    clock = clock or FakeClock()
+    (stream,) = recording.streams(speed, clock=clock, sleep=clock.sleep).values()
+    start, out = None, []
+    for host_ts, _ in stream:
+        start = clock.now if start is None else start
+        out.append((clock.now - start, host_ts))
+    return out
+
+
+@pytest.mark.parametrize("speed", [1.0, 4.0])
+def test_a_replay_paces_the_recorded_gaps_at_1x_and_nx(tmp_path, speed):
+    with RoundRecorder(tmp_path / "run.rounds", ROOM, ["gw1"]) as rec:
+        for host_ts, data in simulate_rounds(ROOM, duration_s=1.0, t0=T0):
+            rec.write("gw1", host_ts, data)
+    times = replay_times(load_rounds(tmp_path / "run.rounds"), speed)
+    assert len(times) == 160
+    first = times[0][1]
+    for wall, host_ts in times:
+        assert wall == pytest.approx((host_ts - first) / speed, abs=1e-9)
+    assert times[-1][0] == pytest.approx(0.99 / speed, abs=0.01)
+
+
+def test_the_sources_of_one_replay_share_its_start(tmp_path):
+    with RoundRecorder(tmp_path / "run.rounds", ROOM, ["gw1", "gw2"]) as rec:
+        rec.write("gw1", T0, b"a")
+        rec.write("gw2", T0 + 0.5, b"b")
+    clock = FakeClock()
+    streams = load_rounds(tmp_path / "run.rounds").streams(2.0, clock=clock, sleep=clock.sleep)
+    start = clock.now
+    assert next(streams["gw1"]) == (T0, b"a") and clock.now == start
+    assert next(streams["gw2"]) == (T0 + 0.5, b"b") and clock.now == pytest.approx(start + 0.25)
+
+
+def test_a_replay_at_full_speed_never_waits(tmp_path):
+    small_recording(tmp_path / "run.rounds")
+    times = replay_times(load_rounds(tmp_path / "run.rounds"), math.inf)
+    assert len(times) == 32 and {wall for wall, _ in times} == {0.0}
+
+
+def test_a_replay_speed_must_be_positive(tmp_path):
+    small_recording(tmp_path / "run.rounds")
+    with pytest.raises(ValueError, match="positive"):
+        load_rounds(tmp_path / "run.rounds").streams(0)
