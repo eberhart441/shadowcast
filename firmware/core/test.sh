@@ -41,3 +41,5 @@ build_and_run test_round_broadcast round_broadcast.c tests/test_round_broadcast.
 build_and_run test_gateway_record gateway_record.c tests/test_gateway_record.c -- tests/vectors/gateway_record.txt
 build_and_run test_espnow_frame espnow_frame.c tests/test_espnow_frame.c --
 build_and_run test_csi_layout csi_layout.c tests/test_csi_layout.c --
+build_and_run test_link_table link_table.c motion_score.c round_broadcast.c tests/test_link_table.c --
+build_and_run test_fixed_round fixed_round.c tests/test_fixed_round.c --
