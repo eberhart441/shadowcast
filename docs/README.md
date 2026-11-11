@@ -22,6 +22,10 @@ detail: how the rig is built, how to operate it, how the detection works, and wh
   baseline and the rest), defined once.
 - [round-broadcast.md](round-broadcast.md): Round broadcast format, version 1. The bytes a transceiver
   sends each round (round header and link reports), defined once for the host and the firmware.
+- [gateway-record.md](gateway-record.md): Gateway record format, version 1. The framed binary records a
+  node writes to its USB port (heard round broadcasts, status, text), defined once for the host and the firmware.
+- [rig-checks/two-nodes.md](rig-checks/two-nodes.md): Rig check for two transceivers and a gateway
+  (ticket #13): building and setting the one node image, and the walk-between test.
 - [round-recording.md](round-recording.md): Round recording format, version 1. The file `--record` writes
   and `--replay-rounds` reads: round broadcasts with host time and source, labels, and the room config.
 - [adr/README.md](adr/README.md): Architecture decision records. The index of the decisions recorded in

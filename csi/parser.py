@@ -263,11 +263,40 @@ def parse_stream(stream: Stream, parser: Optional[CSIParser] = None) -> Iterator
 def serial_stream(port: str, baud: int = 921600, timeout: float = 1.0) -> Iterator[tuple[float, Optional[str]]]:
     """Yield (time.time(), line) from a serial port until closed/interrupted.
 
-    The port is read in chunks (everything waiting, or 1 byte with ``timeout``), not a byte at a time, and the
-    complete lines of a chunk share the time the chunk arrived. Lines come without their line ending.
-    A read that times out with no data yields (time.time(), None), a heartbeat: a consumer can then check its
-    stop flag at least every ``timeout`` seconds, and closing the generator closes the port. parse_stream and
-    MultiSource skip heartbeats, so they see only lines.
+    The port is read in chunks (``serial_chunks``), not a byte at a time, and the complete lines of a chunk share
+    the time the chunk arrived. Lines come without their line ending. A read that times out with no data yields
+    (time.time(), None), a heartbeat: a consumer can then check its stop flag at least every ``timeout`` seconds,
+    and closing the generator closes the port. parse_stream and MultiSource skip heartbeats, so they see only lines.
+    """
+    pending = b""
+    for now, chunk in serial_chunks(port, baud, timeout):
+        if chunk is None:
+            yield now, None
+            continue
+        *lines, pending = (pending + chunk).split(b"\n")
+        if len(pending) > MAX_LINE_BYTES:  # no newline in far too long: not CSI, hand it on
+            lines.append(pending)
+            pending = b""
+        for raw in lines:
+            yield now, raw.rstrip(b"\r").decode("utf-8", errors="replace")
+
+
+def serial_chunks(port: str, baud: int = 921600, timeout: float = 1.0) -> Iterator[tuple[float, Optional[bytes]]]:
+    """Yield (time.time(), bytes) for every read of a serial port until closed: everything waiting, or 1 byte with
+    ``timeout``. A read that times out yields (time.time(), None), a heartbeat. Closing the generator closes the port.
+    The port opens as ``open_serial`` opens it.
+    """
+    ser = open_serial(port, baud, timeout)
+    try:
+        while True:
+            chunk = ser.read(ser.in_waiting or 1)
+            yield time.time(), (chunk or None)
+    finally:
+        ser.close()
+
+
+def open_serial(port: str, baud: int = 921600, timeout: float = 1.0):
+    """An open pyserial port that did not reset the board on the way, with its input buffer cleared.
 
     DTR and RTS drive reset and boot mode on the ESP32 boards' auto-reset circuit: DTR released while RTS is
     asserted holds the chip in reset, and a receiver that resets re-rolls its forced gain. The OS asserts both
@@ -285,18 +314,7 @@ def serial_stream(port: str, baud: int = 921600, timeout: float = 1.0) -> Iterat
         ser.rts = False        # RTS first: DTR asserted with RTS released does not reset the board
         ser.dtr = False
         ser.reset_input_buffer()
-        pending = b""
-        while True:
-            chunk = ser.read(ser.in_waiting or 1)
-            now = time.time()
-            if not chunk:
-                yield now, None
-                continue
-            *lines, pending = (pending + chunk).split(b"\n")
-            if len(pending) > MAX_LINE_BYTES:  # no newline in far too long: not CSI, hand it on
-                lines.append(pending)
-                pending = b""
-            for raw in lines:
-                yield now, raw.rstrip(b"\r").decode("utf-8", errors="replace")
-    finally:
+    except Exception:
         ser.close()
+        raise
+    return ser

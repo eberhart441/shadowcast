@@ -428,6 +428,7 @@ Exactly one packet source is required:
 | `--port [NAME=]PATH` | A receiver's serial port; repeat for each receiver. A value is named when the part before the first `=` contains no `/`. Unnamed values become `rx1`, `rx2`, ... skipping names already given. A port named after a disabled node is never opened. |
 | `--simulate-room` | A simulated person walks a loop through the room in real time. No hardware. |
 | `--simulate` | A simulated transceiver rig: the room's transceivers send [round broadcasts](round-broadcast.md) while a person walks a loop, in real time. No hardware. Needs a room with at least two transceivers, for example `--room config/room_tr8.json` (8 nodes, 56 links). Every link is in auto mode. |
+| `--node-gateway PATH` | The serial port of a gateway node of the transceiver rig (`firmware/node`, role `gateway`): every round broadcast it hears is read from its binary [gateway records](gateway-record.md). Needs a room with at least two transceivers whose `serial` is each board's, for example `--room config/room_tr2.json`. Every link is in auto mode. See [the two-node rig check](rig-checks/two-nodes.md). |
 | `--replay run.jsonl` | Serve a run written with `--log`. See [Logging and replay](#logging-and-replay). |
 | `--replay-session DIR` | Feed a recorded session through the live pipeline. See [Logging and replay](#logging-and-replay). |
 
@@ -455,8 +456,8 @@ The server checks the combination at start and exits with an error when:
 - more than one source, or none, is given;
 - `--speed` is given without `--replay` or `--replay-session`;
 - `--sim-quiet-first` is given without `--simulate-room` or `--simulate`;
-- `--thresholds` or `--raw-log` is combined with `--simulate`;
-- `--simulate` is given a room with fewer than two transceivers;
+- `--thresholds` or `--raw-log` is combined with `--simulate` or `--node-gateway`;
+- `--simulate` or `--node-gateway` is given a room with fewer than two transceivers;
 - `--margin` is given without `--replay-session`;
 - `--log` or `--thresholds` is combined with `--replay` (a log already holds its states);
 - `--auto-threshold` is combined with a replay;

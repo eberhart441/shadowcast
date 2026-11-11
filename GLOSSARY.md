@@ -54,6 +54,23 @@ _See_: `csi/broadcast.py`, [ADR-0022](docs/adr/0022-host-time-round-broadcast-se
 The 4 bytes a receiving node sends about one of its links in its round broadcast: the quantised score, the RSSI, how many round broadcasts it heard from the transmitter in the last 15 rounds and how many rounds since the last one, and flags (baseline warming, possible move, raw mode). A heard count of 0 makes the link NO_SIGNAL.
 _See_: `csi/broadcast.py` (`LinkReport`), `csi/links.py` (`push_report`)
 
+**Fixed round**:
+The round of the first transceiver image (ticket #13): a set number of members, node index = slot, a set round rate, no join slot, and slot timing taken from any heard round broadcast. The round scheduler (#14) replaces it.
+_See_: `firmware/core/fixed_round.h`
+
+**Gateway**:
+A node of the transceiver rig on the dashboard host's USB that only listens: it sends nothing on the channel and writes every round broadcast it hears to USB as a heard record with its receive time. The same image as a transceiver, with the role setting `gateway`. (The hackathon's wireless receivers had a different gateway board, `CSI_GATEWAY=1`, that wrote text lines.)
+_See_: `firmware/node/`, `csi/gateway_records.py` (`GatewaySource`), `dashboard.py --node-gateway`
+
+**Gateway record**:
+One framed binary record on a node's USB port: heard (receive time, RSSI, a round broadcast), status (counters since boot) or text (a log line or a command reply). Format version 1 is defined in [`docs/gateway-record.md`](docs/gateway-record.md).
+_See_: `csi/gateway_records.py`, `firmware/core/gateway_record.h`, [ADR-0026](docs/adr/0026-one-node-image-runtime-settings-gateway-records.md)
+
+**Node settings**:
+What differs between boards running the one node image: role (transceiver or gateway), channel, node index, members and round rate. Kept in the node's flash and set over USB with `scripts/node.py`, never by a build flag. A transceiver that was never set only listens.
+_Avoid_: build flags, SENDER_ID (for these nodes)
+_See_: `firmware/core/node_settings.h`, `scripts/node.py`
+
 **Sender address**:
 The MAC a sender transmits from, `1a:00:00:00:00:<SENDER_ID>`. A receiver accepts every packet whose address starts `1a:00:00:00:00`, so a forgotten board with such an address shows up as a ghost sender.
 _Avoid_: MAC (alone), serial
