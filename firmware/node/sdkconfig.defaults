@@ -11,3 +11,18 @@ CONFIG_ESP_WIFI_CSI_ENABLED=y
 CONFIG_ESP_WIFI_AMPDU_TX_ENABLED=n
 CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=128
 CONFIG_ESP_TASK_WDT_TIMEOUT_S=30
+
+# Over-the-air updates (docs/adr/0031, docs/ota.md): two app slots, rollback on a failed health check, and only
+# images signed like the running one (Secure Boot V2 RSA-3072 signature block, no hardware secure boot). CI builds
+# the image unsigned; the user signs it with espsecure and the kit's signing key, which never enters the repo.
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+CONFIG_SECURE_SIGNED_APPS_NO_SECURE_BOOT=y
+CONFIG_SECURE_SIGNED_APPS_RSA_SCHEME=y
+CONFIG_SECURE_SIGNED_ON_UPDATE_NO_SECURE_BOOT=y
+CONFIG_SECURE_BOOT_BUILD_SIGNED_BINARIES=n
+# Images come over plain HTTP from the host on the maintenance network: integrity is the signature and the
+# command's SHA-256, so no TLS code in the image.
+CONFIG_ESP_HTTP_CLIENT_ENABLE_HTTPS=n

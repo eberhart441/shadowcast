@@ -1,0 +1,142 @@
+{
+  "description": "Golden maintenance commands (frame type 8, docs/round-broadcast.md \"Maintenance command\"), assembled by hand from the byte layout; tags are HMAC-SHA256 under the published test kit key (csi.round_auth.TEST_KIT_KEY). csi/ota.py and firmware/core/ota_core.c are both pinned to it.",
+  "key": "000102030405060708090a0b0c0d0e0f",
+  "valid": [
+    {
+      "name": "update_two_targets",
+      "hex": "0208341200000000000000000000000000000b53e89d6736f8540102861f24008044ee6a00100e000d0545bcaefabfd7dc2c5388f09f3b5e1f758a88feeb7fe6347f59f46e3fe91302000000015c02000000025c",
+      "command": {
+        "round": 4660,
+        "command": 1,
+        "port": 8070,
+        "ap_channel": 36,
+        "issued": 1794000000,
+        "image_size": 921600,
+        "image_sha256": "0d0545bcaefabfd7dc2c5388f09f3b5e1f758a88feeb7fe6347f59f46e3fe913",
+        "targets": [
+          "02:00:00:00:01:5C",
+          "02:00:00:00:02:5C"
+        ],
+        "tag": "0b53e89d6736f854"
+      }
+    },
+    {
+      "name": "report_one_target",
+      "hex": "020807000000000000000000000000000000e74b8682569586040201861f0000bc44ee6a00000000000000000000000000000000000000000000000000000000000000000000000002000000035c",
+      "command": {
+        "round": 7,
+        "command": 2,
+        "port": 8070,
+        "ap_channel": 0,
+        "issued": 1794000060,
+        "image_size": 0,
+        "image_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "targets": [
+          "02:00:00:00:03:5C"
+        ],
+        "tag": "e74b868256958604"
+      }
+    },
+    {
+      "name": "update_thirteen_targets",
+      "hex": "0208ffff00000000000000000000000000005b76bece3bab494a010dffff0b00ffffffff00001d000d0545bcaefabfd7dc2c5388f09f3b5e1f758a88feeb7fe6347f59f46e3fe91302000000015c02000000025c02000000035c02000000045c02000000055c02000000065c02000000075c02000000085c02000000095c020000000a5c020000000b5c020000000c5c020000000d5c",
+      "command": {
+        "round": 65535,
+        "command": 1,
+        "port": 65535,
+        "ap_channel": 11,
+        "issued": 4294967295,
+        "image_size": 1900544,
+        "image_sha256": "0d0545bcaefabfd7dc2c5388f09f3b5e1f758a88feeb7fe6347f59f46e3fe913",
+        "targets": [
+          "02:00:00:00:01:5C",
+          "02:00:00:00:02:5C",
+          "02:00:00:00:03:5C",
+          "02:00:00:00:04:5C",
+          "02:00:00:00:05:5C",
+          "02:00:00:00:06:5C",
+          "02:00:00:00:07:5C",
+          "02:00:00:00:08:5C",
+          "02:00:00:00:09:5C",
+          "02:00:00:00:0A:5C",
+          "02:00:00:00:0B:5C",
+          "02:00:00:00:0C:5C",
+          "02:00:00:00:0D:5C"
+        ],
+        "tag": "5b76bece3bab494a"
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "short",
+      "hex": "02080500000000000000000000000000000024f0042d70c980",
+      "reason": "short"
+    },
+    {
+      "name": "round_broadcast_not_maintenance",
+      "hex": "02010500000000000000000000000000000082c224dc893c5dd50101861f24008044ee6a001000000d0545bcaefabfd7dc2c5388f09f3b5e1f758a88feeb7fe6347f59f46e3fe91302000000015c",
+      "reason": "frame_type"
+    },
+    {
+      "name": "version_1",
+      "hex": "01080500000000000000000000000000000088e95a71819328fe0101861f24008044ee6a001000000d0545bcaefabfd7dc2c5388f09f3b5e1f758a88feeb7fe6347f59f46e3fe91302000000015c",
+      "reason": "version"
+    },
+    {
+      "name": "length_one_byte_short",
+      "hex": "020805000000000000000000000000000000a6197817ce5dad1d0101861f24008044ee6a001000000d0545bcaefabfd7dc2c5388f09f3b5e1f758a88feeb7fe6347f59f46e3fe9130200000001",
+      "reason": "length"
+    },
+    {
+      "name": "length_one_byte_long",
+      "hex": "020805000000000000000000000000000000fa519cdbdf39ecf60101861f24008044ee6a001000000d0545bcaefabfd7dc2c5388f09f3b5e1f758a88feeb7fe6347f59f46e3fe91302000000015c00",
+      "reason": "length"
+    },
+    {
+      "name": "no_targets",
+      "hex": "020805000000000000000000000000000000560b0549f0163a440100861f24008044ee6a001000000d0545bcaefabfd7dc2c5388f09f3b5e1f758a88feeb7fe6347f59f46e3fe913",
+      "reason": "targets"
+    },
+    {
+      "name": "fourteen_targets",
+      "hex": "0208050000000000000000000000000000009fc1c0158cd4f16f010e861f24008044ee6a001000000d0545bcaefabfd7dc2c5388f09f3b5e1f758a88feeb7fe6347f59f46e3fe91302000000015c02000000025c02000000035c02000000045c02000000055c02000000065c02000000075c02000000085c02000000095c020000000a5c020000000b5c020000000c5c020000000d5c020000000e5c",
+      "reason": "targets"
+    },
+    {
+      "name": "unknown_command",
+      "hex": "020805000000000000000000000000000000091e761346309bec0301861f24008044ee6a001000000d0545bcaefabfd7dc2c5388f09f3b5e1f758a88feeb7fe6347f59f46e3fe91302000000015c",
+      "reason": "command"
+    },
+    {
+      "name": "port_zero",
+      "hex": "020805000000000000000000000000000000ec5f819b4dc3c2520101000024008044ee6a001000000d0545bcaefabfd7dc2c5388f09f3b5e1f758a88feeb7fe6347f59f46e3fe91302000000015c",
+      "reason": "field"
+    },
+    {
+      "name": "update_without_size",
+      "hex": "020805000000000000000000000000000000927599a67f89dd7e0101861f24008044ee6a000000000d0545bcaefabfd7dc2c5388f09f3b5e1f758a88feeb7fe6347f59f46e3fe91302000000015c",
+      "reason": "field"
+    },
+    {
+      "name": "reserved_byte_set",
+      "hex": "020805000000000000000000000000000000553d5982e0a68bbb0101861f24018044ee6a001000000d0545bcaefabfd7dc2c5388f09f3b5e1f758a88feeb7fe6347f59f46e3fe91302000000015c",
+      "reason": "field"
+    },
+    {
+      "name": "header_slot_set",
+      "hex": "020805000100000000000000000000000000800da4db603d6ab10101861f24008044ee6a001000000d0545bcaefabfd7dc2c5388f09f3b5e1f758a88feeb7fe6347f59f46e3fe91302000000015c",
+      "reason": "field"
+    }
+  ],
+  "forged": [
+    {
+      "name": "one_flipped_byte",
+      "hex": "02080500000000000000000000000000000024f0042d70c980700101861f24008044ee6a001000000c0545bcaefabfd7dc2c5388f09f3b5e1f758a88feeb7fe6347f59f46e3fe91302000000015c"
+    },
+    {
+      "name": "zero_tag",
+      "hex": "02080500000000000000000000000000000000000000000000000101861f24008044ee6a001000000d0545bcaefabfd7dc2c5388f09f3b5e1f758a88feeb7fe6347f59f46e3fe91302000000015c"
+    }
+  ]
+}

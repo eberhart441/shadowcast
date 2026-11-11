@@ -17,7 +17,8 @@ after flashing.
 cd firmware/node
 idf.py -B build set-target esp32c5
 idf.py -B build build                                   # ESP-IDF 6.0; CI builds the same in espressif/idf:v6.0
-cd build && esptool --chip esp32c5 -p <PORT> -b 460800 write-flash @flash_args
+cd build && esptool --chip esp32c5 -p <PORT> -b 460800 write-flash @flash_args   # unsigned: never takes an OTA
+# for over-the-air updates flash a signed image instead (docs/ota.md "Once per board")
 # a transceiver needs no settings; to change the kit-wide ones, give every node the same values:
 python scripts/node.py <PORT> set channel=6 round_hz=40 guard_us=250
 python scripts/node.py <PORT> set role=gateway channel=6        # the board on the dashboard host
@@ -39,6 +40,13 @@ python scripts/dashboard.py --node-gateway <GATEWAY PORT> --room config/room_tr2
   `python scripts/node.py <PORT> status`, not a serial terminal. Nothing goes to the UART after boot, and no CSI is
   ever formatted as text.
 - **Gain** is the hackathon receiver's (record 100 frames, then force their median gain) until ticket #15.
+- **Over-the-air updates** ([`docs/ota.md`](../docs/ota.md), [ADR-0031](../docs/adr/0031-ota-maintenance-network-signed-images.md)):
+  two 1.875 MB app slots (`node/partitions.csv`, 4 MB flash), rollback on a failed health check, and only images
+  signed with the kit's signing key. The build makes an **unsigned** `node.bin` ("App built but not signed"); sign
+  it with `espsecure sign-data --version 2 --keyfile data/ota-signing.pem` and flash or roll out the signed file
+  (`scripts/ota.py`). A board running an unsigned image refuses every update. The update code is
+  `node/main/node_ota.c` over `core/ota_core.c`; with it the image is 0x110000 B (padded to 64 KB for signing), 43 %
+  of a slot free, and the bootloader 19 % free (ESP-IDF 6.0).
 - The logic that does not need ESP-IDF is in `core/` and tested on the PC; `node/main/node_main.c` is only the glue
   (Wi-Fi, ESP-NOW, CSI callback, timer, NVS, USB).
 - The two-board rig check is [`docs/rig-checks/two-nodes.md`](../docs/rig-checks/two-nodes.md); the round
