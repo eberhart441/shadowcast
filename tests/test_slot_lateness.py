@@ -7,7 +7,8 @@ over the last 2 s; ``"unknown"`` when no node has reported it.
 """
 from pathlib import Path
 
-from csi.broadcast import FORMAT_VERSION, LinkReport, RoundBroadcast, encode_broadcast, quantise_score
+from csi.broadcast import FORMAT_VERSION, LinkReport, RoundBroadcast, encode_broadcast
+from csi.score_code import encode_score
 from csi.dashboard import DashboardState
 from csi.round_auth import TEST_KIT_KEY, sign_broadcast
 from csi.room import load_room
@@ -23,7 +24,7 @@ def broadcast(sender, round_no, lateness=None):
     """``sender``'s round broadcast; ``lateness`` maps a transmitter name to the lateness code it reports."""
     index = NAMES.index(sender)
     lateness = lateness or {}
-    rows = tuple(LinkReport(i, quantise_score(2.0), -50, 15, 0, 0, lateness.get(NAMES[i], 0))
+    rows = tuple(LinkReport(i, encode_score(2.0), -50, 15, 0, 0, lateness.get(NAMES[i], 0))
                  for i in range(len(NAMES)) if i != index)
     return sign_broadcast(encode_broadcast(RoundBroadcast(FORMAT_VERSION, 1, round_no, index, len(NAMES) + 1, 1, index,
                                                           ALL, SERIAL[sender], bytes(8), rows)), TEST_KIT_KEY)

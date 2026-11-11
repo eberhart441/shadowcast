@@ -27,7 +27,8 @@ from .broadcast import (FLAG_RAW_MODE, FLAG_WARMING, FORMAT_VERSION, FRAME_JOIN_
                         FRAME_RAW_REQUEST, FRAME_ROUND,
                         FRAME_ROUND_RAW, HEARD_WINDOW_ROUNDS, MAX_NODES, RAW_MAX_LINKS, RAW_REQUEST_MAX_AGE_ROUNDS,
                         SINCE_MAX, BroadcastError, LinkReport, RawCsi, RoundBroadcast, decode_broadcast,
-                        encode_broadcast, quantise_score)
+                        encode_broadcast)
+from .score_code import encode_score
 from .round_auth import STALE, TEST_KIT_KEY, Freshness, sign_broadcast, tag_ok
 from .links import LinkId
 from .parser import DEFAULT_HEADER, CSIPacket, CSIParser, parse_stream
@@ -476,7 +477,7 @@ def simulate_rounds(
                 elif counts[k] == 0:
                     reports.append(LinkReport(tx, 0, None, 0, int(since[k]), flag))
                 else:
-                    reports.append(LinkReport(tx, quantise_score(float(scores[k])), int(rssi[k]), int(counts[k]),
+                    reports.append(LinkReport(tx, encode_score(float(scores[k])), int(rssi[k]), int(counts[k]),
                                               int(since[k]), flag))
                 if flag and got[k]:
                     blocks.append(RawCsi(tx, round_no % 65536, int(rssi[k]), _raw_iq(raw_rng, float(response[k]))))

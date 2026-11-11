@@ -10,7 +10,8 @@ from pathlib import Path
 
 import pytest
 
-from csi.broadcast import FORMAT_VERSION, LinkReport, RoundBroadcast, encode_broadcast, quantise_score
+from csi.broadcast import FORMAT_VERSION, LinkReport, RoundBroadcast, encode_broadcast
+from csi.score_code import encode_score
 from csi.dashboard import DashboardState
 from csi.round_auth import TEST_KIT_KEY, sign_broadcast
 from csi.room import Walk, load_room
@@ -27,7 +28,7 @@ T0 = 1_700_000_000.0
 
 def broadcast(sender, round_no, *, node_id=None, schedule=1, key=TEST_KIT_KEY, score=2.0):
     index = NAMES.index(sender)
-    rows = tuple(LinkReport(i, quantise_score(score), -50, 15, 0) for i in range(len(NAMES)) if i != index)
+    rows = tuple(LinkReport(i, encode_score(score), -50, 15, 0) for i in range(len(NAMES)) if i != index)
     return sign_broadcast(encode_broadcast(RoundBroadcast(FORMAT_VERSION, 1, round_no % 65536, index, len(NAMES) + 1,
                                                           schedule, index, ALL, node_id or SERIAL[sender], bytes(8),
                                                           rows)), key)

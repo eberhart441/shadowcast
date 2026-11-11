@@ -10,7 +10,8 @@ import pytest
 
 from csi.broadcast import (FLAG_RAW_MODE, FORMAT_VERSION, FRAME_RAW_REQUEST, FRAME_ROUND, FRAME_ROUND_RAW,
                            RAW_REQUEST_MAX_AGE_ROUNDS, LinkReport, RawCsi, RawModeRequest, RoundBroadcast,
-                           decode_broadcast, encode_broadcast, quantise_score)
+                           decode_broadcast, encode_broadcast)
+from csi.score_code import encode_score
 from csi.dashboard import DashboardState
 from csi.raw_mode import (ACK_TIMEOUT_S, RAW_BUDGET_BYTES, REQUEST_COPIES, RawModeRefused, ppdu_us,
                           raw_airtime_us)
@@ -31,7 +32,7 @@ def broadcast(sender, round_no, *, raw=(), flagged=()):
     link reports carry the raw mode flag (by default the ``raw`` ones)."""
     index = NAMES.index(sender)
     flagged = set(flagged) | set(raw)
-    rows = tuple(LinkReport(i, quantise_score(2.0), -50, 15, 0, FLAG_RAW_MODE if NAMES[i] in flagged else 0)
+    rows = tuple(LinkReport(i, encode_score(2.0), -50, 15, 0, FLAG_RAW_MODE if NAMES[i] in flagged else 0)
                  for i in range(len(NAMES)) if i != index)
     blocks = tuple(RawCsi(NAMES.index(t), round_no, -48, IQ) for t in raw)
     return sign_broadcast(encode_broadcast(RoundBroadcast(

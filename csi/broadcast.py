@@ -21,15 +21,14 @@ links it is to stream (``RoundBroadcast.request``); it carries no link reports. 
 ``csi/ota.py``) decodes here to its header alone, so the host can count one a gateway hears.
 
 The score byte is the score code of ``csi/score_code.py`` (ADR-0021; ``firmware/core/motion_score.h`` on the node):
-0 is no score, code c >= 1 is 2 ** ((c - 1) / 10 - 10). ``quantise_score`` and ``dequantise_score`` are its
-encode and decode under the names this module uses.
+0 is no score, code c >= 1 is 2 ** ((c - 1) / 10 - 10): ``encode_score`` makes one, ``LinkReport.score`` reads it.
 """
 from __future__ import annotations
 
 import struct
 from typing import NamedTuple, Optional
 
-from .score_code import decode_score, encode_score
+from .score_code import decode_score
 
 FORMAT_VERSION = 2               # v1 had the same layout with an unchecked, zero tag
 TAG_OFFSET = 18                  # the authentication tag is header bytes 18..25
@@ -106,7 +105,7 @@ class LinkReport(NamedTuple):
 
     @property
     def score(self) -> Optional[float]:
-        return dequantise_score(self.score_q)
+        return decode_score(self.score_q)
 
     @property
     def warming(self) -> bool:
@@ -315,16 +314,6 @@ def _encode_request(request: Optional[RawModeRequest]) -> bytes:
         raise ValueError(f"a raw mode request names at most {RAW_MAX_LINKS} transmitters")
     return (_REQUEST_HEAD.pack(_parse_id(request.target), request.target_round, len(request.transmitters))
             + b"".join(_parse_id(t) for t in request.transmitters))
-
-
-def quantise_score(score: Optional[float]) -> int:
-    """A score as the link report's score code (``csi.score_code.encode_score``): 0 for no score, else 1..255."""
-    return encode_score(score)
-
-
-def dequantise_score(code: int) -> Optional[float]:
-    """The score a score code stands for (``csi.score_code.decode_score``): None for 0, no score yet."""
-    return decode_score(code)
 
 
 def _format_id(raw: bytes) -> str:

@@ -75,7 +75,7 @@ The score byte is the **score code** of [ADR-0021](adr/0021-on-node-score-stream
 (`csi/score_code.py` on the host, `firmware/core/motion_score.h` on the node): 10 codes per octave. Code `0` is no score yet; code *c* from 1 to 255 stands for
 the score 2^((*c* − 1)/10 − 10), from 2⁻¹⁰ ≈ 0.001 (code 1) to 2¹⁵·⁴ ≈ 43,000 (code 255). A score *s* encodes as
 floor(10 × (log₂ *s* + 10) + 0.5) + 1, clamped to 1 to 255 (*s* ≤ 0 gives 1), so a decoded score is within
-about 3.5 % of the score. `csi/broadcast.py` (`quantise_score`, `dequantise_score`) calls `csi/score_code.py`.
+about 3.5 % of the score. The host's copy is `csi/score_code.py` (`encode_score`, `decode_score`).
 
 ## Authentication
 
