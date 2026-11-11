@@ -17,7 +17,7 @@ import itertools
 import time
 from dataclasses import dataclass
 from operator import itemgetter
-from typing import Callable, Iterator, Mapping, Optional, Sequence
+from typing import Callable, Iterator, Mapping, Optional, Sequence, Union
 
 import numpy as np
 
@@ -339,7 +339,7 @@ GATEWAY_LATENCY_S = 0.0005  # up to this much is added to a broadcast's host tim
 
 def simulate_rounds(
     room: Room,
-    person: Optional[Person] = None,
+    person: Union[Person, Sequence[Person], None] = None,
     *,
     duration_s: Optional[float] = None,
     quiet_first_s: float = 0.0,
@@ -354,7 +354,7 @@ def simulate_rounds(
 
     Every transceiver is a member and broadcasts once per round in its slot (node index = slot = its position in
     ``room.transceivers``; one join slot ends the round). ``person`` is in the room from ``quiet_first_s`` on
-    (its time 0 is then); ``None`` is an empty room. ``duration_s=None`` runs forever. ``dead_after`` maps a node
+    (its time 0 is then); a sequence of people are all there; ``None`` is an empty room. ``duration_s=None`` runs forever. ``dead_after`` maps a node
     name to the seconds after which it stops broadcasting; it stays in the membership (no scheduler is
     simulated), so the others' heard counters for it fall to 0. ``drop_prob`` is the chance that a node misses
     one round broadcast from another. Seeded: the same arguments give the same bytes. ``realtime`` paces the
@@ -416,10 +416,17 @@ def simulate_rounds(
             yield host_ts, data
 
 
-def _round_response(person: Optional[Person], t: float, a: np.ndarray, b: np.ndarray) -> np.ndarray:
-    """Per link (segment a-b), the person's response in 0..1 at person time ``t``; zeros before it arrives."""
+def _round_response(person: Union[Person, Sequence[Person], None], t: float, a: np.ndarray,
+                    b: np.ndarray) -> np.ndarray:
+    """Per link (segment a-b), the response in 0..1 at person time ``t``; zeros before anyone arrives. Several
+    people combine as independent causes: 1 - (1 - r1)(1 - r2)..."""
     if person is None or t < 0:
         return np.zeros(len(a))
+    if isinstance(person, Sequence):
+        quiet = np.ones(len(a))
+        for one in person:
+            quiet *= 1.0 - _round_response(one, t, a, b)
+        return 1.0 - quiet
     p = person.position(np.array([t]))[0]
     ab = b - a
     u = np.clip(np.einsum("ij,ij->i", p - a, ab) / np.maximum(np.einsum("ij,ij->i", ab, ab), 1e-12), 0.0, 1.0)
