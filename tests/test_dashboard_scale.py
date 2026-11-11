@@ -50,3 +50,28 @@ def test_a_node_that_stops_broadcasting_is_missing_and_coverage_reads_degraded()
     assert coverage["state"] == "degraded"
     assert coverage["missing_nodes"] == ["n3"]
     assert any("n3" in reason for reason in coverage["reasons"])
+
+
+def test_aggregate_link_health_counts_silent_links_and_the_link_rate():
+    payload = run(TR8, 6.0, dead_after={"n3": 2.0}).snapshot()
+    agg = payload["link_health"]
+    assert agg["links"] == 56
+    assert agg["silent"] == 14                      # n3's 7 links each way
+    assert agg["heard"] == 42
+    assert 18 <= agg["rate_hz"]["median"] <= 21     # 20 Hz rounds
+    assert agg["rate_hz"]["min"] <= agg["rate_hz"]["median"] <= agg["rate_hz"]["max"]
+
+
+def test_the_link_matrix_gives_every_link_state_in_one_character_by_node_pair():
+    payload = run(TR8, 12.0, dead_after={"n3": 2.0}).snapshot()   # past the 10 s warm-up of auto mode
+    matrix = payload["link_matrix"]
+
+    names = matrix["nodes"]
+    assert names == [f"n{k}" for k in range(1, 9)]
+    rows = matrix["states"]                         # row: receiving node, column: transmitting node
+    assert len(rows) == 8 and all(len(row) == 8 for row in rows)
+    n3 = names.index("n3")
+    assert rows[n3] == "NN-NNNNN"                   # n3 sends no reports
+    assert {row[n3] for k, row in enumerate(rows) if k != n3} == {"N"}   # and nobody hears it
+    assert rows[0] == "-EN" + "E" * 5               # n1 hears everyone else, quiet room
+    assert matrix["codes"]["E"] == "EMPTY" and matrix["codes"]["N"] == "NO_SIGNAL"

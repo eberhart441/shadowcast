@@ -7,6 +7,8 @@ rig that cannot see must never read as a quiet room (ADR-0001: a miss costs more
                                                  link_rate_hz, slot_lateness}]  one per transceiver
     coverage(health, rows, unknown_nodes)     {state, reasons, missing_nodes, unknown_nodes, silent_links,
                                                unexplained_silent_links}
+    link_health(rows)                         {links, heard, silent, rate_hz {min, median, max}}  all links at once
+    link_matrix(nodes, rows)                  {nodes, states, codes}: one character per link, by node pair
 
 ``rows`` are LinkMonitor.snapshot rows. ``heard_at`` maps a node name to the host time its last round broadcast
 reached the host. A node is **missing** when none of its round broadcasts reached the host for more than
@@ -22,6 +24,7 @@ Slot lateness comes from the nodes' round scheduler (ticket #14), which does not
 """
 from __future__ import annotations
 
+import statistics
 from typing import Mapping, Optional, Sequence
 
 from .links import NO_SIGNAL, NO_SIGNAL_S
@@ -32,6 +35,10 @@ MISSING = "missing"
 DEGRADED = "degraded"
 SILENT_SHARE = 0.05          # share of links between live nodes that may be NO_SIGNAL before coverage is degraded
 SLOT_LATENESS_UNKNOWN = "unknown"
+STATE_CODES = {"E": "EMPTY", "M": "MOTION", "W": "WARMUP", "U": "UNCALIBRATED", "N": NO_SIGNAL}
+_CODE_OF = {state: code for code, state in STATE_CODES.items()}
+NO_LINK = "-"                # the matrix diagonal (a node does not hear itself), or a pair with no link
+
 
 
 def node_health(nodes: Sequence[Node], rows: Sequence[Mapping], heard_at: Mapping[str, float],
@@ -88,3 +95,29 @@ def coverage(health: Sequence[Mapping], rows: Sequence[Mapping],
         "silent_links": len(silent),
         "unexplained_silent_links": len(unexplained),
     }
+
+
+def link_health(rows: Sequence[Mapping]) -> dict:
+    """Aggregate health of all links: how many are heard, how many silent, and the spread of their packet rate."""
+    heard = [row for row in rows if row["state"] != NO_SIGNAL]
+    rates = [row["pkt_rate"] for row in heard]
+    return {
+        "links": len(rows),
+        "heard": len(heard),
+        "silent": len(rows) - len(heard),
+        "rate_hz": {"min": min(rates), "median": statistics.median(rates), "max": max(rates)} if rates
+                   else {"min": None, "median": None, "max": None},
+    }
+
+
+def link_matrix(nodes: Sequence[Node], rows: Sequence[Mapping]) -> dict:
+    """Every transceiver link's state as one character (``STATE_CODES``): ``states[r][t]`` is the link from node
+    ``t`` (transmitting) to node ``r`` (receiving), in the order of ``nodes``; ``-`` on the diagonal."""
+    index = {node.name: k for k, node in enumerate(nodes)}
+    grid = [[NO_LINK] * len(nodes) for _ in nodes]
+    for row in rows:
+        r, t = index.get(row["receiver"]), index.get(row.get("transmitter"))
+        if r is not None and t is not None:
+            grid[r][t] = _CODE_OF.get(row["state"], "?")
+    return {"nodes": [node.name for node in nodes], "states": ["".join(line) for line in grid],
+            "codes": dict(STATE_CODES)}

@@ -31,7 +31,7 @@ from __future__ import annotations
 import time
 from typing import Mapping, Optional
 
-from .coverage import coverage, node_health
+from .coverage import coverage, link_health, link_matrix, node_health
 from .heatmap import Heatmap
 from .links import LinkMonitor, NO_SIGNAL, UNCALIBRATED, WARMUP, room_link_ids
 from .parser import CSIPacket
@@ -126,6 +126,10 @@ class DashboardState:
             "node_health": [{**node, "last_heard_s": _round(node["last_heard_s"]),
                              "link_rate_hz": _round(node["link_rate_hz"])} for node in health],
             "coverage": coverage(health, rows, self._ingest.counts()["unknown_nodes"]),
+            "link_health": {**(agg := link_health(rows)),
+                            "rate_hz": {k: _round(v) for k, v in agg["rate_hz"].items()}},
+            "link_matrix": link_matrix(self._room.transceivers, rows),
+
         }
 
 
