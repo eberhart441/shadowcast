@@ -967,7 +967,8 @@
     var params = p.status.parameters || {};
     TUNING.forEach(function (t) {
       var input = $(t.id), value = params[t.field];
-      if (value == null) return;
+      if (value === null) { input.disabled = true; return; }   // not a parameter of this heatmap (falloff on RTI)
+      if (value === undefined) return;
       if (document.activeElement !== input) input.value = value;
       $(t.id + "-out").textContent = String(Number(value.toPrecision(3)));
     });
