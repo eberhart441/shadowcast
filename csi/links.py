@@ -23,9 +23,9 @@ States: EMPTY and MOTION (from the detector), plus
 A transceiver link is WARMUP while its link report carries the warming flag or no score yet.
 
 A transceiver link is always judged against its own adaptive baseline, whatever the monitor's mode: there are
-too many of them to calibrate one by one (docs/adr/0023-adaptive-baseline-only-and-a-room-state-from-zones.md). Given a
-room with transceivers, the monitor's room state for them is ``RoomState`` (csi/room_state.py: zones, and agreement
-among links that share no node); the hackathon links keep ``RoomDecision``.
+too many of them to calibrate one by one (ADR-0023). Given a room with transceivers, the monitor's room state for
+them is ``RoomState`` (csi/room_state.py: zones, and agreement among links that share no node); the hackathon links
+keep ``RoomDecision``.
 """
 from __future__ import annotations
 
