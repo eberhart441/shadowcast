@@ -243,3 +243,7 @@ command).
   counted as `queue_overflow`; a recorded one waits. Every reason, unknown nodes and per-gateway counts are in
   the dashboard payload at `status.broadcasts` (`csi/rounds.py`), and unknown nodes, rejections and drops also
   raise a line in `status.messages`.
+- What a node gateway lost before the host ever saw it is in `status.broadcasts.gateways {source: {queue_full,
+  usb_dropped, csi_skipped, records_rejected {reason: n}, skipped_bytes}}`: the first three from the gateway's
+  status record (counted since its boot), the last two from the host's reader of its USB records (a record that
+  fails its CRC, for example). Any of them non-zero raises a line in `status.messages` naming the gateway.

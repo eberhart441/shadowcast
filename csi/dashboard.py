@@ -29,7 +29,9 @@ pipeline ``push_broadcast(host_ts, data)`` does the same from one round broadcas
                     possibly_occupied_s key
                 broadcasts: {heard, accepted, rejected {reason: n}, unknown_nodes {serial: n}, unplaced_reports,
                 join_frames {request, grant}, sources {name: {heard, accepted, duplicate, queue_overflow}}}, the
-                round broadcasts ingested
+                round broadcasts ingested. The dashboard server adds gateways {source: {queue_full, usb_dropped,
+                csi_skipped, records_rejected {reason: n}, skipped_bytes}}: what a node gateway lost before the host
+                (csi.gateway_records.GatewaySource.losses)
                 (all 0 in the line pipeline); reasons are csi.rounds.REJECT_REASONS, each always present
     node_health [{name, state, heard_by, hears, peers, last_heard_s, link_rate_hz, slot_lateness}] per transceiver
                 state "ok" or "missing" (no round broadcast reached the host for > 2 s); slot_lateness: median

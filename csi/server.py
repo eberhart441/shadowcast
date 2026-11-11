@@ -56,6 +56,7 @@ from typing import BinaryIO, Iterator, Mapping, Optional, Sequence, TextIO, Unio
 from urllib.parse import parse_qs, urlsplit
 
 from .dashboard import Capture, DashboardState
+from .gateway_records import LOSS_COUNTERS
 
 from .live_calibration import CalibrationJob, RequestError, parse_request
 from .links import calibrate_links, room_link_ids, save_thresholds
@@ -499,6 +500,9 @@ class DashboardServer(FrameServer):
         self._labels = {link.label for link in self._expected}
         self._controls_on = controls_allowed(host, allow_control)
         self._transmitters = dict(transmitters or {})
+        # sources that count what they lost before the host (a node gateway): status.broadcasts.gateways
+        self._lossy = {name: obj for name, obj in {**dict(sources), **self._transmitters}.items()
+                       if callable(getattr(obj, "losses", None))}
         self._replay = replay
         self._thresholds_path = Path(thresholds_path) if thresholds_path else Path(DEFAULT_THRESHOLDS_FILE)
         self._calib: Optional[CalibrationJob] = None
@@ -702,7 +706,8 @@ class DashboardServer(FrameServer):
     def _render(self, cap: Capture, inputs: dict, *, links: bool) -> dict:
         """A payload from a capture and its status inputs: no lock needed."""
         payload = self._state.render(cap, links=links)
-        payload["status"].update(self._status_extension(inputs, cap.rows, cap.broadcasts))
+        payload["status"]["broadcasts"] = {**payload["status"]["broadcasts"], "gateways": inputs["gateways"]}
+        payload["status"].update(self._status_extension(inputs, cap.rows, payload["status"]["broadcasts"]))
         payload["status"]["messages"].extend(raw_messages(payload.get("raw_mode") or {}))
         payload["status"]["links_in_frames"] = self._links_in_frames
         return payload
@@ -713,7 +718,8 @@ class DashboardServer(FrameServer):
                 "errors": self._errors(), "finished": self._run_done, "calibrated": sorted(self._state.thresholds),
                 "calibration": self._calib_status(now),
                 "skipped": dict(self._calib.skipped) if self._calib is not None else {},
-                "commands": list(self._commands), "commands_status": self._commands_status()}
+                "commands": list(self._commands), "commands_status": self._commands_status(),
+                "gateways": {name: obj.losses() for name, obj in self._lossy.items()}}
 
     def _status_extension(self, inputs: Mapping, links: Sequence[Mapping], broadcasts: Mapping) -> dict:
         """The ``status`` extension from ``_status_inputs`` and the link rows (LinkMonitor.snapshot rows)."""
@@ -989,6 +995,14 @@ def broadcast_messages(counts: Mapping) -> list[str]:
                    + ", ".join(f"{reason} {n}" for reason, n in sorted(bad.items())) + "." + hint)
     if rejected.get(QUEUE_OVERFLOW):
         out.append(f"{rejected[QUEUE_OVERFLOW]} round broadcast(s) dropped because the host fell behind (queue full).")
+    for name, lost in sorted((counts.get("gateways") or {}).items()):
+        parts = {key: lost.get(key, 0) for key in LOSS_COUNTERS}
+        parts.update(lost.get("records_rejected") or {})
+        parts = {key: n for key, n in parts.items() if n}
+        if parts:
+            out.append(f"gateway {name} lost frames before the host: " + ", ".join(f"{k} {n}" for k, n in parts.items())
+                       + " (queue_full, usb_dropped and csi_skipped on the gateway since its boot; the rest are USB "
+                       "records that failed their checks).")
     return out
 
 

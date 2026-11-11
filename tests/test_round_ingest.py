@@ -265,3 +265,28 @@ def test_a_forged_join_frame_is_rejected_as_auth():
     state.push_broadcast(T0, join_frame(2, "n8", 7, ALL & ~(1 << 7), key=bytes(range(1, 17))), "gw1")
     counts = state.snapshot(T0)["status"]["broadcasts"]
     assert counts["rejected"]["auth"] == 1 and counts["join_frames"] == {"request": 0, "grant": 0}
+
+
+def test_every_record_is_accounted_for_including_what_the_gateway_lost():
+    """#7's accounting, extended past the host: a gateway's own losses (its queue, its USB writes, CSI it skipped)
+    and the records that failed their CRC on the way in are in status.broadcasts.gateways and status.messages."""
+    from csi.gateway_records import COUNTER_NAMES, GatewaySource, encode_heard, encode_status
+
+    good = rounds(1.0)
+    losses = {"queue_full": 4, "usb_dropped": 2, "csi_skipped": 1}
+    status = encode_status("02:00:00:00:00:80", 1_000_000, 1, 1, 6,
+                           [losses.get(name, 0) for name in COUNTER_NAMES])
+    corrupt = bytearray(encode_heard(5, -40, good[0][2]))
+    corrupt[-1] ^= 0xFF                                   # its CRC fails: the reader skips it and counts it
+    chunks = [(host_ts, encode_heard(k * 3125, -40, data)) for k, (host_ts, _, data) in enumerate(good)]
+    chunks.insert(3, (chunks[2][0], bytes(corrupt) + b"boot rom noise"))
+    chunks.append((chunks[-1][0], status))
+    payload = serve({"gw1": GatewaySource(iter(chunks))})
+    counts = payload["status"]["broadcasts"]
+    assert counts["heard"] == len(good) == counts["accepted"]
+    gw = counts["gateways"]["gw1"]
+    assert {k: gw[k] for k in losses} == losses
+    assert gw["records_rejected"] == {"crc": 1}
+    assert gw["skipped_bytes"] > 0
+    lines = [m for m in payload["status"]["messages"] if "gateway gw1" in m]
+    assert lines and all(word in lines[0] for word in ("queue_full 4", "usb_dropped 2", "csi_skipped 1", "crc 1"))

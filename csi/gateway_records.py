@@ -40,6 +40,7 @@ _HEARD = struct.Struct("<QbB")    # receive time (gateway device time, us), rssi
 _STATUS = struct.Struct("<6sQBBBB")
 ROLES = {0: "transceiver", 1: "gateway"}
 COUNTER_NAMES = ("heard", "queue_full", "usb_dropped", "sent", "send_errors", "rejected", "csi_skipped")
+LOSS_COUNTERS = ("queue_full", "usb_dropped", "csi_skipped")   # status counters of frames the gateway lost
 MAX_SPREAD_S = 2.0                # records of one read are never placed more than this before its arrival
 TEXTS_KEPT = 50
 WRITE_TIMEOUT_S = 1.0             # a command line to the gateway that cannot be written in this long fails
@@ -196,13 +197,16 @@ class GatewaySource:
     def __init__(self, chunks: Chunks) -> None:
         self._chunks = chunks
         self._reader = RecordReader()
+        self._lock = threading.Lock()                 # the reader thread feeds; the dashboard reads losses()
         self.status: Optional[NodeStatus] = None      # the gateway's latest status record
         self.texts: deque[str] = deque(maxlen=TEXTS_KEPT)
 
     def __iter__(self) -> Iterator[tuple[float, Optional[bytes]]]:
         for arrived, data in self._chunks:
             heard: list[Heard] = []
-            for record in self._reader.feed(data) if data else ():
+            with self._lock:
+                records = self._reader.feed(data) if data else ()
+            for record in records:
                 if isinstance(record, Heard):
                     heard.append(record)
                 elif isinstance(record, NodeStatus):
@@ -219,7 +223,20 @@ class GatewaySource:
 
     def counts(self) -> dict:
         """{"records": {type: n}, "rejected": {reason: n}, "skipped_bytes": n}."""
-        return self._reader.counts()
+        with self._lock:
+            return self._reader.counts()
+
+    def losses(self) -> dict:
+        """What never reached the host as a round broadcast, by where it was lost: on the gateway (its status
+        record's ``queue_full``, ``usb_dropped`` and ``csi_skipped``, counted since its boot; 0 before the first
+        status record) and on the way in (``records_rejected`` {reason: n} for records that failed their checks,
+        ``skipped_bytes`` that were not a record). The dashboard shows it per gateway in ``status.broadcasts``."""
+        counts = self.counts()
+        status = self.status
+        out = {name: status.counter(name) if status is not None else 0 for name in LOSS_COUNTERS}
+        out["records_rejected"] = counts["rejected"]
+        out["skipped_bytes"] = counts["skipped_bytes"]
+        return out
 
     @property
     def sender_id(self) -> Optional[str]:
