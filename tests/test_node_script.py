@@ -86,3 +86,47 @@ def test_usage_errors_exit_2(argv):
     with pytest.raises(SystemExit) as e:
         node_cli.main(argv)
     assert e.value.code == 2
+
+
+def test_key_provisions_the_kit_key_and_checks_the_nodes_check_value(tmp_path, capsys):
+    from csi.round_auth import kit_key_check, write_kit_key
+
+    key = write_kit_key(tmp_path / "kit.key")
+    line = f"key {key.hex()}"
+    port = FakeNodePort({line: encode_text(f"ok key check={kit_key_check(key)} (saved; restarting)")})
+    assert node_cli.provision(port, tmp_path / "kit.key", timeout_s=1.0) == 0
+    assert port.written == (line + "\n").encode()
+    out = capsys.readouterr().out
+    assert kit_key_check(key) in out and key.hex() not in out
+
+
+def test_key_fails_when_the_node_reports_another_check_value(tmp_path, capsys):
+    from csi.round_auth import write_kit_key
+
+    key = write_kit_key(tmp_path / "kit.key")
+    port = FakeNodePort({f"key {key.hex()}": encode_text("ok key check=00000000 (saved; restarting)")})
+    assert node_cli.provision(port, tmp_path / "kit.key", timeout_s=1.0) == 1
+    assert "check" in capsys.readouterr().err
+
+
+def test_key_without_a_file_shows_the_nodes_key_check(capsys):
+    port = FakeNodePort({"key": encode_text("ok key check=88a46367")})
+    assert node_cli.run(port, ["key"], timeout_s=1.0) == 0
+    assert "88a46367" in capsys.readouterr().out
+
+
+def test_keygen_writes_a_new_kit_key_once(tmp_path, capsys):
+    from csi.round_auth import kit_key_check, load_kit_key
+
+    path = tmp_path / "kit.key"
+    assert node_cli.main(["keygen", str(path)]) == 0
+    assert kit_key_check(load_kit_key(path)) in capsys.readouterr().out
+    assert node_cli.main(["keygen", str(path)]) == 1
+    assert "exists" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("argv", [["COM5", "key", "a.key", "b.key"], ["keygen", "a.key", "b.key"]])
+def test_key_usage_errors_exit_2(argv):
+    with pytest.raises(SystemExit) as e:
+        node_cli.main(argv)
+    assert e.value.code == 2
