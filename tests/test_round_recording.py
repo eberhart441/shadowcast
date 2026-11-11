@@ -3,14 +3,19 @@
 Assertions are on what a reader of the file gets back (csi.round_recording) and on the dashboard payload a replay
 produces, never on the bytes the writer lays down (except to build files a reader must refuse).
 """
+import json
 import math
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 import pytest
 
 from csi.dashboard import DashboardState
 from csi.room import Walk, load_room
+from csi.replay import ReplayError, rounds_dashboard
 from csi.round_recording import RecordingFormatError, RoundRecorder, load_rounds
+from csi.server import DashboardServer
 from csi.simulate import simulate_rounds
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -193,3 +198,48 @@ def test_a_replay_speed_must_be_positive(tmp_path):
     small_recording(tmp_path / "run.rounds")
     with pytest.raises(ValueError, match="positive"):
         load_rounds(tmp_path / "run.rounds").streams(0)
+
+
+def frames(log_path):
+    """Per logged frame: host time, (link id, state) of every link, and the room state."""
+    rows = [json.loads(line) for line in Path(log_path).read_text(encoding="utf-8").splitlines()[1:]]
+    return [(p["status"]["time_s"], sorted((r["id"], r["state"]) for r in p["links"]), p["status"]["room"]["state"])
+            for p in rows]
+
+
+def post(server, path, body):
+    request = urllib.request.Request(server.url + path, data=json.dumps(body).encode(), method="POST",
+                                     headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            return response.status
+    except urllib.error.HTTPError as e:
+        return e.code
+
+
+def test_the_dashboard_replays_a_recording_frame_for_frame_like_the_live_run(tmp_path):
+    stream = simulate_rounds(ROOM, WALK, duration_s=17.0, quiet_first_s=14.0, dead_after={"n6": 15.0}, seed=5, t0=T0)
+    with RoundRecorder(tmp_path / "run.rounds", ROOM, ["gw1"]) as rec:
+        live = DashboardServer(ROOM, rec.tee({"gw1": stream}), mode="auto", port=0, log=tmp_path / "live.jsonl")
+        live.start()
+        try:
+            assert live.wait_finished(timeout=60)
+        finally:
+            live.stop()
+    replay = rounds_dashboard(tmp_path / "run.rounds", speed=math.inf, port=0, log=tmp_path / "replay.jsonl")
+    replay.start()
+    try:
+        assert replay.wait_finished(timeout=60)
+        status = post(replay, "/api/params", {"sensitivity": 2.0})
+    finally:
+        replay.stop()
+    live_frames, replay_frames = frames(tmp_path / "live.jsonl"), frames(tmp_path / "replay.jsonl")
+    assert replay_frames == live_frames and len(live_frames) > 80
+    assert live_frames[-1][2] == "MOTION" and dict(live_frames[-1][1])["n6<-n1"] == "NO_SIGNAL"
+    assert status == 409                                                    # a replay is read-only
+
+
+def test_the_dashboard_refuses_an_unsupported_recording_as_a_replay_error(tmp_path):
+    (tmp_path / "x.rounds").write_bytes(b"SCROUNDS\x09\x00\x02\x00\x00\x00{}")
+    with pytest.raises(ReplayError, match="format version 9"):
+        rounds_dashboard(tmp_path / "x.rounds", port=0)
