@@ -103,3 +103,14 @@ def test_cli_simulate_needs_a_room_with_transceivers():
     with pytest.raises(SystemExit) as err:
         cli.build_server(args)
     assert "transceiver" in str(err.value)
+
+
+def test_the_footprint_falloff_is_refused_on_a_transceiver_room_and_nothing_changes():
+    server = DashboardServer(ROOM, {"gateway": iter(())}, mode="auto", port=0)
+    before = json.loads(server.state_json())["status"]["parameters"]
+    status, reply = server.command("/api/params", {"falloff": 0.5, "sensitivity": 0.7})
+    assert status == 400 and "radio tomography" in reply["error"]
+    assert json.loads(server.state_json())["status"]["parameters"] == before
+    status, reply = server.command("/api/params", {"sensitivity": 0.7})
+    assert status == 200 and reply["parameters"]["sensitivity"] == 0.7
+    assert reply["parameters"]["imaging"] == "rti"

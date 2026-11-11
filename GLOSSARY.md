@@ -266,6 +266,11 @@ A 28 × 18 grid over the room of motion likelihood from 0 to 1, built by spreadi
 _Avoid_: position, track, location
 _See_: `csi/heatmap.py`, [ADR-0011](docs/adr/0011-heatmap-evidence-from-quiet-baseline.md)
 
+**Radio tomography**:
+How a room with transceivers builds its heatmap: every link's evidence is imaged over the grid at once with one matrix, computed from the room's geometry when the heatmap is built (an ellipse around each link, a smooth prior over the cells). More links make the map sharper. Rooms of receivers and senders keep the per-link footprint and agreement.
+_Avoid_: RTI (in prose), localisation
+_See_: `csi/rti.py`, [ADR-0025](docs/adr/0025-radio-tomography-heatmap.md)
+
 **Quiet baseline**:
 The heatmap's reference for one link: the median of its score over the last 60 s of host time, used once 10 s of history exist. A person who stays still for about 30 s is absorbed into it.
 _Avoid_: baseline (alone)
