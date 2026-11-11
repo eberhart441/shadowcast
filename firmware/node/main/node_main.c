@@ -4,10 +4,11 @@
  * What a board does is set at runtime, from its settings in NVS (firmware/core/node_settings.h, written over USB by
  * scripts/node.py), never by a build flag. Its identity is its board serial (base MAC).
  *
- *   transceiver  In its slot of the fixed round it sends a round broadcast (docs/round-broadcast.md): an
- *                unacknowledged ESP-NOW broadcast at HT20 MCS0 carrying one link report per other member. It
- *                measures CSI on every other member's round broadcast and scores each link with the C scorer.
- *                Until it has been configured (scripts/node.py PORT set index=...) it only listens.
+ *   transceiver  The round scheduler (firmware/core/round_scheduler.h) gives it a node index and a slot: it
+ *                listens, joins the round it hears (or founds one), and in its slot sends a round broadcast
+ *                (docs/round-broadcast.md): an unacknowledged ESP-NOW broadcast at HT20 MCS0 carrying one link
+ *                report per other member. It measures CSI on every other member's round broadcast and scores each
+ *                link with the C scorer. It needs no settings: the defaults join any round on channel 6 at 40 Hz.
  *   gateway      Listens on the channel and sends nothing. Every ESP-NOW frame it hears goes to USB as a binary
  *                heard record with its receive time (docs/gateway-record.md).
  *
@@ -35,6 +36,7 @@
 #include "esp_mac.h"
 #include "esp_netif.h"
 #include "esp_now.h"
+#include "esp_random.h"
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
@@ -43,17 +45,16 @@
 
 #include "csi_layout.h"
 #include "espnow_frame.h"
-#include "fixed_round.h"
 #include "gateway_record.h"
 #include "link_table.h"
 #include "node_settings.h"
 #include "round_broadcast.h"
+#include "round_scheduler.h"
 
 #if !CONFIG_IDF_TARGET_ESP32C5
 #error "the node image is built for esp32c5 (idf.py set-target esp32c5)"
 #endif
 
-#define SCHEDULE_VERSION_FIXED 1    /* the fixed round has one schedule; #14's scheduler bumps it */
 #define QUEUE_DEPTH 32
 #define PAYLOAD_COPY (ESPNOW_BODY_OFFSET + RB_MAX_BYTES + 16)
 #define HEARD_MAX 250               /* ESP-NOW v1 payload limit; round broadcasts are at most 150 bytes */
@@ -67,7 +68,7 @@ static const char *TAG = "node";
 static const uint8_t BROADCAST_MAC[6] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
 
 static node_settings_t s_settings;
-static bool s_configured;           /* settings were stored by scripts/node.py, not the defaults */
+static bool s_configured;           /* settings were stored by scripts/node.py, not the defaults (which work too) */
 static uint8_t s_serial[6];         /* base MAC = USB serial = node id */
 static char s_serial_text[18];
 static uint8_t s_sta_mac[6];
@@ -168,16 +169,15 @@ static void send_status(void)
 static bool load_settings(node_settings_t *s)
 {
     nvs_handle_t h;
-    size_t size = sizeof *s;
+    uint8_t blob[16];
+    size_t size = sizeof blob;
     bool ok = false;
     if (nvs_open("node", NVS_READONLY, &h) == ESP_OK) {
-        ok = nvs_get_blob(h, "settings", s, &size) == ESP_OK && size == sizeof *s && node_settings_valid(s);
+        ok = nvs_get_blob(h, "settings", blob, &size) == ESP_OK;
         nvs_close(h);
     }
-    if (!ok) {
-        node_settings_default(s);
-    }
-    return ok;
+    /* version 1 (the fixed round's index and nodes) keeps its role, channel and round rate */
+    return node_settings_load(blob, ok ? size : 0, s);
 }
 
 static esp_err_t save_settings(const node_settings_t *s)
@@ -223,7 +223,6 @@ static void usb_task(void *arg)
     size_t len = 0;
     uint8_t buf[64];
     int64_t next_status = esp_timer_get_time() + STATUS_PERIOD_US;
-    int64_t next_nag = esp_timer_get_time();
     for (;;) {
         int n = usb_serial_jtag_read_bytes(buf, sizeof buf, pdMS_TO_TICKS(50));
         for (int i = 0; i < n; i++) {
@@ -242,11 +241,6 @@ static void usb_task(void *arg)
         if (now >= next_status) {
             send_status();
             next_status = now + STATUS_PERIOD_US;
-        }
-        if (!s_configured && now >= next_nag) {
-            usb_text("not configured: this node only listens until scripts/node.py sets it (serial %s)",
-                     s_serial_text);
-            next_nag = now + 10 * STATUS_PERIOD_US;
         }
     }
 }
@@ -274,12 +268,12 @@ static void wifi_start(uint8_t channel)
 
 /* ---------------------------------------------------------------- transceiver */
 
-enum { ITEM_HEARD = 1, ITEM_SLOT = 2 };
+enum { ITEM_HEARD = 1, ITEM_SLOT = 2, ITEM_SENT = 3 };
 
 typedef struct {
     uint8_t kind;
-    uint16_t round;                     /* ITEM_SLOT: the round the slot timer was armed for */
-    int64_t t_us;                       /* ITEM_HEARD: device time at the CSI callback */
+    rs_tx_t tx;                         /* ITEM_SLOT: what the slot timer was armed for */
+    int64_t t_us;                       /* ITEM_HEARD: device time at the CSI callback; ITEM_SENT: at the send callback */
     wifi_pkt_rx_ctrl_t rx_ctrl;
     uint16_t csi_len;                   /* 0 when the CSI did not fit */
     uint16_t payload_len;
@@ -289,14 +283,14 @@ typedef struct {
 
 static QueueHandle_t s_queue;
 static esp_timer_handle_t s_slot_timer;
-static fixed_round_t s_round;
+static rs_t s_sched;
+static bool s_sched_ok;
 static link_table_t s_links;
 static csi_layout_t s_layout;
-static int64_t s_armed_at;
-static volatile uint16_t s_armed_round;
+static rs_tx_t s_armed_tx;              /* written by the node task before the timer starts, read by on_slot */
 static bool s_armed;
-static bool s_sent_any;
-static uint16_t s_last_sent_round;
+static int64_t s_sent_slot_at;          /* the last frame sent: its planned time and length, for rs_sent */
+static size_t s_sent_len;
 static uint32_t s_gain_frames;
 
 /* Wi-Fi task: copy and queue, nothing else. */
@@ -325,60 +319,94 @@ static void on_slot(void *arg)
 {
     static node_item_t item;
     item.kind = ITEM_SLOT;
-    item.round = s_armed_round;
+    item.tx = s_armed_tx;
     if (xQueueSendToFront(s_queue, &item, 0) != pdTRUE) {
         count(GR_COUNT_SEND_ERRORS);   /* a missed slot; try again next round so the node never falls silent */
-        esp_timer_start_once(s_slot_timer, (uint64_t)s_round.period_us);
+        esp_timer_start_once(s_slot_timer, (uint64_t)s_sched.period_us);
     }
 }
 
+/* Wi-Fi task: the frame left. Its time goes to the scheduler (this node's send latency). */
 static void on_sent(const esp_now_send_info_t *info, esp_now_send_status_t status)
 {
+    static node_item_t item;
     if (status != ESP_NOW_SEND_SUCCESS) {
         count(GR_COUNT_SEND_ERRORS);
+        return;
+    }
+    item.kind = ITEM_SENT;
+    item.t_us = esp_timer_get_time();
+    xQueueSend(s_queue, &item, 0);   /* a lost one only costs one latency sample */
+}
+
+/* Links whose node index now names another node start over. */
+static void apply_restarts(void)
+{
+    uint32_t restarts = rs_take_restarts(&s_sched);
+    for (uint8_t i = 0; i < RB_MAX_NODES; i++) {
+        if (restarts >> i & 1u) {
+            link_table_restart(&s_links, i);
+        }
     }
 }
 
+/* One log line (a text record on USB) whenever this node's place in the round changes. */
+static void log_schedule(void)
+{
+    static rs_state_t state = RS_LISTENING;
+    static uint8_t version, index = RS_NO_INDEX;
+    static uint32_t membership;
+    const rs_t *s = &s_sched;
+    if (s->state == state && s->version == version && s->my_index == index && s->membership == membership) {
+        return;
+    }
+    state = s->state;
+    version = s->version;
+    index = s->my_index;
+    membership = s->membership;
+    static const char *const names[] = {"listening", "joining", "member"};
+    ESP_LOGI(TAG, "round: %s, schedule %u, index %d, membership %08lx (joins %lu dropped %lu merges %lu late %lu)",
+             names[state], version, index == RS_NO_INDEX ? -1 : index, (unsigned long)membership,
+             (unsigned long)s->count.joins, (unsigned long)s->count.dropped, (unsigned long)s->count.merges,
+             (unsigned long)s->count.late_slots);
+}
+
+/* Arm the slot timer for the scheduler's next transmission. Without `force` it stays armed when the plan moved
+ * by less than REARM_TOLERANCE_US (rs_take accepts a slot within the guard). */
 static void arm_next_slot(bool force)
 {
-    if (!s_configured) {
-        return;   /* an unconfigured transceiver never transmits */
+    if (!s_sched_ok) {
+        return;
     }
     int64_t now = esp_timer_get_time();
-    uint16_t round;
-    int64_t at = fixed_round_next_tx(&s_round, now + 200, &round);
-    if (s_sent_any && round == s_last_sent_round) {
-        /* After a phase jump the next slot can carry the round just sent; the host drops a second broadcast with
-         * the same round number as a duplicate (docs/round-broadcast.md), so take the slot after it. */
-        at = fixed_round_next_tx(&s_round, at, &round);
-    }
-    if (!force && s_armed && llabs(at - s_armed_at) < REARM_TOLERANCE_US) {
+    rs_tx_t tx = rs_next(&s_sched, now + 200);
+    if (!force && s_armed && tx.kind == s_armed_tx.kind && tx.round == s_armed_tx.round
+            && llabs(tx.at_us - s_armed_tx.at_us) < REARM_TOLERANCE_US) {
         return;
     }
     esp_timer_stop(s_slot_timer);   /* an error when it is not running is fine */
-    s_armed_round = round;
-    s_armed_at = at;
-    s_armed = esp_timer_start_once(s_slot_timer, (uint64_t)(at - now)) == ESP_OK;
+    s_armed_tx = tx;
+    int64_t wait = tx.at_us - now;
+    s_armed = esp_timer_start_once(s_slot_timer, (uint64_t)(wait > 0 ? wait : 1)) == ESP_OK;
 }
 
-static void send_round_broadcast(uint16_t round)
+/* The slot timer fired: send what the scheduler still wants sent (a round broadcast or a join frame). */
+static void send_slot(const rs_tx_t *tx)
 {
     static rb_broadcast_t b;
     static uint8_t bytes[RB_MAX_BYTES];
-    b.version = RB_VERSION;
-    b.frame_type = RB_FRAME_ROUND;
-    b.round = round;
-    b.slot = s_settings.index;
-    b.slots_per_round = s_settings.nodes;
-    b.schedule_version = SCHEDULE_VERSION_FIXED;
-    b.node_index = s_settings.index;
-    b.membership = fixed_round_membership(&s_round);
-    memcpy(b.node_id, s_serial, RB_NODE_ID_BYTES);
-    memset(b.tag, 0, RB_TAG_BYTES);
-    b.n_reports = link_table_close_round(&s_links, b.membership, s_settings.index, b.reports);
+    if (!rs_take(&s_sched, tx, esp_timer_get_time(), &b)) {
+        return;   /* the plan changed, or the slot came more than the guard late (rs_t count.late_slots) */
+    }
+    if (b.frame_type == RB_FRAME_ROUND) {
+        b.n_reports = link_table_close_round(&s_links, b.membership, b.node_index, b.reports);
+        for (uint8_t k = 0; k < b.n_reports; k++) {
+            b.reports[k].lateness = rs_take_lateness(&s_sched, b.reports[k].transmitter_index);
+        }
+    }
     size_t n = rb_encode(&b, bytes, sizeof bytes);
-    s_sent_any = true;
-    s_last_sent_round = round;
+    s_sent_slot_at = tx->at_us;
+    s_sent_len = n;
     if (n && esp_now_send(BROADCAST_MAC, bytes, n) == ESP_OK) {
         count(GR_COUNT_SENT);
     } else {
@@ -410,16 +438,14 @@ static void on_heard(const node_item_t *item)
     static float amp[CSI_LAYOUT_MAX_RAW / 2];
     const uint8_t *body;
     size_t body_len;
-    if (!espnow_body(item->payload, item->payload_len, &body, &body_len) || rb_decode(body, body_len, &b) != RB_OK
-            || b.node_index >= s_settings.nodes) {
-        count(GR_COUNT_REJECTED);   /* not a v1 round broadcast, or from outside the fixed round */
+    if (!espnow_body(item->payload, item->payload_len, &body, &body_len) || rb_decode(body, body_len, &b) != RB_OK) {
+        count(GR_COUNT_REJECTED);   /* not a v1 round broadcast or join frame */
         return;
     }
-    if (memcmp(b.node_id, s_serial, RB_NODE_ID_BYTES) == 0) {
-        return;
+    if (!s_sched_ok || rs_heard(&s_sched, item->t_us, &b) != RS_HEARD_MEMBER) {
+        return;   /* a join frame, or a round broadcast from outside this node's schedule: no link to score */
     }
     count(GR_COUNT_HEARD);
-    fixed_round_heard(&s_round, item->t_us, b.round, b.slot, b.slots_per_round);
     float gain = gain_compensation(&item->rx_ctrl);
     int n = item->csi_len ? csi_layout_amplitudes(&s_layout, item->csi, item->csi_len, gain, amp) : 0;
     if (n == 0) {
@@ -437,12 +463,16 @@ static void node_task(void *arg)
             continue;
         }
         if (item.kind == ITEM_SLOT) {
-            send_round_broadcast(item.round);
+            send_slot(&item.tx);
             arm_next_slot(true);
+        } else if (item.kind == ITEM_SENT) {
+            rs_sent(&s_sched, s_sent_slot_at, item.t_us, s_sent_len);
         } else {
             on_heard(&item);
             arm_next_slot(false);
         }
+        apply_restarts();
+        log_schedule();
     }
 }
 
@@ -450,9 +480,11 @@ static void start_transceiver(void)
 {
     link_table_init(&s_links);
     csi_layout_init(&s_layout);
-    if (!fixed_round_init(&s_round, s_settings.index, s_settings.nodes, s_settings.round_hz, esp_timer_get_time())) {
-        ESP_LOGE(TAG, "settings make no round; listening only");
-        s_configured = false;
+    uint32_t seed = esp_random();
+    s_sched_ok = rs_init(&s_sched, s_serial, s_settings.round_hz, s_settings.guard_us, seed, esp_timer_get_time());
+    if (!s_sched_ok) {
+        ESP_LOGE(TAG, "round_hz %u with guard_us %u makes no round; this node does nothing", s_settings.round_hz,
+                 s_settings.guard_us);
     }
     s_queue = xQueueCreate(QUEUE_DEPTH, sizeof(node_item_t));
     configASSERT(s_queue);

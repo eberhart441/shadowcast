@@ -45,7 +45,7 @@ def test_every_transceiver_has_health_and_a_healthy_rig_reads_coverage_ok():
         assert node["heard_by"] == 7 and node["hears"] == 7 and node["peers"] == 7
         assert node["last_heard_s"] < 0.1
         assert node["link_rate_hz"] > 15                     # 20 Hz rounds, nothing lost
-        assert node["slot_lateness"] == "unknown"            # the nodes do not report it yet (#14)
+        assert node["slot_lateness"] == "unknown"            # the simulator reports no slot lateness
     assert payload["coverage"]["state"] == "ok"
     assert payload["coverage"]["missing_nodes"] == []
 

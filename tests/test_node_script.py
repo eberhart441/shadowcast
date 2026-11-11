@@ -42,19 +42,19 @@ class FakeNodePort:
 
 def test_show_prints_the_nodes_reply_and_skips_logs_and_boot_text(capsys):
     port = FakeNodePort({"show": encode_text("I (812) node: started") + encode_text(
-        f"ok serial={SERIAL} role=transceiver channel=6 index=0 nodes=2 round_hz=40")},
+        f"ok serial={SERIAL} role=transceiver channel=6 round_hz=40 guard_us=250")},
         preamble=b"ESP-ROM:esp32c5\r\n" + encode_status(SERIAL, 1, 1, 0, 6, [0] * 7))
     assert node_cli.run(port, ["show"], timeout_s=1.0) == 0
     assert port.written == b"show\n"
     assert capsys.readouterr().out.strip().splitlines()[-1] == \
-        f"ok serial={SERIAL} role=transceiver channel=6 index=0 nodes=2 round_hz=40"
+        f"ok serial={SERIAL} role=transceiver channel=6 round_hz=40 guard_us=250"
 
 
 def test_set_sends_one_line_and_exits_0_on_ok(capsys):
-    port = FakeNodePort({"set index=1 nodes=2": encode_text("ok role=transceiver channel=6 index=1 nodes=2 "
-                                                            "round_hz=40 (saved; restarting)")})
-    assert node_cli.run(port, ["set", "index=1", "nodes=2"], timeout_s=1.0) == 0
-    assert port.written == b"set index=1 nodes=2\n"
+    port = FakeNodePort({"set guard_us=300 round_hz=20": encode_text("ok role=transceiver channel=6 round_hz=20 "
+                                                                     "guard_us=300 (saved; restarting)")})
+    assert node_cli.run(port, ["set", "guard_us=300", "round_hz=20"], timeout_s=1.0) == 0
+    assert port.written == b"set guard_us=300 round_hz=20\n"
     assert "saved; restarting" in capsys.readouterr().out
 
 

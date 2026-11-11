@@ -1,16 +1,16 @@
 #!/usr/bin/env python
 """Set and read a node's runtime settings over its USB port, and watch its status (firmware/node).
 
-    node.py PORT show                                    # serial, role, channel, index, nodes, round rate
-    node.py PORT set index=1                             # a transceiver in slot 1 (the node saves and restarts)
-    node.py PORT set role=gateway                        # the board on the dashboard host's USB
-    node.py PORT set channel=11 nodes=2 round_hz=40      # kit-wide values: give every node the same ones
+    node.py PORT show                                    # serial, role, channel, round rate, slot guard
+    node.py PORT set role=gateway                        # the board on the dashboard host's USB (saves, restarts)
+    node.py PORT set channel=11 round_hz=40 guard_us=250 # kit-wide values: give every node the same ones
     node.py PORT restart
     node.py PORT status [--seconds 5]                    # status counters and log lines, as the node sends them
 
 Every board runs the same image; what it does is these settings, kept in the node's flash. Settings: role
-(transceiver or gateway), channel (2.4 GHz, 1 to 13), index (the node's slot, below nodes), nodes (members of the
-fixed round, 2 to 32), round_hz (rounds per second). A transceiver that was never set only listens.
+(transceiver or gateway), channel (2.4 GHz, 1 to 13), round_hz (rounds per second), guard_us (the slot guard, 50 to
+5000 us). A transceiver needs none of them: with the defaults it joins the round on its own (the round scheduler
+gives it a node index and a slot; there is no index or member count to set).
 
 The node answers with gateway records (docs/gateway-record.md): "ok ..." or "error ...". Exit status 0 on ok, 1 on an
 error reply or no reply, 2 on a usage error. The port is opened without resetting the board. Do not run this on the
@@ -72,7 +72,7 @@ def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("port", help="the node's serial port (python scripts/ports.py lists them by board serial)")
     ap.add_argument("command", choices=COMMANDS)
-    ap.add_argument("settings", nargs="*", metavar="key=value", help="for set: role, channel, index, nodes, round_hz")
+    ap.add_argument("settings", nargs="*", metavar="key=value", help="for set: role, channel, round_hz, guard_us")
     ap.add_argument("--seconds", type=float, default=5.0, help="for status: how long to listen (default 5)")
     return ap
 
