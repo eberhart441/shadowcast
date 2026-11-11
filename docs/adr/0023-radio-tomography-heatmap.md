@@ -12,7 +12,8 @@ The hackathon heatmap spreads each link's evidence over a Gaussian band around i
 per cell as half the sum plus half the geometric mean of the two strongest. At four links that was enough. At
 30 nodes (870 links) it is not: every link that sees a little change paints its whole line, the strongest two
 links per cell decide everything, and extra links add nothing. On the simulated walker in the 30-node test room
-its hottest cell was a median 1.1 m from the walker, and the map was saturated along most lines (heat 1.0).
+its hottest cell was on average 2.7 m from the walker (at worst 3.7 m), because the map was saturated along most
+lines (heat 1.0 everywhere).
 The spec asks for a heatmap that sharpens as links are added and keeps ADR-0011's evidence.
 
 ## Decision
@@ -38,22 +39,24 @@ The spec asks for a heatmap that sharpens as links are added and keeps ADR-0011'
 
 ## Alternatives considered
 
-- **Keep the footprint and agreement rule at 870 links.** Measured on the simulator and rejected: median error
-  1.1 m at 30 nodes against 0.2 m at 8, and a saturated map.
+- **Keep the footprint and agreement rule at 870 links.** Measured on the simulator and rejected: mean peak
+  error 2.7 m at 30 nodes against 0.34 m at 8, a saturated map, and no separate hot spots for two people.
 - **Tikhonov with difference operators** (VRTI eq. 21). Equivalent in spirit; the exponential prior was chosen
   because its one length scale is easy to state and the papers' parameter tables use it.
 - **Thin ellipses as in the papers** (RTI 0.02 m excess path on 0.6 m pixels). On our 0.14 m cells the 30-node
-  image broke into speckle around the person and its peak sat 0.45 m off; 0.2 m gave 0.12 m in the same run.
+  image broke into speckle around the person and its peak sat a median 0.45 m off (0.05 m excess path); 0.2 m
+  gave 0.12 m on the same simulated walk.
 - **A trained or calibrated weight model** (measured per room, or a walk-through): ruled out by ADR-0020.
 
 ## Consequences
 
 - More links now sharpen the map: on the simulated walker the hottest cell's worst error over the walk falls
-  from about 0.7 m at 8 nodes to about 0.3 m at 30 (tests/test_heatmap_rti.py). Two people far apart show as two
-  hot spots at 30 nodes; at 8 nodes the two ghost crossings of their links are almost as hot as they are.
+  from 0.45 m at 8 nodes to 0.26-0.29 m at 30, with medians of 0.14-0.16 m at both (seeds 0-2,
+  tests/test_heatmap_rti.py). Two people far apart show as two hot spots at 30 nodes, with the two ghost
+  crossings of their links at about 0.3-0.4 of their heat; at 8 nodes the ghosts reach about half.
 - The parameters were chosen on the simulator, whose link response (a Gaussian of 0.25 m around the line) is
   itself a guess. They must be checked on the 8-node labelled walk (#20) before any accuracy is claimed.
-- The heat level differs from the footprint map: one walker gives about 0.6 at 8 nodes and 0.35 at 30, so the
+- The heat level differs from the footprint map: one walker peaks at about 0.65 at 8 nodes and 0.45 at 30, so the
   tracker's `MIN_HEAT` 0.1 still applies but the page's colour scale reads cooler at 30 nodes.
 - Cost: building Pi for 870 links and 504 cells takes about 0.7 s once per layout; applying it is about 0.1 ms
   per heatmap step. Per-link baselines dominate a step (about 6 ms at 870 links); the quiet baseline keeps its
