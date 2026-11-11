@@ -17,7 +17,7 @@ All of these decisions were made during the CodeMetalForge hackathon and recorde
 | [0009](0009-fixed-thresholds-by-default.md) | Fixed per-link thresholds by default; adaptive mode is experimental | Accepted | 2026-11-07 |
 | [0010](0010-two-noisy-room-calibration-methods.md) | Two noisy-room calibration methods, no winner declared | Experimental | 2026-11-07 |
 | [0011](0011-heatmap-evidence-from-quiet-baseline.md) | Heatmap evidence from each link's quiet baseline, not its threshold | Accepted | 2026-11-07 |
-| [0012](0012-host-ts-line-stream-seam.md) | Every packet source is a `(host_ts, line)` stream | Accepted | 2026-11-07 |
+| [0012](0012-host-ts-line-stream-seam.md) | Every packet source is a `(host_ts, line)` stream | Accepted for the line pipeline; superseded by [0021](0021-host-time-round-broadcast-seam.md) for the transceiver pipeline | 2026-11-07 |
 | [0013](0013-packet-time-not-wall-clock.md) | Pipeline time comes from the packets, not the wall clock | Accepted | 2026-11-07 |
 | [0014](0014-room-model-as-config.md) | The rig is configuration: `config/room.json` | Accepted | 2026-11-07 |
 | [0015](0015-stdlib-http-server-loopback-commands.md) | Standard-library HTTP server; commands only from this machine by default | Accepted | 2026-11-07 |
@@ -26,6 +26,7 @@ All of these decisions were made during the CodeMetalForge hackathon and recorde
 | [0018](0018-evaluate-by-recording.md) | Evaluate by recording, never by random window | Accepted | 2026-11-07 |
 | [0019](0019-wireless-receivers-over-esp-now.md) | Wireless receivers: forward CSI over ESP-NOW to one gateway | Accepted | 2026-11-08 |
 | [0020](0020-plug-and-play-no-per-layout-training.md) | Plug and play: no per-layout training | Accepted | 2026-11-08 |
+| [0021](0021-host-time-round-broadcast-seam.md) | Every transceiver source is a `(host time, round broadcast)` stream | Accepted | 2026-11-11 |
 
 Reading order: 0001 is the principle the detection records (0007 to 0011) argue from. 0002 to 0006 are the hardware and radio. 0012 to 0018 are the software architecture and how it is tested.
 

@@ -1,6 +1,6 @@
 # 0012. Every packet source is a `(host_ts, line)` stream
 
-- **Status:** Accepted
+- **Status:** Accepted for the line pipeline (the hackathon rig and its recordings); superseded by [0021](0021-host-time-round-broadcast-seam.md) for the transceiver pipeline
 - **Date:** 2026-11-07
 - **Recorded in:** issue #1 ("Single stream seam"), `1b7e1a8` (`MultiSource`), issue #12 and `12bdc48` (the dashboard server keeps the seam)
 - **Related:** [0004](0004-wired-receivers-wireless-deferred.md), [0013](0013-packet-time-not-wall-clock.md), [0017](0017-tests-pinned-to-frozen-fixture.md)

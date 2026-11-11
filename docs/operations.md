@@ -427,6 +427,7 @@ Exactly one packet source is required:
 | `--auto-ports` | Find each enabled receiver's port by its USB serial (`"serial"` in the room file). Fails, naming them, if any enabled receiver is not connected, has no serial, or matches more than one port. |
 | `--port [NAME=]PATH` | A receiver's serial port; repeat for each receiver. A value is named when the part before the first `=` contains no `/`. Unnamed values become `rx1`, `rx2`, ... skipping names already given. A port named after a disabled node is never opened. |
 | `--simulate-room` | A simulated person walks a loop through the room in real time. No hardware. |
+| `--simulate` | A simulated transceiver rig: the room's transceivers send [round broadcasts](round-broadcast.md) while a person walks a loop, in real time. No hardware. Needs a room with at least two transceivers, for example `--room config/room_tr8.json` (8 nodes, 56 links). Every link is in auto mode. |
 | `--replay run.jsonl` | Serve a run written with `--log`. See [Logging and replay](#logging-and-replay). |
 | `--replay-session DIR` | Feed a recorded session through the live pipeline. See [Logging and replay](#logging-and-replay). |
 
@@ -440,7 +441,7 @@ Other options:
 | `--room PATH` | `config/room.json`, or `$CSI_ROOM` when set | Room configuration. |
 | `--baud N` | 921600 | Serial baud rate. |
 | `--seed N` | 0 | Simulator seed. |
-| `--sim-quiet-first SECONDS` | 0 | With `--simulate-room`: the simulated room stays empty this long before the walk starts, so Calibrate can be tried. 60 is a good value; a default calibration takes about 45 s. |
+| `--sim-quiet-first SECONDS` | 0 | With `--simulate-room` or `--simulate`: the simulated room stays empty this long before the walk starts, so Calibrate can be tried. 60 is a good value; a default calibration takes about 45 s. |
 | `--log run.jsonl` | none | Append the state stream to a file. |
 | `--speed 1\|N\|max` | 1 | Replay speed. |
 | `--margin X` | 1.25 | With `--replay-session` and no `--thresholds`: the calibration margin. |
@@ -453,7 +454,9 @@ The server checks the combination at start and exits with an error when:
 
 - more than one source, or none, is given;
 - `--speed` is given without `--replay` or `--replay-session`;
-- `--sim-quiet-first` is given without `--simulate-room`;
+- `--sim-quiet-first` is given without `--simulate-room` or `--simulate`;
+- `--thresholds` or `--raw-log` is combined with `--simulate`;
+- `--simulate` is given a room with fewer than two transceivers;
 - `--margin` is given without `--replay-session`;
 - `--log` or `--thresholds` is combined with `--replay` (a log already holds its states);
 - `--auto-threshold` is combined with a replay;
