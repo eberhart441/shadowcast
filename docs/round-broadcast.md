@@ -101,14 +101,14 @@ The **test kit key** `000102030405060708090a0b0c0d0e0f` is published: the fixtur
 host defaults to it for `--simulate` and `--replay-rounds` (pass `--kit-key` to replay a real kit's recording),
 and neither `node.py` nor a node accepts it as a kit key.
 
-**Freshness (replay).** A copied round broadcast keeps a valid tag, so the round number guards against replay.
+**Freshness.** A copied round broadcast keeps a valid tag, so the round number guards against it being sent again.
 Every receiver (the host, per board serial; a node, per node id) keeps the last fresh round number of each sender
 and when it was heard. A broadcast whose tag verifies is **fresh** if its round number is 1 to 16 + *t* ahead of
 that last fresh one (mod 2^16), where *t* is the milliseconds since it; anything else, the same round again, an
-older one, or one too far ahead, is a **replay** (reason `replay`) and is not used. The exception is a sender
+older one, or one too far ahead, is **stale** (reason `stale`) and is not used. The exception is a sender
 silent for more than 2 s, with no fresh broadcast: its next one is taken at any round number, because a node that
 restarted or renumbered its rounds starts again from wherever it is. The first broadcast heard from a sender is
-fresh. On the host, de-duplication runs first, so a second gateway's copy is a `duplicate`, not a replay.
+fresh. On the host, de-duplication runs first, so a second gateway's copy is a `duplicate`, not stale.
 
 What it does not stop: while a node is silent for more than 2 s, a replay of its own old broadcasts can stand in
 for it until it is heard again; and a copy recorded a whole number of round-number wraps ago (55 min at 20 Hz,
@@ -133,7 +133,7 @@ length is reason `length`), with these meanings:
 
 Join frames are signed like round broadcasts and a forged one is rejected as `auth`. Host and node check a join
 frame for freshness like any frame (both carry the joiner's round numbers, so they count on with its own): one that
-names a room node and is stale for it is rejected as `replay`. The host counts the others
+names a room node and is stale for it is rejected as `stale`. The host counts the others
 (`status.broadcasts.join_frames`, every copy; a second gateway's copy is not checked again) and never places them;
 a grant tells it the joiner's index in the new schedule version. A node never takes its timing from a join frame.
 
@@ -236,7 +236,7 @@ command).
 - Bytes that fail to decode are counted by reason (`short`, `version`, `frame_type`, `length`, `membership`)
   and dropped. Then the tag is checked: one that does not verify is counted as `auth` before anything else
   looks at it, so a forgery cannot take the place of the real broadcast. A round broadcast whose node id is not in
-  the room config is counted as an unknown node; one that is stale for its sender as `replay`.
+  the room config is counted as an unknown node; one that is stale for its sender as `stale`.
 - Several gateways may hear one round broadcast. The host places the first copy of (node id, schedule version,
   round number); any other copy within 2 s of host time, from any gateway, is counted as a `duplicate` and not
   placed again. Two gateways therefore never double-count a link report. A node must not send two different

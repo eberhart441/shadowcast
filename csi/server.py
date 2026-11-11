@@ -20,7 +20,7 @@ HTTP:
     POST /api/raw-mode {"link": "n1<-n5", "on": true|false}: raw mode for one transceiver link (csi/raw_mode.py),
                        sent through a gateway in ``transmitters``; 200 {raw_mode, sent, via}, 400 for a bad body
                        or unknown link, 409 {error, reason} when refused (byte budget, a node's limit, the node not
-                       heard yet, no gateway that can send, a replay). A command like the others: loopback only
+                       heard yet, no gateway that can send, a replayed run). A command like the others: loopback only
                        unless --allow-control (ADR-0015)
     anything else      404
 

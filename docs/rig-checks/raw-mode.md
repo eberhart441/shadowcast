@@ -40,7 +40,7 @@ Click the cell row n1, column n2 in the "Links by node pair" matrix, then "Strea
   status `sent` counter grew by 3 (`python scripts/node.py` cannot share the port with the dashboard; the dashboard's
   `GET /api/state` has no gateway counters, so stop the dashboard and run `python scripts/node.py <GATEWAY PORT>
   status --seconds 5` if needed) and that A logged `raw mode: 1 link(s)`.
-- `status.broadcasts.raw_csi.blocks` grows; `rejected` stays 0 for every reason except perhaps a few `replay`.
+- `status.broadcasts.raw_csi.blocks` grows; `rejected` stays 0 for every reason except perhaps a few `stale`.
 - **The check:** over one minute, the link rate of `n2<-n1` (the other link) stays within 2/s of its baseline from
   step 1, and `n1<-n2` too. Write down both rates.
 - Let it run 30 s, then press "Stop raw CSI" (or the same curl with `false`). The list shows `stopping`, then `off`;

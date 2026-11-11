@@ -60,9 +60,9 @@ The 16-byte secret shared by every node of a kit and the dashboard host, that au
 _Avoid_: password, secret (alone)
 _See_: `csi/round_auth.py` (`load_kit_key`, `kit_key_check`), `firmware/node/main/node_auth.h`
 
-**Replay**:
-A round broadcast with a valid tag whose round number is stale for its sender: not 1 to 16 + 1 per millisecond ahead of the last fresh one. It is rejected as `replay` and not used. A sender silent for more than 2 s is taken at any round number again.
-_Avoid_: duplicate (that is a second gateway's copy, within 2 s)
+**Stale round broadcast**:
+A round broadcast (or join frame) with a valid tag whose round number is stale for its sender: not 1 to 16 + 1 per millisecond ahead of the last fresh one, as a recorded copy sent again would be. It is rejected as `stale` and not used. A sender silent for more than 2 s is taken at any round number again.
+_Avoid_: replay (that is serving a run log or feeding a recording through the pipeline), duplicate (that is a second gateway's copy, within 2 s)
 _See_: `csi/round_auth.py` (`Freshness`), `firmware/core/round_auth.h` (`rb_auth_fresh`)
 
 **Link report**:

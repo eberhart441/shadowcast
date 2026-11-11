@@ -221,7 +221,7 @@ class RoundRecording:
 
     def raw_csi(self, kit_key: bytes = TEST_KIT_KEY) -> list[RawSample]:
         """Every raw CSI block in the recording, in host-time order, each on its link: the round broadcasts go
-        through the live ingest (``RoundIngest``, so forged, replayed and duplicate copies count for nothing), with
+        through the live ingest (``RoundIngest``, so forged, stale and duplicate copies count for nothing), with
         ``kit_key``, the recorded kit's key (the default fits a simulated run)."""
         ingest = RoundIngest(self.room, kit_key)
         out = []

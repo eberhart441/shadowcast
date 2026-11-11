@@ -75,18 +75,18 @@ def test_a_copy_is_a_duplicate_only_for_the_same_node_schedule_and_round_within_
     state.push_broadcast(T0 + 1.9, broadcast("n1", 7), "gw2")              # the same round, late: a copy
     state.push_broadcast(T0 + 0.1, broadcast("n2", 7), "gw2")              # another node, same round
     state.push_broadcast(T0 + 0.1, broadcast("n1", 7, schedule=2), "gw2")  # not a copy: a new schedule, but
-    #                                                    the same round number again from n1 is a replay
+    #                                                    the same round number again from n1 is stale
     state.push_broadcast(T0 + 3300.0, broadcast("n1", 7), "gw1")           # the u16 round number wrapped
     counts = state.snapshot(T0 + 3300.0)["status"]["broadcasts"]
     assert counts["accepted"] == 3
     assert counts["rejected"]["duplicate"] == 1
-    assert counts["rejected"]["replay"] == 1
+    assert counts["rejected"]["stale"] == 1
 
 
 def test_every_rejection_reason_has_a_counter_from_the_start():
     counts = DashboardState(ROOM, mode="auto").snapshot(T0)["status"]["broadcasts"]
     assert counts["rejected"] == {"short": 0, "version": 0, "frame_type": 0, "length": 0, "membership": 0,
-                                  "auth": 0, "replay": 0, "duplicate": 0, "queue_overflow": 0}
+                                  "auth": 0, "stale": 0, "duplicate": 0, "queue_overflow": 0}
 
 
 def test_each_malformed_or_wrong_version_record_is_counted_by_its_reason():
@@ -100,7 +100,7 @@ def test_each_malformed_or_wrong_version_record_is_counted_by_its_reason():
         state.push_broadcast(T0, data, "gw1")
     counts = state.snapshot(T0)["status"]["broadcasts"]
     assert counts["rejected"] == {"short": 1, "version": 1, "frame_type": 1, "length": 1, "membership": 1,
-                                  "auth": 0, "replay": 0, "duplicate": 0, "queue_overflow": 0}
+                                  "auth": 0, "stale": 0, "duplicate": 0, "queue_overflow": 0}
     assert counts["accepted"] == 0 and counts["heard"] == 5
 
 
@@ -130,7 +130,7 @@ def test_a_forged_broadcast_cannot_take_the_place_of_the_real_one():
     assert (counts["accepted"], counts["rejected"]["auth"], counts["rejected"]["duplicate"]) == (1, 1, 0)
 
 
-def test_a_replayed_broadcast_is_counted_as_replay_and_not_used():
+def test_a_broadcast_sent_again_is_counted_as_stale_and_not_used():
     state = DashboardState(ROOM, mode="auto")
     live = rounds(6.0)
     for host_ts, _, data in live:
@@ -138,9 +138,9 @@ def test_a_replayed_broadcast_is_counted_as_replay_and_not_used():
     _, _, old = live[8 * 10]                                        # n1's round 10, recorded 5.5 s ago
     state.push_broadcast(T0 + 6.0, old, "gw1")
     counts = state.snapshot(T0 + 6.0)["status"]["broadcasts"]
-    assert counts["rejected"]["replay"] == 1 and counts["rejected"]["duplicate"] == 0
+    assert counts["rejected"]["stale"] == 1 and counts["rejected"]["duplicate"] == 0
     assert counts["accepted"] == len(live)
-    assert any("replay 1" in m for m in broadcast_messages(counts))
+    assert any("stale 1" in m for m in broadcast_messages(counts))
 
 
 def test_a_node_that_restarts_its_round_numbers_is_taken_again_after_two_silent_seconds():
@@ -151,7 +151,7 @@ def test_a_node_that_restarts_its_round_numbers_is_taken_again_after_two_silent_
     for k in range(10):
         state.push_broadcast(restart + k / ROUND_HZ, broadcast("n1", k), "gw1")
     counts = state.snapshot(restart + 1.0)["status"]["broadcasts"]
-    assert counts["accepted"] == 50 and counts["rejected"]["replay"] == 0
+    assert counts["accepted"] == 50 and counts["rejected"]["stale"] == 0
 
 
 def test_the_host_verifies_with_the_kit_key_it_is_given():
@@ -273,7 +273,7 @@ def test_a_stale_join_frame_is_rejected_like_a_stale_round_broadcast():
     ingest.place(grant, T0 + 3.1, "gw1")                    # the recorded grant, sent again
     counts = ingest.counts()
     assert counts["join_frames"] == {"request": 0, "grant": 1}
-    assert counts["rejected"]["replay"] == 1
+    assert counts["rejected"]["stale"] == 1
     assert counts["heard"] == counts["accepted"] + sum(counts["rejected"].values()) + 1
 
 

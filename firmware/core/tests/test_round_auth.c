@@ -2,7 +2,7 @@
  * The node's round broadcast authentication reproduces the golden fixtures the host is pinned to
  * (tests/fixtures/round_broadcast_v2.json, flattened by scripts/gen_wire_vectors.py into tests/vectors/round_auth.txt):
  * every valid case verifies and signs back to its bytes, every forged case is refused, the key check value matches,
- * and the freshness sequence gives the same fresh/replay verdicts as the host.
+ * and the freshness sequence gives the same fresh/stale verdicts as the host.
  *
  * The MAC here is the portable reference HMAC-SHA256 (tests/hmac_sha256.c, itself checked against RFC 4231); the
  * node supplies the same function from mbedTLS (firmware/node/main/node_auth.c).
@@ -75,12 +75,12 @@ static void check_fresh(rb_auth_t *a, char **tok)
     vec_hex(tok[2], id, sizeof id);
     int64_t t = strtoll(tok[1], NULL, 10);
     rb_auth_status_t st = rb_auth_fresh(a, id, (uint16_t)strtoul(tok[3], NULL, 10), t);
-    CHECK(strcmp(rb_auth_status_name(st), strcmp(tok[0], "fresh") == 0 ? "ok" : "replay") == 0,
+    CHECK(strcmp(rb_auth_status_name(st), strcmp(tok[0], "fresh") == 0 ? "ok" : "stale") == 0,
           "freshness at t=%s us, node %s, round %s: got %s, expected %s", tok[1], tok[2], tok[3],
           rb_auth_status_name(st), tok[0]);
 }
 
-/* rb_auth_check on whole broadcasts: a signed one is fresh once, then a replay; a forged one never counts. */
+/* rb_auth_check on whole broadcasts: a signed one is fresh once, then stale; a forged one never counts. */
 static void check_whole_broadcasts(void)
 {
     rb_auth_t a;
@@ -88,7 +88,7 @@ static void check_whole_broadcasts(void)
     uint8_t b[RB_HEADER_BYTES] = {RB_VERSION, RB_FRAME_ROUND, 7, 0, 0, 1, 1, 0, 1, 0, 0, 0, 2, 0, 0, 0, 0, 9};
     CHECK(rb_auth_sign(&a, b, sizeof b), "a header-only broadcast signs");
     CHECK(rb_auth_check(&a, b, sizeof b, 1000) == RB_AUTH_OK, "a signed broadcast is accepted");
-    CHECK(rb_auth_check(&a, b, sizeof b, 30000) == RB_AUTH_REPLAY, "the same broadcast again is a replay");
+    CHECK(rb_auth_check(&a, b, sizeof b, 30000) == RB_AUTH_STALE, "the same broadcast again is stale");
     b[2] = 8;   /* round 8, tag left for round 7: forged; it must not move the freshness state */
     CHECK(rb_auth_check(&a, b, sizeof b, 40000) == RB_AUTH_FORGED, "a changed broadcast is forged");
     CHECK(rb_auth_sign(&a, b, sizeof b) && rb_auth_check(&a, b, sizeof b, 50000) == RB_AUTH_OK,
@@ -109,7 +109,7 @@ static void check_table_is_bounded(void)
         CHECK(rb_auth_fresh(&a, id, 10, 1000 * k) == RB_AUTH_OK, "node %d first heard", k);
     }
     id[5] = (uint8_t)(RB_AUTH_FRESH_NODES + 7);
-    CHECK(rb_auth_fresh(&a, id, 10, 1000 * (RB_AUTH_FRESH_NODES + 8)) == RB_AUTH_REPLAY,
+    CHECK(rb_auth_fresh(&a, id, 10, 1000 * (RB_AUTH_FRESH_NODES + 8)) == RB_AUTH_STALE,
           "the newest node is still remembered");
 }
 
@@ -179,7 +179,7 @@ int main(int argc, char **argv)
         } else if (strcmp(tok[0], "forged") == 0 && n == 3) {
             check_forged(&a, tok[1], tok[2]);
             forged_n++;
-        } else if ((strcmp(tok[0], "fresh") == 0 || strcmp(tok[0], "replay") == 0) && n == 4) {
+        } else if ((strcmp(tok[0], "fresh") == 0 || strcmp(tok[0], "stale") == 0) && n == 4) {
             check_fresh(&a, tok);
             fresh_n++;
         } else {

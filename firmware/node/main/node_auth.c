@@ -28,7 +28,7 @@ static bool s_ready;
 static rb_auth_t s_auth;
 static uint8_t s_check[RB_AUTH_CHECK_BYTES];
 static uint32_t s_sign_us, s_verify_us;   /* measured at start, per 142-byte broadcast */
-static volatile uint32_t s_forged, s_replayed;
+static volatile uint32_t s_forged, s_stale;
 
 static bool psa_hmac(void *ctx, const uint8_t *msg, size_t len, uint8_t mac[RB_AUTH_MAC_BYTES])
 {
@@ -147,8 +147,8 @@ bool node_auth_accept(const uint8_t *bytes, size_t len, int64_t t_us)
     rb_auth_status_t st = rb_auth_check(&s_auth, bytes, len, t_us);
     if (st == RB_AUTH_FORGED) {
         s_forged++;
-    } else if (st == RB_AUTH_REPLAY) {
-        s_replayed++;
+    } else if (st == RB_AUTH_STALE) {
+        s_stale++;
     }
     return st == RB_AUTH_OK;
 }
@@ -189,9 +189,9 @@ bool node_auth_command(const char *line, char *reply, size_t n, node_cmd_t *acti
     *action = NODE_CMD_NONE;
     if (len == 0) {
         if (s_ready) {
-            snprintf(reply, n, "ok key check=%02x%02x%02x%02x sign_us=%lu verify_us=%lu forged=%lu replayed=%lu",
+            snprintf(reply, n, "ok key check=%02x%02x%02x%02x sign_us=%lu verify_us=%lu forged=%lu stale=%lu",
                      s_check[0], s_check[1], s_check[2], s_check[3], (unsigned long)s_sign_us,
-                     (unsigned long)s_verify_us, (unsigned long)s_forged, (unsigned long)s_replayed);
+                     (unsigned long)s_verify_us, (unsigned long)s_forged, (unsigned long)s_stale);
         } else {
             snprintf(reply, n, "ok key none (this node only listens; scripts/node.py PORT key FILE) sign_us=%lu "
                      "verify_us=%lu", (unsigned long)s_sign_us, (unsigned long)s_verify_us);

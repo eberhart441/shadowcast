@@ -520,7 +520,7 @@ static void on_heard(const node_item_t *item)
         return;   /* a maintenance command (node_ota.h) */
     }
     if (rb_decode(body, body_len, &b) != RB_OK || !node_auth_accept(body, body_len, item->t_us)) {
-        count(GR_COUNT_REJECTED);   /* not a v2 frame of ours, forged or replayed */
+        count(GR_COUNT_REJECTED);   /* not a v2 frame of ours, forged or stale */
         return;
     }
     if (b.frame_type == RB_FRAME_RAW_REQUEST) {

@@ -12,7 +12,7 @@ kit key is rejected and counted, and what signing and verifying cost on an ESP32
 With a transceiver on USB and the dashboard stopped, run `python scripts/node.py <PORT> key`. Expect
 
 ```
-ok key check=<8 hex> sign_us=<n> verify_us=<n> forged=<n> replayed=<n>
+ok key check=<8 hex> sign_us=<n> verify_us=<n> forged=<n> stale=<n>
 ```
 
 `sign_us` and `verify_us` are the node's own measurement at start-up: the mean over 100 signs and 100 verifies of a
@@ -25,7 +25,7 @@ transceivers.
 
 Run the dashboard as in [`two-nodes.md`](two-nodes.md) step 4. `status.messages` names the host's kit key check;
 it must equal the check both transceivers showed. After a minute, `GET /api/state` `status.broadcasts.rejected`:
-`auth` and `replay` stay at 0 and `accepted` grows by about 80 per second (two nodes at 40 Hz).
+`auth` and `stale` stay at 0 and `accepted` grows by about 80 per second (two nodes at 40 Hz).
 
 ## 3. A node with another key
 

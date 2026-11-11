@@ -27,7 +27,7 @@ from .broadcast import (FLAG_RAW_MODE, FLAG_WARMING, FORMAT_VERSION, FRAME_RAW_R
                         FRAME_ROUND_RAW, HEARD_WINDOW_ROUNDS, MAX_NODES, RAW_MAX_LINKS, RAW_REQUEST_MAX_AGE_ROUNDS,
                         SINCE_MAX, BroadcastError, LinkReport, RawCsi, RoundBroadcast, decode_broadcast,
                         encode_broadcast, quantise_score)
-from .round_auth import REPLAY, TEST_KIT_KEY, Freshness, sign_broadcast, tag_ok
+from .round_auth import STALE, TEST_KIT_KEY, Freshness, sign_broadcast, tag_ok
 from .links import LinkId
 from .parser import DEFAULT_HEADER, CSIPacket, CSIParser, parse_stream
 from .room import FALLOFF_SIGMA_M, Person, Room, link_responses, load_room, movement
@@ -479,7 +479,7 @@ def _take_request(frame: bytes, nodes: Sequence, raw_sets: list, round_no: int, 
         return
     if request.frame_type != FRAME_RAW_REQUEST or not tag_ok(frame, kit_key):
         return
-    if fresh.check(request.node_id.upper(), request.round, host_ts) == REPLAY:
+    if fresh.check(request.node_id.upper(), request.round, host_ts) == STALE:
         return
     serials = {node.serial.upper(): i for i, node in enumerate(nodes)}
     target = serials.get(request.request.target.upper())

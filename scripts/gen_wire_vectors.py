@@ -24,7 +24,7 @@ round_auth.txt (the same fixture: its key, valid, forged and freshness cases; do
     key <kit key hex> <key check hex>
     signed <name> <hex>                     verifies under the key; signing it with its tag zeroed gives it back
     forged <name> <hex>                     decodes, but its tag does not verify
-    fresh|replay <t_us> <node_id hex> <round>   one step of the freshness sequence, in order
+    fresh|stale <t_us> <node_id hex> <round>   one step of the freshness sequence, in order
 
 gateway_record.txt (fixture tests/fixtures/gateway_record_v1.json, format docs/gateway-record.md):
 

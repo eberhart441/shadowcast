@@ -3,7 +3,7 @@
 Every transceiver source is a stream of ``(host time, round broadcast bytes)`` (``BroadcastStream``; see
 docs/adr/0022-host-time-round-broadcast-seam.md). ``RoundIngest`` decodes each round broadcast
 (csi/broadcast.py), checks its authentication tag against the kit key and its round number
-against replay (csi/round_auth.py), names its sender by board serial from the room config, and places each link
+for freshness (csi/round_auth.py), names its sender by board serial from the room config, and places each link
 report on its link, ``NodeLinkId(receiving node, transmitting node)``:
 
     ingest = RoundIngest(room, kit_key)        # kit_key defaults to the simulator's TEST_KIT_KEY
@@ -16,7 +16,7 @@ report on its link, ``NodeLinkId(receiving node, transmitting node)``:
 
 A broadcast whose tag does not verify (forged, or another kit's key) is counted as ``auth`` before anything else
 looks at it, so a forgery never enters the de-duplication memory and cannot crowd out the real broadcast. One that
-verifies but whose round number is stale for its node (``round_auth.Freshness``) is counted as ``replay``.
+verifies but whose round number is stale for its node (``round_auth.Freshness``) is counted as ``stale``.
 
 Several gateways may hear the same round broadcast. The first copy of (node serial, schedule version, round
 number) is placed; another copy within ``DEDUP_WINDOW_S`` of host time, from any source, is counted as a
@@ -27,7 +27,7 @@ round broadcasts, per schedule version, so a report about a node the host has no
 version) cannot be placed: it is counted as unplaced. A join grant from the round scheduler (ticket #14) names
 the joining node and its index in the new schedule version, so reports about a joiner place from the start.
 Join frames (requests and grants) carry no link reports: each copy is counted in ``join_frames`` and never
-placed; one that names a room node and is stale for it is rejected as ``replay``, as a round broadcast is. A
+placed; one that names a room node and is stale for it is rejected as ``stale``, as a round broadcast is. A
 round broadcast with raw CSI (frame type 5) is placed like any round broadcast, and its raw CSI blocks are placed
 on their links too (``last_raw``, counted in ``raw_csi``). A raw mode request (frame type 4) that a gateway heard
 from another gateway is counted in ``raw_requests`` and not used, and so is an authenticated maintenance command
@@ -47,7 +47,7 @@ from .broadcast import (DECODE_REASONS, FRAME_JOIN_GRANT, FRAME_MAINTENANCE, FRA
                         RawCsi, decode_broadcast)
 from .links import NodeLinkId
 from .room import Room
-from .round_auth import REPLAY, TEST_KIT_KEY, Freshness, tag_ok
+from .round_auth import STALE, TEST_KIT_KEY, Freshness, tag_ok
 
 # A stream of (host time, round broadcast bytes); a quiet source may yield (host_ts, None) as a heartbeat.
 BroadcastStream = Iterable[tuple[float, Optional[bytes]]]
@@ -59,7 +59,7 @@ DUPLICATE = "duplicate"
 QUEUE_OVERFLOW = "queue_overflow"
 UNKNOWN_NODES_KEPT = 32   # unknown serials counted by name; any further ones are counted together as OTHER_NODES
 OTHER_NODES = "other"
-REJECT_REASONS = DECODE_REASONS + (AUTH, REPLAY, DUPLICATE, QUEUE_OVERFLOW)   # each has a counter in status.broadcasts.rejected
+REJECT_REASONS = DECODE_REASONS + (AUTH, STALE, DUPLICATE, QUEUE_OVERFLOW)   # each has a counter in status.broadcasts.rejected
 JOIN_FRAME_KINDS = ("request", "grant")                          # status.broadcasts.join_frames
 
 
@@ -129,8 +129,8 @@ class RoundIngest:
             known = broadcast.node_id in self._unknown or len(self._unknown) < UNKNOWN_NODES_KEPT
             self._unknown[broadcast.node_id if known else OTHER_NODES] += 1
             return []
-        if self._fresh.check(serial, broadcast.round, host_ts) == REPLAY:
-            self._rejected[REPLAY] += 1
+        if self._fresh.check(serial, broadcast.round, host_ts) == STALE:
+            self._rejected[STALE] += 1
             return []
         self._accepted += 1
         tally["accepted"] += 1
@@ -164,14 +164,14 @@ class RoundIngest:
         """A join request or grant: counted; a grant for a known node teaches its index in the new schedule.
 
         Like a round broadcast, a join frame naming a room node must be fresh for that node (the node applies the
-        same rule to every frame); a stale one is rejected as ``replay``. Another gateway's copy (same node,
+        same rule to every frame); a stale one is rejected as ``stale``. Another gateway's copy (same node,
         schedule version, round and frame type within DEDUP_WINDOW_S) is counted as a join frame again but not
         checked twice, so a second gateway never turns a join frame stale."""
         serial = frame.node_id.upper()
         name = self._names.get(serial)
         copy = self._duplicate((serial, frame.schedule_version, frame.round, frame.frame_type), host_ts)
-        if name is not None and not copy and self._fresh.check(serial, frame.round, host_ts) == REPLAY:
-            self._rejected[REPLAY] += 1
+        if name is not None and not copy and self._fresh.check(serial, frame.round, host_ts) == STALE:
+            self._rejected[STALE] += 1
             return
         grant = frame.frame_type == FRAME_JOIN_GRANT
         self._joins["grant" if grant else "request"] += 1

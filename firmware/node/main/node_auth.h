@@ -5,7 +5,7 @@
  * The kit key lives in NVS (namespace "node", blob "kit_key") and is set over USB with one text command, handled by
  * node_auth_command (scripts/node.py PORT key FILE):
  *
- *     key                 reply "ok key check=<8 hex> sign_us=.. verify_us=.. forged=.. replayed=.." or "ok key none"
+ *     key                 reply "ok key check=<8 hex> sign_us=.. verify_us=.. forged=.. stale=.." or "ok key none"
  *     key <32 hex>        save it and restart; reply "ok key check=<8 hex> (saved; restarting)"
  *
  * Neither reply ever holds the key. A transceiver without a key only listens (node_auth_ready is false).
@@ -30,7 +30,7 @@ bool node_auth_ready(void);
 bool node_auth_sign(uint8_t *bytes, size_t len);
 
 /* True if a heard round broadcast (decoded by rb_decode, heard at device time t_us) carries the kit's tag and a fresh
- * round number for its sender. Forged and replayed broadcasts are counted (see the key command) and give false. */
+ * round number for its sender. Forged and stale broadcasts are counted (see the key command) and give false. */
 bool node_auth_accept(const uint8_t *bytes, size_t len, int64_t t_us);
 
 /* HMAC-SHA256(kit key, msg) for values derived from the kit key (the OTA maintenance network passphrase and report

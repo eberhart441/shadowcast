@@ -58,7 +58,7 @@ one place, and counts what it rejects (ADR-0022).
 | 2 | USB dropped | records not written because the USB buffer was full (no host reading) | same |
 | 3 | sent | frames it sent for the host (`send`, raw mode requests) | round broadcasts sent |
 | 4 | send errors | failed sends of those | `esp_now_send` errors, failed send callbacks and missed slots |
-| 5 | rejected | frames longer than 416 bytes (not ours) | ESP-NOW frames that are not a v2 frame of ours, forged or replayed, or come from a node outside the round |
+| 5 | rejected | frames longer than 416 bytes (not ours) | ESP-NOW frames that are not a v2 frame of ours, forged or stale, or come from a node outside the round |
 | 6 | CSI skipped | 0 | CSI frames not scored: layout warm-up, a layout other than the locked one, or too many subcarriers |
 
 A body shorter than 18 bytes is reason `short_body`.
