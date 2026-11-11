@@ -46,6 +46,7 @@ Public API:
     ZoneMap.zones                                    (Zone(id, x0, y0, x1, y1), ...)
     RoomState(zone_map, ...)
     RoomState.observe(label, t, reading)             one link's latest Reading (None: no reading, e.g. NO_SIGNAL)
+    RoomState.observe_many(t, [(label, reading)])    the same for one round broadcast's links
     RoomState.update(t) -> state                     the room state at host time t; once per round broadcast
     RoomState.state, .zone_states, .elevated, .motion_zones
 """
@@ -118,6 +119,7 @@ class ZoneMap:
         for k, (_, rx, tx) in enumerate(links):
             cover[:, k] = point_segment_distance(self.points, (rx.x, rx.y), (tx.x, tx.y)) <= cover_m
         self.cover = cover
+        self.covered_by: tuple[np.ndarray, ...] = tuple(np.flatnonzero(cover[:, k]) for k in range(len(links)))
         self.covering: tuple[np.ndarray, ...] = tuple(np.flatnonzero(cover[p]) for p in range(len(points)))
 
 
@@ -173,6 +175,10 @@ class RoomState:
         self._last_warm: Optional[np.ndarray] = None
         self._last_elevated: Optional[np.ndarray] = None
         self._capacity: dict[int, int] = {}       # probe point -> capacity, for the current warm set
+        self._need = np.full(len(zone_map.points), -1)   # probe point -> need (0: never fires; -1: not known yet)
+        self._fired_on: Optional[np.ndarray] = None   # the elevated set of the last _fire (None: start afresh)
+        self._counts = np.zeros(len(zone_map.points), dtype=int)   # per point: covering links in that set
+        self._covered = np.zeros(len(zone_map.zones), dtype=bool)  # zones some live link covers
         self._room_m = 0                          # m: min(min_independent, independent warm links in the room)
         self._firing = np.zeros(len(zone_map.zones), dtype=bool)
         self._last_fired = np.full(len(zone_map.zones), -np.inf)
@@ -191,6 +197,22 @@ class RoomState:
         self._warm[k] = reading is not None and reading.warm
         self._elevated[k] = reading is not None and reading.warm and reading.elevated
 
+    def observe_many(self, t: float, readings: Sequence[tuple[str, Optional[Reading]]]) -> None:
+        """``observe`` for several links heard at the same host time (one round broadcast's link reports)."""
+        ks, warm, elevated = [], [], []
+        for label, reading in readings:
+            k = self._index.get(label)
+            if k is None:
+                continue
+            ks.append(k)
+            w = reading is not None and reading.warm
+            warm.append(w)
+            elevated.append(w and reading.elevated)
+        if ks:
+            self._heard[ks] = t
+            self._warm[ks] = warm
+            self._elevated[ks] = elevated
+
     def update(self, t: float) -> str:
         """The room state at host time ``t``, from the readings observed so far."""
         self._t = t
@@ -200,6 +222,11 @@ class RoomState:
         if self._last_warm is None or not np.array_equal(live, self._last_warm):
             self._last_warm = live.copy()
             self._capacity.clear()
+            self._need[:] = -1
+            self._fired_on = None
+            self._covered = np.zeros(len(self.map.zones), dtype=bool)
+            for k in np.flatnonzero(live):
+                self._covered[self.map.zone_of[self.map.covered_by[k]]] = True
             self._room_m = min(self.min_independent, independent_links(self._masks[live].tolist(), self.min_independent))
             self._last_elevated = None
         if self._last_elevated is None or not np.array_equal(elevated, self._last_elevated):
@@ -221,9 +248,7 @@ class RoomState:
     def zone_states(self) -> dict[str, str]:
         """{zone id: MOTION, EMPTY or WARMUP} at the last update (WARMUP: no warm link covers the zone)."""
         motion = self._zone_motion(self._t) if self._t is not None else np.zeros(len(self.map.zones), dtype=bool)
-        covered = np.zeros(len(self.map.zones), dtype=bool)
-        if self._live.any():
-            np.logical_or.at(covered, self.map.zone_of, self.map.cover[:, self._live].any(axis=1))
+        covered = self._covered
         return {z.id: MOTION if motion[i] else (EMPTY if covered[i] else WARMUP) for i, z in enumerate(self.map.zones)}
 
     @property
@@ -246,21 +271,36 @@ class RoomState:
         return self._firing | (t - self._last_fired < self.hold_s)
 
     def _fire(self, elevated: np.ndarray) -> np.ndarray:
-        firing = np.zeros(len(self.map.zones), dtype=bool)
+        """Which zones fire for this elevated set. Only zones whose covering elevated links changed since the last
+        call are judged again; the others keep their answer."""
         m = self._room_m
+        if self._fired_on is None:
+            self._counts[:] = 0
+            changed = np.flatnonzero(elevated)
+            firing = np.zeros(len(self.map.zones), dtype=bool)
+            redo = np.ones(len(self.map.zones), dtype=bool)
+        else:
+            changed = np.flatnonzero(elevated != self._fired_on)
+            firing = self._firing.copy()
+            redo = np.zeros(len(self.map.zones), dtype=bool)
+        for k in changed:   # links that rose or fell: only the points they cover change
+            points = self.map.covered_by[k]
+            self._counts[points] += 1 if elevated[k] else -1
+            redo[self.map.zone_of[points]] = True
+        self._fired_on = elevated.copy()
+        firing[redo] = False
+        counts = self._counts
         if m == 0 or int(elevated.sum()) < m:
-            return firing
-        counts = self.map.cover[:, elevated].sum(axis=1)
-        candidates = np.flatnonzero(counts >= m)
+            return np.zeros(len(self.map.zones), dtype=bool)
+        known = self._need
+        candidates = np.flatnonzero(redo[self.map.zone_of] & (counts >= m)
+                                    & ((known < 0) | ((known > 0) & (counts >= known))))
         for p in candidates[np.argsort(-counts[candidates], kind="stable")]:   # the best-covered points first
             zone = self.map.zone_of[p]
             if firing[zone]:
                 continue
-            capacity = self._point_capacity(p)
-            if capacity < m:
-                continue
-            need = self._need(capacity, m)
-            if counts[p] < need:
+            need = self._point_need(p, m)
+            if need == 0 or counts[p] < need:
                 continue
             links = self.map.covering[p]
             masks = self._masks[links[elevated[links]]].tolist()
@@ -273,8 +313,13 @@ class RoomState:
                 firing[zone] = True
         return firing
 
-    def _need(self, capacity: int, m: int) -> int:
-        return max(m, min(self.target_independent, capacity), math.ceil(self.fraction * capacity))
+    def _point_need(self, p: int, m: int) -> int:
+        """need(p) for the current warm set (see the module doc); 0 when the point has no independent view."""
+        if self._need[p] < 0:
+            capacity = self._point_capacity(p)
+            self._need[p] = 0 if capacity < m else max(m, min(self.target_independent, capacity),
+                                                       math.ceil(self.fraction * capacity))
+        return int(self._need[p])
 
     def _point_capacity(self, p: int) -> int:
         if p not in self._capacity:

@@ -270,14 +270,17 @@ class LinkMonitor:
 
     def push_reports(self, host_ts: float, reports: Iterable[tuple[NodeLinkId, LinkReport]]) -> None:
         """Feed the link reports of one round broadcast, heard at ``host_ts``; the room decision follows once."""
-        for link_id, report in reports:
-            link = self._get(link_id)
-            link.push_report(host_ts, report)
-            if self._zones is not None:
-                self._zones.observe(link.label, host_ts, link.reading)
         if self._zones is not None:
+            seen = []
+            for link_id, report in reports:
+                link = self._get(link_id)
+                link.push_report(host_ts, report)
+                seen.append((link.label, link.reading))
+            self._zones.observe_many(host_ts, seen)
             self._zones.update(host_ts)   # incremental; it re-judges its points at most once a round itself
             return
+        for link_id, report in reports:
+            self._get(link_id).push_report(host_ts, report)
         # one decision per round, not per round broadcast: each looks at every link (870 at 30 nodes)
         if self._room_t is None or not 0 <= host_ts - self._room_t < self.room_step_s:
             self._update_room(host_ts)
