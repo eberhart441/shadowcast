@@ -12,8 +12,9 @@ import pytest
 
 from csi.broadcast import LinkReport, RoundBroadcast, encode_broadcast, quantise_score
 from csi.dashboard import DashboardState
-from csi.room import load_room
+from csi.room import Walk, load_room
 from csi.server import DashboardServer
+from csi.simulate import simulate_gateways, simulate_rounds
 
 ROOM = load_room(Path(__file__).parent / "fixtures" / "room_tr8.json")
 NAMES = [f"n{k}" for k in range(1, 9)]
@@ -153,3 +154,18 @@ def test_an_overloaded_consumer_drops_live_records_with_a_count_and_bounded_memo
     assert counts["sources"]["gw1"]["queue_overflow"] == dropped
     assert counts["heard"] == len(live) == counts["accepted"] + dropped     # every record accounted for
     assert any("dropped" in m and "fell behind" in m for m in payload["status"]["messages"])
+
+
+def test_two_simulated_gateways_hearing_overlapping_nodes_give_the_links_of_one():
+    walk = Walk(((1.0, 1.5), (3.0, 1.5)), speed_mps=0.4, loop=True)
+    kwargs = dict(duration_s=6.0, quiet_first_s=3.0, seed=5, t0=T0)
+    one = serve({"gw": simulate_rounds(ROOM, walk, **kwargs)})
+    two = serve(simulate_gateways(ROOM, walk, hears={"gw1": NAMES[:6], "gw2": NAMES[2:]}, **kwargs))
+    rate = {r["id"]: r["pkt_rate"] for r in one["links"]}
+    assert {r["id"]: r["pkt_rate"] for r in two["links"]} == pytest.approx(rate, abs=1.0)   # 40 if counted twice
+    assert {r["id"]: r["state"] for r in two["links"]} == {r["id"]: r["state"] for r in one["links"]}
+    counts = two["status"]["broadcasts"]
+    assert counts["accepted"] == one["status"]["broadcasts"]["accepted"] == 8 * 6 * 20
+    assert counts["rejected"]["duplicate"] == 4 * 6 * 20              # n3..n6, heard by both
+    assert counts["sources"]["gw1"]["heard"] == counts["sources"]["gw2"]["heard"] == 6 * 6 * 20
+    assert two["status"]["receivers"] == {"gw1": "finished", "gw2": "finished"}
