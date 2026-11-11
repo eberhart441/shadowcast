@@ -29,6 +29,7 @@ All of these decisions were made during the CodeMetalForge hackathon and recorde
 | [0021](0021-on-node-score-streaming-window-and-score-code.md) | On-node score: streaming window statistics, and a log-scale score code | Accepted | 2026-11-11 |
 | [0022](0022-host-time-round-broadcast-seam.md) | Every transceiver source is a `(host time, round broadcast)` stream | Accepted | 2026-11-11 |
 | [0023](0023-round-recordings.md) | Round recordings: the undecoded bytes, host time and source, in one versioned binary file | Accepted | 2026-11-11 |
+| [0024](0024-link-detail-on-demand-frames-off-the-lock.md) | Per-link detail on demand, and frames rendered off the server lock | Accepted | 2026-11-11 |
 
 Reading order: 0001 is the principle the detection records (0007 to 0011) argue from. 0002 to 0006 are the hardware and radio. 0012 to 0018 are the software architecture and how it is tested.
 

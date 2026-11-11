@@ -363,8 +363,22 @@ The single JSON state the page renders from: room, nodes, links, heatmap and sta
 _See_: `csi/dashboard.py`, `csi/server.py`
 
 **Frame**:
-One payload in the event stream, produced every 0.2 s of packet time. A browser receives at most about 5 per second.
-_See_: `csi/server.py` (`FRAME_INTERVAL_S`, `MIN_EVENT_GAP_S`)
+One payload in the event stream, produced every 0.2 s of packet time. A browser receives at most about 5 per second. In a room with more than 64 links a frame carries no per-link rows: the page gets one link's detail on demand from `GET /api/link`.
+_See_: `csi/server.py` (`FRAME_INTERVAL_S`, `MIN_EVENT_GAP_S`, `FRAME_LINKS_MAX`), [ADR-0024](docs/adr/0024-link-detail-on-demand-frames-off-the-lock.md)
+
+**Node health**:
+Per transceiver, in the payload's `node_health`: by how many others it is heard, how many it hears, when its last round broadcast reached the host, the mean packet rate of its links and its slot lateness (`"unknown"` until the nodes report it). A node is **missing** when none of its round broadcasts reached the host for more than 2 s.
+_See_: `csi/coverage.py` (`node_health`)
+
+**Coverage degraded**:
+The rig cannot see the whole room: a node is missing, a board not in the room config is broadcasting, or more than 5 % of the links between live nodes are NO_SIGNAL. The page then shows a COVERAGE DEGRADED banner, because a quiet reading from such a rig does not mean nobody is there.
+_Avoid_: offline, fault
+_See_: `csi/coverage.py` (`coverage`, `SILENT_SHARE`)
+
+**Link matrix**:
+Every transceiver link's state as one character, row the receiving node and column the transmitting node (`E`, `M`, `W`, `U`, `N`, and `-` on the diagonal). The page draws it as a grid of cells instead of one card per link.
+_See_: `csi/coverage.py` (`link_matrix`)
+
 
 **Commands**:
 The five POST endpoints that calibrate, set or save thresholds, and tune the heatmap. They run only when the server is bound to a loopback address or started with `--allow-control`.
