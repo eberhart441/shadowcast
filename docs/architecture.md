@@ -302,17 +302,17 @@ person is the costly error, so the code chooses the safe side wherever the two k
 | Thread | How many | Work | Synchronisation |
 |---|---|---|---|
 | `csi-read-<receiver>` | One per enabled receiver | Iterates its source and parses each line with its own `CSIParser`, so one receiver's layout warm-up or bad lines never affect another. Puts `(receiver, CSIPacket)` on the queue | `queue.Queue` for packets. `MultiSource._lock` for status and errors |
-| `dashboard-pump` | 1 | Drains the queue (waiting up to 50 ms), reorders packets in `_Reorder`, feeds `DashboardState` and any running `CalibrationJob`, and emits frames | Takes the server lock once per batch |
+| `dashboard-pump` | 1 | Drains the queue (waiting up to 50 ms), reorders packets in `_Reorder`, feeds `DashboardState` and any running `CalibrationJob`, and emits frames | Takes the server lock once per batch; renders the batch's frames after releasing it |
 | `dashboard-http` | 1 | `serve_forever` (polls every 0.1 s) | None |
-| Request handlers | One per connection (`daemon_threads`) | `/api/state` renders a fresh payload. `/api/events` streams frames. POST requests run commands | The server lock for state and commands. `FrameLog`'s condition variable for SSE |
+| Request handlers | One per connection (`daemon_threads`) | `/api/state` renders a fresh payload. `/api/link` renders one link's row. `/api/events` streams frames. POST requests run commands | The server lock for state and commands (`/api/state` only for its capture). `FrameLog`'s condition variable for SSE |
 | `dashboard-calibration` | 0 or 1 | Computes a finished calibration's report | Runs without the lock. Takes it only to apply the result |
 | `dashboard-replay` | 1, in log replay only | Appends the logged payloads at the logged pace, divided by `--speed` | The server lock and `FrameLog` |
 
 **Locks.** `FrameServer._lock` is one coarse lock over all mutable dashboard state: `DashboardState`, the calibration
 job, thresholds and the command log. The pump is the only thread that writes packets into that state. Commands are
 short and run under the same lock. `FrameLog` has its own `threading.Condition`. Locks are always taken in the same
-order: `_emit` appends to the log while holding the server lock, and an SSE handler never holds the condition while
-it takes the server lock. No cycle is possible.
+order: `_publish` appends to the log after releasing the server lock, and an SSE handler never holds the condition
+while it takes the server lock. No cycle is possible.
 
 **How a frame reaches the browser**
 
@@ -323,8 +323,10 @@ it takes the server lock. No cycle is possible.
    time stops holding the others back. At start-up, a connected receiver that has not sent anything yet is waited
    for, for up to 2 s.
 3. Under the lock, `DashboardState.push` updates the link's monitor and the heatmap. After every 0.2 s of packet
-   time, `_emit` writes one JSON payload into `FrameLog`. With `--log`, it also appends the payload to the log file
-   and flushes it.
+   time, `_emit` takes a capture (`DashboardState.capture`: the heatmap and track advance, the link rows, the
+   counters). After the batch, the pump releases the lock and `_publish` renders each capture to JSON and writes it
+   into `FrameLog`; with `--log`, it also appends the payload to the log file and flushes it
+   ([ADR-0023](adr/0023-link-detail-on-demand-frames-off-the-lock.md)).
 4. With no packets arriving, `_idle_frame` keeps live frames coming on the clock, so silent links turn NO_SIGNAL. It
    also advances the calibration countdown.
 5. Each SSE handler keeps its own cursor and blocks on the condition variable in `FrameLog.next_frame`. It sends at
@@ -354,8 +356,9 @@ server.
 | Method and path | Purpose | Restrictions |
 |---|---|---|
 | `GET /` and `GET /index.html` | The page: `web/index.html`, or the file given with `--page` | None |
-| `GET /api/state` | One payload: `room`, `nodes`, `links`, `heatmap`, `status` | None |
-| `GET /api/events` | The same payloads as SSE (`data: <json>`), at most about 5 per second, with a keepalive comment after 15 s idle. The last event has `status.finished: true`, then the stream closes | None |
+| `GET /api/state` | One payload: `room`, `nodes`, `links`, `heatmap`, `track`, `status`, `node_health`, `coverage`, `link_health`, `link_matrix`, with every link row | None |
+| `GET /api/events` | The same payloads as SSE (`data: <json>`), at most about 5 per second, with a keepalive comment after 15 s idle. A room with more than 64 links sends them without `links` (`status.links_in_frames` false). The last event has `status.finished: true`, then the stream closes | None |
+| `GET /api/link?id=<label>` | `{link, time_s}`: one link's full row, as in `links`, on demand (`id=n1%3C-n5` for `n1<-n5`) | 400 without `id`, 404 for an unknown link and in replays |
 | `GET /api/thresholds` | `{thresholds, path}`: current fixed thresholds and the file they save to | Live server only. 404 in replays |
 | `POST /api/calibrate` | Starts a calibration. `{clips 1–10, seconds 1–120, margin > 0, lead_s 0–60, noisy}`, defaults 3, 10, 1.25, 5, true. Returns 202 | Command checks below. 409 if one is already running |
 | `POST /api/calibrate/cancel` | Cancels a calibration during its countdown or recording. Thresholds stay unchanged | Command checks. 409 if none is running |
@@ -380,7 +383,10 @@ Any other path gets 404.
 `status` extension. Each link row carries `id`, `receiver`, `sender`, `mac`, `state`, `mode`, `elevated`, `level`,
 `score`, `threshold`, `normalised`, `baseline`, `evidence`, `pkt_rate`, `drops`, `rssi`, `age_s`, `weight` and
 `contributes`. `status` carries `time_s`, `links_by_state`, `parameters`, `room`, `receivers`, `errors`, `finished`,
-`calibrated_links`, `adaptive_links`, `uncalibrated_links`, `messages`, `calibration` and `commands`.
+`calibrated_links`, `adaptive_links`, `uncalibrated_links`, `messages`, `calibration`, `commands` and
+`links_in_frames`. `node_health`, `coverage`, `link_health` and `link_matrix` are the transceiver rig's per-node and
+aggregate view (see `csi/coverage.py`).
+
 
 **Files the system writes:**
 

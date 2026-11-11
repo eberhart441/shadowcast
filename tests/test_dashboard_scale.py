@@ -379,3 +379,19 @@ def test_the_page_has_a_coverage_degraded_banner_and_fetches_link_detail_on_dema
     assert 'id="coverage"' in html and "COVERAGE DEGRADED" in html
     assert '"/api/link?id="' in html
     assert "Slot lateness" in html
+
+
+def test_a_logged_30_node_run_without_link_rows_loads_for_replay(tmp_path):
+    from csi.replay import load_log
+
+    log = tmp_path / "run.jsonl"
+    stream = simulate_rounds(TR30, duration_s=1.0, t0=T0)
+    server = DashboardServer(TR30, {"gateway": stream}, mode="auto", port=0, log=log)
+    server.start()
+    try:
+        assert server.wait_finished(timeout=60)
+    finally:
+        server.stop()
+    replay = load_log(log)
+    assert len(replay.payloads) >= 4
+    assert all("links" not in p and len(p["link_matrix"]["states"]) == 30 for p in replay.payloads)

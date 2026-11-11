@@ -14,7 +14,9 @@ HTTP:
     GET /              the static page (web/index.html)
     GET /api/state     one payload: DashboardState.snapshot() plus the ``status`` extension below
     GET /api/events    text/event-stream; ``data: <payload json>`` at most ~5 Hz and a last event
-                       (``status.finished`` true) when the sources finish; then the stream closes
+                       (``status.finished`` true) when the sources finish; then the stream closes. A room with
+                       more than FRAME_LINKS_MAX links sends payloads without ``links`` (ADR-0023)
+    GET /api/link?id=<label>   {link, time_s}: one link's full row on demand; 400 without id, 404 if unknown
     anything else      404
 
 ``status`` extension (added to DashboardState's status block):
@@ -24,8 +26,11 @@ HTTP:
     calibrated_links   link labels with a threshold
     uncalibrated_links link labels without one
     messages           human-readable notes (uncalibrated links, failed receivers)
+    links_in_frames    False when event-stream frames leave out the per-link rows
 
-Frames: the pump emits a frame every ``frame_interval_s`` of packet time, so a fast finite stream still
+Frames are captured under the lock (``DashboardState.capture``) and rendered to JSON after the pump releases it.
+The pump emits a frame every ``frame_interval_s`` of packet time, so a fast finite stream still
+
 yields intermediate events. Frames are kept in a bounded log; an event stream opened after the sources
 finished replays the retained run from its oldest frame, one whose live counterpart sends the latest.
 """

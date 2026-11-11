@@ -22,9 +22,22 @@ pipeline ``push_broadcast(host_ts, data)`` does the same from one round broadcas
                 room: {state, elevated (labels), mode}: room-level MOTION from link agreement (csi/adaptive.py)
                 broadcasts: {accepted, rejected {reason: n}, unknown_nodes {serial: n}, unplaced_reports}, the
                 round broadcasts ingested (all 0 in the line pipeline)
+    node_health [{name, state, heard_by, hears, peers, last_heard_s, link_rate_hz, slot_lateness}] per transceiver
+                state "ok" or "missing" (no round broadcast reached the host for > 2 s); slot_lateness is the
+                string "unknown" until the nodes report it (ticket #14), then microseconds
+    coverage    {state "ok" | "degraded", reasons [text], missing_nodes, unknown_nodes, silent_links,
+                unexplained_silent_links}
+    link_health {links, heard, silent, rate_hz {min, median, max}}: every link at once
+    link_matrix {nodes [names], states [one string per receiving node], codes {char: state}}: states[r][t] is the
+                link from nodes[t] to nodes[r]: E M W U N for the five states, "-" on the diagonal
+    (csi/coverage.py computes the last four.)
 
 Time is host time from the packets. ``snapshot()`` with no argument uses the newest packet time, so the
 payload is deterministic for simulated streams; pass ``now`` to advance the decay while packets stop.
+``snapshot(now, links=False)`` leaves ``links`` out (frames of a large room, ADR-0023), and
+``link_detail(label)`` gives one link's row. ``snapshot`` is ``render(capture(now))``: ``capture`` is the only
+part that touches live state (the server runs it under its lock), ``render`` reads only the capture.
+
 """
 from __future__ import annotations
 
