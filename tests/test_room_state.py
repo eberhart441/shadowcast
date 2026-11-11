@@ -236,3 +236,30 @@ def test_a_zone_that_stops_moving_reads_possibly_occupied_for_the_hold_then_empt
         assert {s for z, s in zones.items() if z not in seen} == {"EMPTY"}, t
     assert after[64.5][0] == "EMPTY"
     assert set(after[64.5][1].values()) == {"EMPTY"}
+
+
+def test_renewed_motion_during_the_hold_returns_the_zone_to_motion_and_restarts_the_hold():
+    state, links = held_room(TR8)
+    person = covering(links, (1.5, 1.5))
+    drive(state, person, HIGH, 1.0, 3.0)
+    held = drive(state, person, QUIET, 3.0, 20.0, every_s=0.1)
+    assert held[19.9][1]["B2"] == "POSSIBLY_OCCUPIED"
+    again = drive(state, person, HIGH, 20.0, 22.0)
+    assert again[21.0][0] == "MOTION" and again[21.0][1]["B2"] == "MOTION"
+    after = drive(state, person, QUIET, 22.0, 84.0, every_s=0.1)
+    assert after[82.5][1]["B2"] == "POSSIBLY_OCCUPIED"     # 60 s from the renewed motion, not from the first
+    assert after[83.5][1]["B2"] == "EMPTY" and after[83.5][0] == "EMPTY"
+
+
+def test_the_possibly_occupied_hold_is_a_setting_and_zero_turns_it_off():
+    for hold_s, held_at, empty_at in ((5.0, 8.5, 9.5), (0.0, None, 4.5)):
+        state, links = held_room(TR8, possibly_occupied_s=hold_s)
+        person = covering(links, (1.5, 1.5))
+        drive(state, person, HIGH, 1.0, 3.0)
+        after = drive(state, person, QUIET, 3.0, 12.0, every_s=0.1)
+        if held_at is not None:
+            assert after[held_at][0] == "POSSIBLY_OCCUPIED", hold_s
+        assert after[empty_at][0] == "EMPTY", hold_s
+        assert "POSSIBLY_OCCUPIED" not in after[empty_at][1].values(), hold_s
+    with pytest.raises(ValueError):
+        held_room(TR8, possibly_occupied_s=-1.0)
