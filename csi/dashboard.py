@@ -104,6 +104,10 @@ class DashboardState:
         board serial ``sender_id`` to send. Raises csi.raw_mode.RawModeRefused (with a reason) instead."""
         return self._raw.request(label, on, self._ingest.last_rounds, now, sender_id)
 
+    def raw_mode_status(self, now: float) -> dict:
+        """The payload's ``raw_mode`` at host time ``now``, without advancing anything else."""
+        return self._raw.status(now)
+
     def last_source(self, label: str) -> Optional[str]:
         """The source that delivered the latest round broadcast of link ``label``'s receiving node, if any."""
         return self._ingest.last_source(label.partition("<-")[0])

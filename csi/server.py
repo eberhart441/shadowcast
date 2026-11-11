@@ -17,6 +17,11 @@ HTTP:
                        (``status.finished`` true) when the sources finish; then the stream closes. A room with
                        more than FRAME_LINKS_MAX links sends payloads without ``links`` (ADR-0024)
     GET /api/link?id=<label>   {link, time_s}: one link's full row on demand; 400 without id, 404 if unknown
+    POST /api/raw-mode {"link": "n1<-n5", "on": true|false}: raw mode for one transceiver link (csi/raw_mode.py),
+                       sent through a gateway in ``transmitters``; 200 {raw_mode, sent, via}, 400 for a bad body
+                       or unknown link, 409 {error, reason} when refused (byte budget, a node's limit, the node not
+                       heard yet, no gateway that can send, a replay). A command like the others: loopback only
+                       unless --allow-control (ADR-0015)
     anything else      404
 
 ``status`` extension (added to DashboardState's status block):
@@ -56,10 +61,11 @@ from .live_calibration import CalibrationJob, RequestError, parse_request
 from .links import calibrate_links, room_link_ids, save_thresholds
 from .multisource import MultiSource
 from .parser import CSIPacket, Stream
+from .raw_mode import RawModeRefused, Transmitter, raw_messages
 from .room import Room, Walk
 from .round_auth import TEST_KIT_KEY
 from .rounds import AUTH, DUPLICATE, QUEUE_OVERFLOW, HeardBroadcast
-from .simulate import simulate_room, simulate_room_links, simulate_rounds
+from .simulate import SimulatedRig, simulate_room, simulate_room_links
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8000
@@ -82,7 +88,7 @@ SIM_CALIBRATION_SEED = 10
 LOG_FORMAT = "csi-dashboard-log"  # first line of a --log file; replay.py refuses other files
 LOG_VERSION = 1
 COMMAND_PATHS = frozenset({"/api/calibrate", "/api/calibrate/cancel", "/api/threshold",
-                           "/api/thresholds/save", "/api/params"})
+                           "/api/thresholds/save", "/api/params", "/api/raw-mode"})
 MAX_BODY_BYTES = 64 * 1024
 DEFAULT_THRESHOLDS_FILE = "links_thresholds.json"   # working directory, unless --save-thresholds says otherwise
 COMMAND_LOG_MAX = 20
@@ -468,6 +474,8 @@ class DashboardServer(FrameServer):
     time, ``log_meta``, ``notes``) and then one payload per line, exactly as /api/events sends them.
     ``notes`` are extra human-readable lines for ``status.messages``. Round broadcasts are verified with
     ``kit_key`` (csi/round_auth.py; by default the published test key the simulator signs with).
+    ``transmitters`` maps a source name to the object that can send for it (a node gateway, the simulated rig):
+    raw mode requests go out through the one that last delivered the target node's round broadcast.
     """
 
     def __init__(self, room: Room, sources: Mapping[str, Stream], thresholds: Optional[Mapping[str, float]] = None,
@@ -476,7 +484,8 @@ class DashboardServer(FrameServer):
                  log: Optional[Union[str, Path]] = None, log_meta: Optional[Mapping] = None,
                  notes: Sequence[str] = (), allow_control: bool = False,
                  thresholds_path: Optional[Union[str, Path]] = None, replay: bool = False,
-                 mode: str = "fixed", kit_key: bytes = TEST_KIT_KEY, **heatmap_params) -> None:
+                 mode: str = "fixed", kit_key: bytes = TEST_KIT_KEY,
+                 transmitters: Optional[Mapping[str, Transmitter]] = None, **heatmap_params) -> None:
         network_control = allow_control and not is_loopback(host)
         super().__init__(host, port, web_index, trusted_host=host if network_control else None)
         self._room = room
@@ -485,6 +494,7 @@ class DashboardServer(FrameServer):
         self._expected = [link_id for link_id, _, _ in room_link_ids(room)]
         self._labels = {link.label for link in self._expected}
         self._controls_on = controls_allowed(host, allow_control)
+        self._transmitters = dict(transmitters or {})
         self._replay = replay
         self._thresholds_path = Path(thresholds_path) if thresholds_path else Path(DEFAULT_THRESHOLDS_FILE)
         self._calib: Optional[CalibrationJob] = None
@@ -689,6 +699,7 @@ class DashboardServer(FrameServer):
         """A payload from a capture and its status inputs: no lock needed."""
         payload = self._state.render(cap, links=links)
         payload["status"].update(self._status_extension(inputs, cap.rows, cap.broadcasts))
+        payload["status"]["messages"].extend(raw_messages(payload.get("raw_mode") or {}))
         payload["status"]["links_in_frames"] = self._links_in_frames
         return payload
 
@@ -783,6 +794,7 @@ class DashboardServer(FrameServer):
                 "/api/threshold": self._cmd_threshold,
                 "/api/thresholds/save": self._cmd_save,
                 "/api/params": self._cmd_params,
+                "/api/raw-mode": self._cmd_raw_mode,
             }
             try:
                 return handlers[path](body)
@@ -879,6 +891,38 @@ class DashboardServer(FrameServer):
         self._commands.append("parameters: " + ", ".join(f"{k}={float(v):g}" for k, v in body.items()))
         return 200, {"parameters": self._state.parameters()}
 
+    def _cmd_raw_mode(self, body: Mapping) -> tuple[int, dict]:
+        unknown = sorted(set(body) - {"link", "on"})
+        if unknown:
+            raise RequestError(f"unknown field(s): {', '.join(unknown)}; expected link and on")
+        link, on = body.get("link"), body.get("on")
+        if not isinstance(link, str) or not isinstance(on, bool):
+            raise RequestError(f'name a link and true or false: {{"link": "n1<-n5", "on": true}}, got {dict(body)!r}')
+        via = self._transmitter_for(link)
+        sender = getattr(self._transmitters.get(via), "sender_id", None) if via else None
+        now = self._clock()
+        try:
+            frames = self._state.raw_mode_request(link, on, 0.0 if now is None else now, sender)
+        except RawModeRefused as e:
+            return (400 if e.reason == "unknown_link" else 409), {"error": str(e), "reason": e.reason}
+        try:
+            for frame in frames:
+                self._transmitters[via].send_frame(frame)
+        except (OSError, RuntimeError) as e:
+            return 503, {"error": f"gateway {via} could not send the raw mode request: {e}", "reason": "send"}
+        self._commands.append(f"raw mode {'on' if on else 'off'} {link} (sent via {via}, {len(frames)} copies)")
+        status = self._state.raw_mode_status(0.0 if now is None else now)
+        return 200, {"raw_mode": status, "sent": len(frames), "via": via}
+
+    def _transmitter_for(self, label: str) -> Optional[str]:
+        """The source to send a raw mode request through: the one that last delivered the target node's round
+        broadcast if it can send, else the first that knows its own serial."""
+        last = self._state.last_source(label)
+        if last in self._transmitters:
+            return last
+        ready = [name for name, t in self._transmitters.items() if getattr(t, "sender_id", None)]
+        return ready[0] if ready else next(iter(self._transmitters), None)
+
     def _apply_threshold(self, label: str, value: float) -> None:
         """Calibration's apply hook; the caller holds the lock."""
         self._state.set_threshold(label, value)
@@ -974,6 +1018,7 @@ def _looping(name: str, room: Room, person: Walk, period: float, seed: int, quie
 def simulated_rig_streams(room: Room, *, seed: int = 0, quiet_first_s: float = 0.0,
                           realtime: bool = True) -> dict[str, Stream]:
     """One endless round broadcast stream from the simulated transceiver rig, as one gateway ("sim-gateway") hears
-    it: ``default_walk`` repeated, after ``quiet_first_s`` seconds of an empty room."""
-    return {"sim-gateway": simulate_rounds(room, default_walk(room), quiet_first_s=quiet_first_s, seed=seed,
-                                           realtime=realtime)}
+    it: ``default_walk`` repeated, after ``quiet_first_s`` seconds of an empty room. The stream is a
+    ``SimulatedRig``, so it is also the transmitter for raw mode requests."""
+    return {"sim-gateway": SimulatedRig(room, default_walk(room), quiet_first_s=quiet_first_s, seed=seed,
+                                        realtime=realtime)}

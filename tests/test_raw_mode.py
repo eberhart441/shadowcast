@@ -188,3 +188,39 @@ def test_a_request_without_an_answer_says_so():
         k += 1
     payload = state.snapshot(now)
     assert raw_rows(payload)["n1<-n5"]["state"] == "no answer"
+
+
+def test_the_simulated_rig_streams_raw_csi_for_a_link_without_changing_anything_else():
+    from csi.simulate import simulate_rounds
+    plain = list(simulate_rounds(ROOM, None, duration_s=1.5, seed=4))
+    raw = list(simulate_rounds(ROOM, None, duration_s=1.5, seed=4, raw={"n1": ["n5"]}))
+    assert [t for t, _ in raw] == [t for t, _ in plain]
+    for (_, a), (_, b) in zip(plain, raw):
+        a, b = decode_broadcast(a), decode_broadcast(b)
+        assert [r._replace(flags=0) for r in a.reports] == [r._replace(flags=0) for r in b.reports]
+        if b.node_id == SERIAL["n1"]:
+            assert b.frame_type == FRAME_ROUND_RAW
+            assert [c.transmitter_index for c in b.raw] == [NAMES.index("n5")]
+            assert [r.raw_mode for r in b.reports] == [r.transmitter_index == NAMES.index("n5") for r in b.reports]
+        else:
+            assert (b.frame_type, b.raw) == (FRAME_ROUND, ())
+
+
+def test_a_simulated_node_takes_a_signed_fresh_request_for_itself_only():
+    from collections import deque
+    from csi.simulate import simulate_rounds
+    state = DashboardState(ROOM, mode="auto")
+    commands = deque()
+    stream = simulate_rounds(ROOM, None, duration_s=3.0, seed=4, commands=commands)
+    raw_from = {}
+    for k, (host_ts, data) in enumerate(stream):
+        state.push_broadcast(host_ts, data, "sim")
+        if k == 8 * 10:     # round 10: ask n2 for raw mode on n2<-n7; and send a forged copy for n3
+            frames = state.raw_mode_request("n2<-n7", True, host_ts, sender_id=GATEWAY)
+            forged = bytearray(state.raw_mode_request("n3<-n7", True, host_ts, sender_id=GATEWAY)[0])
+            forged[-1] ^= 1
+            commands.extend(frames + [bytes(forged)])
+        b = decode_broadcast(data)
+        if b.raw:
+            raw_from.setdefault(b.node_id, k // 8)
+    assert raw_from == {SERIAL["n2"]: 11}

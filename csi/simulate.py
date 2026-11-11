@@ -8,22 +8,26 @@ amplified and slow random-walk drift is added. ``empty`` is baseline + noise.
 The transceiver rig (``simulate_rounds``) is simulated one level up, as the nodes' own output: each node
 broadcasts once per round in its slot, carrying a link report per other node whose score is the link's quiet
 level times lognormal noise, raised by a person near the link (the same Gaussian falloff as above). The stream is
-(host time, round broadcast bytes), as a gateway delivers it.
+(host time, round broadcast bytes), as a gateway delivers it. ``SimulatedRig`` is that stream plus the gateway's
+sending side: raw mode requests sent to it reach the simulated nodes, which then stream synthetic raw CSI.
 """
 from __future__ import annotations
 
 import heapq
 import itertools
 import time
+from collections import deque
 from dataclasses import dataclass
 from operator import itemgetter
 from typing import Callable, Iterable, Iterator, Mapping, Optional, Sequence, Union
 
 import numpy as np
 
-from .broadcast import (FLAG_WARMING, FORMAT_VERSION, FRAME_ROUND, HEARD_WINDOW_ROUNDS, MAX_NODES, SINCE_MAX,
-                        LinkReport, RoundBroadcast, decode_broadcast, encode_broadcast, quantise_score)
-from .round_auth import TEST_KIT_KEY, sign_broadcast
+from .broadcast import (FLAG_RAW_MODE, FLAG_WARMING, FORMAT_VERSION, FRAME_RAW_REQUEST, FRAME_ROUND,
+                        FRAME_ROUND_RAW, HEARD_WINDOW_ROUNDS, MAX_NODES, RAW_MAX_LINKS, RAW_REQUEST_MAX_AGE_ROUNDS,
+                        SINCE_MAX, BroadcastError, LinkReport, RawCsi, RoundBroadcast, decode_broadcast,
+                        encode_broadcast, quantise_score)
+from .round_auth import REPLAY, TEST_KIT_KEY, Freshness, sign_broadcast, tag_ok
 from .links import LinkId
 from .parser import DEFAULT_HEADER, CSIPacket, CSIParser, parse_stream
 from .room import FALLOFF_SIGMA_M, Person, Room, link_responses, load_room
@@ -336,6 +340,8 @@ ROUND_QUIET_SCORE = (0.5, 3.0)   # each link's quiet score level is drawn from t
 ROUND_NOISE_SIGMA = 0.2    # lognormal spread of a quiet score from round to round
 ROUND_MOTION_GAIN = 20.0   # a person on the link multiplies its score by 1 + this
 GATEWAY_LATENCY_S = 0.0005  # up to this much is added to a broadcast's host time
+SIM_GATEWAY_ID = "02:00:00:00:00:80"   # the simulated gateway's board serial (raw mode requests carry it)
+SIM_RAW_SUBCARRIERS = 64    # synthetic raw CSI: one HT20 long training field, 128 I/Q bytes
 
 
 def simulate_rounds(
@@ -351,6 +357,8 @@ def simulate_rounds(
     realtime: bool = False,
     t0: float = 1_700_000_000.0,
     kit_key: bytes = TEST_KIT_KEY,
+    raw: Optional[Mapping[str, Iterable[str]]] = None,
+    commands: Optional[deque] = None,
 ) -> Iterator[tuple[float, bytes]]:
     """(host time, round broadcast bytes) from a simulated rig of the room's transceivers, as one gateway hears it.
 
@@ -362,6 +370,13 @@ def simulate_rounds(
     one round broadcast from another. Seeded: the same arguments give the same bytes. ``realtime`` paces the
     stream to the wall clock and stamps it with ``time.time()``. Every broadcast is signed with ``kit_key``
     (default the published test key, which the host also defaults to).
+
+    Raw mode: ``raw`` maps a receiving node's name to the transmitters whose links it streams from the start
+    (at most 2). ``commands`` is a deque of frames a gateway sent (``SimulatedRig.send_frame``); before each round
+    the nodes take the raw mode requests among them as a real node does: the tag must verify under ``kit_key``,
+    the round number must be fresh for its sender, and the target round within RAW_REQUEST_MAX_AGE_ROUNDS of the
+    target's own. A node in raw mode flags those links' reports and sends a round broadcast with raw CSI carrying
+    synthetic I/Q (seeded apart, so the rest of the stream is the same with raw mode or without).
     """
     nodes = list(room.transceivers)
     n = len(nodes)
@@ -385,11 +400,21 @@ def simulate_rounds(
     warming_rounds = int(round(SIM_WARMING_S * round_hz))
     membership = (1 << n) - 1
     last_round = None if duration_s is None else int(round(duration_s * round_hz))
+    index_of = {node.name: i for i, node in enumerate(nodes)}
+    raw_sets = [set() for _ in nodes]
+    for name, transmitters in (raw or {}).items():
+        raw_sets[index_of[name]] = {index_of[t] for t in transmitters}
+        if len(raw_sets[index_of[name]]) > RAW_MAX_LINKS or index_of[name] in raw_sets[index_of[name]]:
+            raise ValueError(f"raw mode on {name}: at most {RAW_MAX_LINKS} other transceivers")
+    raw_rng = np.random.default_rng([seed, 17])
+    fresh = Freshness()
     start = time.time()
     for round_no in itertools.count():
         if last_round is not None and round_no >= last_round:
             return
         t = round_no * period
+        while commands:
+            _take_request(commands.popleft(), nodes, raw_sets, round_no, t0 + t, kit_key, fresh)
         alive = np.array([dead_round[i] is None or round_no < dead_round[i] for i in range(n)])
         got = alive[[tx for _, tx in pairs]] & (rng.random(len(pairs)) >= drop_prob)
         heard[:, round_no % HEARD_WINDOW_ROUNDS] = got
@@ -400,24 +425,78 @@ def simulate_rounds(
         for slot, node in enumerate(nodes):
             if not alive[slot]:
                 continue
-            reports = []
+            reports, blocks = [], []
             for k in range(slot * (n - 1), (slot + 1) * (n - 1)):   # pairs are grouped by receiving node
                 _, tx = pairs[k]
+                flag = FLAG_RAW_MODE if tx in raw_sets[slot] else 0
                 if round_no < warming_rounds:
-                    reports.append(LinkReport(tx, 0, int(rssi[k]), int(counts[k]), int(since[k]), FLAG_WARMING))
+                    reports.append(LinkReport(tx, 0, int(rssi[k]), int(counts[k]), int(since[k]),
+                                              FLAG_WARMING | flag))
                 elif counts[k] == 0:
-                    reports.append(LinkReport(tx, 0, None, 0, int(since[k])))
+                    reports.append(LinkReport(tx, 0, None, 0, int(since[k]), flag))
                 else:
                     reports.append(LinkReport(tx, quantise_score(float(scores[k])), int(rssi[k]), int(counts[k]),
-                                              int(since[k])))
+                                              int(since[k]), flag))
+                if flag and got[k]:
+                    blocks.append(RawCsi(tx, round_no % 65536, int(rssi[k]), _raw_iq(raw_rng, float(response[k]))))
             data = sign_broadcast(encode_broadcast(RoundBroadcast(
-                FORMAT_VERSION, FRAME_ROUND, round_no % 65536, slot, n + 1, 1, slot, membership, node.serial, bytes(8),
-                tuple(reports))), kit_key)
+                FORMAT_VERSION, FRAME_ROUND_RAW if blocks else FRAME_ROUND, round_no % 65536, slot, n + 1, 1, slot,
+                membership, node.serial, bytes(8), tuple(reports), tuple(blocks))), kit_key)
             host_ts = t0 + t + slot * slot_s + float(rng.uniform(0.0, GATEWAY_LATENCY_S))
             if realtime:
                 time.sleep(max(0.0, start + (host_ts - t0) - time.time()))
                 host_ts = time.time()
             yield host_ts, data
+
+
+def _take_request(frame: bytes, nodes: Sequence, raw_sets: list, round_no: int, host_ts: float, kit_key: bytes,
+                  fresh: Freshness) -> None:
+    """A frame the simulated gateway sent: a raw mode request a node takes as the node image does, or nothing."""
+    try:
+        request = decode_broadcast(frame)
+    except BroadcastError:
+        return
+    if request.frame_type != FRAME_RAW_REQUEST or not tag_ok(frame, kit_key):
+        return
+    if fresh.check(request.node_id.upper(), request.round, host_ts) == REPLAY:
+        return
+    serials = {node.serial.upper(): i for i, node in enumerate(nodes)}
+    target = serials.get(request.request.target.upper())
+    if target is None or (round_no - request.request.target_round) % 65536 > RAW_REQUEST_MAX_AGE_ROUNDS:
+        return
+    raw_sets[target] = {serials[s.upper()] for s in request.request.transmitters
+                        if s.upper() in serials and serials[s.upper()] != target}
+
+
+def _raw_iq(rng: np.random.Generator, response: float) -> bytes:
+    """Synthetic int8 I/Q for one round broadcast: a fixed-ish amplitude per subcarrier, random phase, nulls 0; a
+    person near the link widens the amplitude's spread."""
+    amp = 40.0 * (1.0 + (0.1 + response) * rng.standard_normal(SIM_RAW_SUBCARRIERS))
+    phase = rng.uniform(0.0, 2 * np.pi, SIM_RAW_SUBCARRIERS)
+    amp[list(NULL_SUBCARRIERS)] = 0.0
+    iq = np.empty(2 * SIM_RAW_SUBCARRIERS)
+    iq[0::2], iq[1::2] = amp * np.sin(phase), amp * np.cos(phase)   # imaginary, then real (ESP-IDF order)
+    return np.clip(np.round(iq), -127, 127).astype(np.int8).tobytes()
+
+
+class SimulatedRig:
+    """The simulated rig as one gateway hears it (iterate it: ``simulate_rounds``), with that gateway's sending
+    side: ``send_frame`` queues a frame for the nodes, which take raw mode requests before their next round. Use
+    it as a source and as the transmitter of ``DashboardServer``. Thread-safe between the reader and the sender."""
+
+    def __init__(self, room: Room, person: Union[Person, Sequence[Person], None] = None, *,
+                 sender_id: str = SIM_GATEWAY_ID, **kwargs) -> None:
+        self.sender_id: Optional[str] = sender_id
+        self.sent: list[bytes] = []
+        self._commands: deque = deque()
+        self._room, self._person, self._kwargs = room, person, kwargs
+
+    def send_frame(self, frame: bytes) -> None:
+        self.sent.append(bytes(frame))
+        self._commands.append(bytes(frame))
+
+    def __iter__(self) -> Iterator[tuple[float, bytes]]:
+        return simulate_rounds(self._room, self._person, commands=self._commands, **self._kwargs)
 
 
 def _round_response(person: Union[Person, Sequence[Person], None], t: float, a: np.ndarray,
