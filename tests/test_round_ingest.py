@@ -3,6 +3,8 @@
 Round broadcasts go in through DashboardState.push_broadcast (tagged with the gateway that heard them) and every
 assertion is on the payload's ``status.broadcasts`` and ``status.messages``.
 """
+import json
+import urllib.request
 from pathlib import Path
 
 import pytest
@@ -10,6 +12,7 @@ import pytest
 from csi.broadcast import LinkReport, RoundBroadcast, encode_broadcast, quantise_score
 from csi.dashboard import DashboardState
 from csi.room import load_room
+from csi.server import DashboardServer
 
 ROOM = load_room(Path(__file__).parent / "fixtures" / "room_tr8.json")
 NAMES = [f"n{k}" for k in range(1, 9)]
@@ -93,3 +96,39 @@ def test_each_malformed_or_wrong_version_record_is_counted_by_its_reason():
     assert counts["rejected"] == {"short": 1, "version": 1, "frame_type": 1, "length": 1, "membership": 1,
                                   "duplicate": 0, "queue_overflow": 0}
     assert counts["accepted"] == 0 and counts["heard"] == 5
+
+
+def get_state(server):
+    with urllib.request.urlopen(server.url + "/api/state", timeout=10) as response:
+        return json.loads(response.read())
+
+
+def serve(sources, **kwargs):
+    """Run DashboardServer over finite ``sources`` to the end; the final /api/state payload."""
+    server = DashboardServer(ROOM, sources, mode="auto", port=0, **kwargs)
+    server.start()
+    try:
+        assert server.wait_finished(timeout=60)
+        return get_state(server)
+    finally:
+        server.stop()
+
+
+def test_a_serial_missing_from_the_room_config_shows_as_an_unknown_node():
+    stranger = "02:00:00:00:99:5C"
+    stream = [(T0 + i / ROUND_HZ, broadcast("n1", i, node_id=stranger)) for i in range(20)]
+    stream += [(host_ts + 2.0, data) for host_ts, _, data in rounds(1.0)]
+    payload = serve({"gw1": iter(sorted(stream))})
+    assert payload["status"]["broadcasts"]["unknown_nodes"] == {stranger: 20}
+    assert payload["status"]["broadcasts"]["accepted"] == 8 * 20
+    assert any("unknown node" in m and stranger in m and "config/room.json" in m
+               for m in payload["status"]["messages"])
+
+
+def test_unknown_serials_are_counted_in_bounded_memory():
+    state = DashboardState(ROOM, mode="auto")
+    for k in range(200):
+        state.push_broadcast(T0 + k, broadcast("n1", 0, node_id=f"02:00:00:01:{k:02X}:00"), "gw1")
+    unknown = state.snapshot(T0 + 200)["status"]["broadcasts"]["unknown_nodes"]
+    assert len(unknown) <= 33
+    assert sum(unknown.values()) == 200

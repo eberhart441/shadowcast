@@ -30,6 +30,8 @@ DEDUP_WINDOW_S = 2.0  # host time within which a second copy of (node, schedule 
 DEDUP_MAX = 8192      # round broadcasts remembered for de-duplication (32 nodes x 40 Hz x 2 s = 2560)
 DUPLICATE = "duplicate"
 QUEUE_OVERFLOW = "queue_overflow"
+UNKNOWN_NODES_KEPT = 32   # unknown serials counted by name; any further ones are counted together as OTHER_NODES
+OTHER_NODES = "other"
 REJECT_REASONS = DECODE_REASONS + (DUPLICATE, QUEUE_OVERFLOW)   # each has a counter in status.broadcasts.rejected
 
 
@@ -72,7 +74,8 @@ class RoundIngest:
             return []
         receiver = self._names.get(serial)
         if receiver is None:
-            self._unknown[broadcast.node_id] += 1
+            known = broadcast.node_id in self._unknown or len(self._unknown) < UNKNOWN_NODES_KEPT
+            self._unknown[broadcast.node_id if known else OTHER_NODES] += 1
             return []
         self._accepted += 1
         tally["accepted"] += 1
