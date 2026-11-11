@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from csi.gateway_records import (GatewaySource, Heard, NodeStatus, RecordError, Text, decode_record,
+from csi.gateway_records import (GatewaySource, Heard, NodeStatus, RecordError, decode_record,
                                  encode_heard, encode_status, encode_text)
 from csi.room import Walk, load_room
 from csi.dashboard import DashboardState

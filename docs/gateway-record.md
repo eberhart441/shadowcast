@@ -53,12 +53,12 @@ one place, and counts what it rejects (ADR-0022).
 
 | # | Counter | Gateway | Transceiver |
 |---|---|---|---|
-| 0 | heard | ESP-NOW frames received | round broadcasts heard with CSI |
+| 0 | heard | ESP-NOW frames received | round broadcasts heard from other members of the round |
 | 1 | queue full | frames dropped because the queue to the USB writer was full | CSI frames dropped because the queue to the node task was full |
 | 2 | USB dropped | records not written because the USB buffer was full (no host reading) | same |
 | 3 | sent | 0 | round broadcasts sent |
-| 4 | send errors | 0 | `esp_now_send` errors and failed send callbacks |
-| 5 | rejected | 0 | heard frames that are not a v1 round broadcast, or come from a node outside the round |
+| 4 | send errors | 0 | `esp_now_send` errors, failed send callbacks and missed slots |
+| 5 | rejected | frames longer than 250 bytes (not ours) | ESP-NOW frames that are not a v1 round broadcast, or come from a node outside the round |
 | 6 | CSI skipped | 0 | CSI frames not scored: layout warm-up, a layout other than the locked one, or too many subcarriers |
 
 A body shorter than 18 bytes is reason `short_body`.

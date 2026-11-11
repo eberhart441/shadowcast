@@ -301,8 +301,10 @@ static uint32_t s_gain_frames;
 static void on_csi(void *ctx, wifi_csi_info_t *info)
 {
     static node_item_t item;
-    if (!info || !info->buf || !info->payload || memcmp(info->mac, s_sta_mac, 6) == 0) {
-        return;   /* nothing usable, or this node's own broadcast */
+    if (!info || !info->buf || !info->payload || info->payload_len < ESPNOW_BODY_OFFSET
+            || info->payload[0] != 127 || info->payload[1] != 0x18 || info->payload[2] != 0xfe
+            || info->payload[3] != 0x34 || memcmp(info->mac, s_sta_mac, 6) == 0) {
+        return;   /* not an ESP-NOW frame (other Wi-Fi on the channel), or this node's own broadcast */
     }
     item.kind = ITEM_HEARD;
     item.t_us = esp_timer_get_time();
@@ -323,7 +325,8 @@ static void on_slot(void *arg)
     item.kind = ITEM_SLOT;
     item.round = s_armed_round;
     if (xQueueSendToFront(s_queue, &item, 0) != pdTRUE) {
-        count(GR_COUNT_SEND_ERRORS);   /* a missed slot */
+        count(GR_COUNT_SEND_ERRORS);   /* a missed slot; try again next round so the node never falls silent */
+        esp_timer_start_once(s_slot_timer, (uint64_t)s_round.period_us);
     }
 }
 

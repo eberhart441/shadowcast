@@ -4,6 +4,39 @@ ESP32 firmware for the CSI rig: `csi_send` transmits packets, `csi_recv` measure
 
 Which board is which (chip, position, sender address, board serial) is in `config/room.json`. Read it there.
 
+The transceiver rig of spec #2 runs its own image, `node/` (below, "Node image"). `csi_send` and `csi_recv` stay for
+the hackathon rig.
+
+## Node image (transceiver rig)
+
+`node/` is one image for every board of the transceiver rig, ESP32-C5 only ([ADR-0023](../docs/adr/0023-one-node-image-runtime-settings-gateway-records.md)).
+There are no build flags and no per-board build directories: what a board does is its node settings, set over USB
+after flashing.
+
+```
+cd firmware/node
+idf.py -B build set-target esp32c5
+idf.py -B build build                                   # ESP-IDF 6.0; CI builds the same in espressif/idf:v6.0
+cd build && esptool --chip esp32c5 -p <PORT> -b 460800 write-flash @flash_args
+python scripts/node.py <PORT> set role=transceiver index=0 nodes=2 channel=6 round_hz=40
+python scripts/node.py <PORT> set role=gateway channel=6        # the board on the dashboard host
+python scripts/dashboard.py --node-gateway <GATEWAY PORT> --room config/room_tr2.json
+```
+
+- **Transceiver:** sends its round broadcast ([`docs/round-broadcast.md`](../docs/round-broadcast.md)) in its slot
+  of the fixed round, as an unacknowledged ESP-NOW broadcast at HT20, MCS0. It measures CSI on the others' round
+  broadcasts (HT20 only), scores each link with `core/motion_score` and carries the link reports. A transceiver that
+  was never set only listens.
+- **Gateway:** listens only and writes every frame it hears to USB as a heard record with its receive time.
+- **USB carries only gateway records** ([`docs/gateway-record.md`](../docs/gateway-record.md)): status once a
+  second, text (log lines and command replies), heard records on a gateway. Read a node with
+  `python scripts/node.py <PORT> status`, not a serial terminal. Nothing goes to the UART after boot, and no CSI is
+  ever formatted as text.
+- **Gain** is the hackathon receiver's (record 100 frames, then force their median gain) until ticket #15.
+- The logic that does not need ESP-IDF is in `core/` and tested on the PC; `node/main/node_main.c` is only the glue
+  (Wi-Fi, ESP-NOW, CSI callback, timer, NVS, USB).
+- The two-board rig check is [`docs/rig-checks/two-nodes.md`](../docs/rig-checks/two-nodes.md).
+
 ## Our edits to the stock examples
 
 - Channel 6 (`CONFIG_LESS_INTERFERENCE_CHANNEL`), sender and receiver.
@@ -90,6 +123,21 @@ Flashing resets the board, and a receiver takes its gain baseline from the first
 `core/motion_score.{h,c}` is the on-node motion score and score code ([ADR-0021](../docs/adr/0021-on-node-score-streaming-window-and-score-code.md)).
 Run its tests with `firmware/core/test.sh` (any C compiler; `scripts/check.sh` runs it too, and CI runs it with gcc).
 They replay `core/tests/vectors/motion_score.txt`, which `scripts/gen_score_vectors.py` writes from the Python scorer.
+
+The node image's other core modules, each with a test in `core/tests/`:
+
+| Module | What it does |
+|---|---|
+| `round_broadcast` | Round broadcast v1 encoder and decoder. Tests replay `tests/vectors/round_broadcast.txt`, flattened from the host's golden fixture `tests/fixtures/round_broadcast_v1.json` by `scripts/gen_wire_vectors.py`. |
+| `gateway_record` | Gateway record v1 encoder (and decoder, for the tests). Same, from `tests/fixtures/gateway_record_v1.json`. |
+| `espnow_frame` | The ESP-NOW body (the round broadcast) inside the frame the CSI callback hands over. |
+| `csi_layout` | One amplitude per kept subcarrier, nulls learned as `csi/parser.py` learns an unknown layout. |
+| `link_table` | Per-transmitter link state and the link reports (calls `motion_score_get` once per link per round). |
+| `fixed_round` | The fixed round: slot timing from any heard round broadcast. The round scheduler (#14) replaces it. |
+| `node_settings` | The runtime settings and their text commands. |
+
+`tests/test_wire_vectors.py` fails when a flattened vector file no longer matches its JSON fixture: rerun
+`scripts/gen_wire_vectors.py`.
 
 ## Not in the repo
 

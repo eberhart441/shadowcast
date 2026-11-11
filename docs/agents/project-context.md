@@ -48,6 +48,7 @@ Where to start, by task:
 | Why something is built the way it is | `docs/adr/README.md` |
 | Operator detail: calibrating, flags, troubleshooting | `docs/operations.md`, `docs/hardware.md` |
 | Touch boards, ports or firmware | `docs/agents/hardware.md`, `firmware/README.md`, `scripts/ports.py`, `scripts/flash.sh` |
+| Transceiver rig on hardware (spec #2) | `firmware/README.md` "Node image", `scripts/node.py`, `dashboard.py --node-gateway`, [`docs/gateway-record.md`](../gateway-record.md), [`docs/rig-checks/two-nodes.md`](../rig-checks/two-nodes.md) |
 | Work without hardware | `python scripts/dashboard.py --simulate-room` (README "Quick start") |
 | Change the room or add a node | `config/room.json`, `csi/room.py`, `docs/hardware.md` "Scaling up" |
 

@@ -28,6 +28,7 @@ All of these decisions were made during the CodeMetalForge hackathon and recorde
 | [0020](0020-plug-and-play-no-per-layout-training.md) | Plug and play: no per-layout training | Accepted | 2026-11-08 |
 | [0021](0021-on-node-score-streaming-window-and-score-code.md) | On-node score: streaming window statistics, and a log-scale score code | Accepted | 2026-11-11 |
 | [0022](0022-host-time-round-broadcast-seam.md) | Every transceiver source is a `(host time, round broadcast)` stream | Accepted | 2026-11-11 |
+| [0023](0023-one-node-image-runtime-settings-gateway-records.md) | One node image: runtime settings over USB, binary gateway records, HT20 MCS0 broadcasts | Accepted | 2026-11-11 |
 
 Reading order: 0001 is the principle the detection records (0007 to 0011) argue from. 0002 to 0006 are the hardware and radio. 0012 to 0018 are the software architecture and how it is tested.
 
