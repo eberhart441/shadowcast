@@ -43,6 +43,7 @@ NO_SIGNAL = "NO_SIGNAL"
 WARMUP = "WARMUP"
 UNCALIBRATED = "UNCALIBRATED"
 NO_SIGNAL_S = 2.0
+ROOM_STEP_S = 0.05     # link reports update the room decision at most this often (host time): once per 20 Hz round
 FIXED = "fixed"        # a link judged against a threshold
 AUTO = "auto"          # a link judged against its own adaptive baseline (csi/adaptive.py)
 
@@ -90,6 +91,7 @@ class _Link:
     def __init__(self, link_id: AnyLinkId, threshold: Optional[float], debounce_s: float,
                  send_rate_hz: Optional[float], auto: bool = False) -> None:
         self.id, self.threshold = link_id, threshold
+        self.label = link_id.label   # computed once: the room decision reads it for every link many times a second
         self.auto_allowed = auto
         self.mode = FIXED
         self.detector: Optional[AdaptiveDetector] = None
@@ -184,7 +186,8 @@ class LinkMonitor:
     ``mode="auto"``: each link is judged by its own AdaptiveDetector (csi/adaptive.py); ``thresholds`` is
     not used for state, and a link given a number by ``set_threshold`` becomes fixed.
     ``expected`` lists links to show from the start, so a link that never transmits appears as NO_SIGNAL
-    instead of being absent. The room decision (``room_state``) is updated on every packet, at its time.
+    instead of being absent. The room decision (``room_state``) is updated on every packet, at its time; from link
+    reports at most once per ``room_step_s`` of host time (a round), and brought up to date by ``snapshot``.
     """
 
     def __init__(self, thresholds: Optional[Mapping[str, float]] = None, *, mode: str = FIXED,
@@ -198,8 +201,11 @@ class LinkMonitor:
         self._links: dict[AnyLinkId, _Link] = {}
         self._by_label: dict[str, AnyLinkId] = {}   # first link with each label, for row()
         self._room = RoomDecision()
-        self.room_state = WARMUP
-        self.room_elevated: list[str] = []
+        self._room_t: Optional[float] = None        # host time of the last room decision
+        self._room_due: Optional[float] = None      # host time of reports not in the room decision yet
+        self.room_step_s = ROOM_STEP_S
+        self._room_state = WARMUP
+        self._room_elevated: list[str] = []
         for link_id in expected:
             self._get(link_id)
 
@@ -242,15 +248,36 @@ class LinkMonitor:
         """Feed the link reports of one round broadcast, heard at ``host_ts``; the room decision follows once."""
         for link_id, report in reports:
             self._get(link_id).push_report(host_ts, report)
-        self._update_room(host_ts)
+        # one decision per round, not per round broadcast: each looks at every link (870 at 30 nodes)
+        if self._room_t is None or not 0 <= host_ts - self._room_t < self.room_step_s:
+            self._update_room(host_ts)
+        else:
+            self._room_due = host_ts
 
     def _update_room(self, now: float) -> None:
         """Room decision at packet time ``now``, from the links heard within the NO_SIGNAL window."""
-        readings = {lid.label: link.reading for lid, link in self._links.items()
+        self._room_t, self._room_due = now, None
+        readings = {link.label: link.reading for link in self._links.values()
                     if link.reading is not None and link.last_host is not None
                     and now - link.last_host <= self._no_signal_s}
-        self.room_state = self._room.update(now, readings)
-        self.room_elevated = list(self._room.elevated)
+        self._room_state = self._room.update(now, readings)
+        self._room_elevated = list(self._room.elevated)
+
+    def _settle_room(self) -> None:
+        if self._room_due is not None:
+            self._update_room(self._room_due)
+
+    @property
+    def room_state(self) -> str:
+        """Room-level state from link agreement, up to date with every report pushed so far."""
+        self._settle_room()
+        return self._room_state
+
+    @property
+    def room_elevated(self) -> list[str]:
+        """Labels of the links elevated in the latest room decision."""
+        self._settle_room()
+        return self._room_elevated
 
     def snapshot(self, now: Optional[float] = None) -> list[dict]:
         """One dict per link, sorted by label. ``now`` is host time (default: the wall clock).
@@ -259,7 +286,10 @@ class LinkMonitor:
         ``level`` is score relative to that threshold (>= 1 at or above it); ``elevated`` is True in MOTION.
         """
         now = time.time() if now is None else now
-        return [self._row(link_id, self._links[link_id], now)
+        self._settle_room()
+        return [self._row(
+link_id, self._links[link_id], now)
+
                 for link_id in sorted(self._links, key=lambda lid: lid.label)]
 
     def row(self, label: str, now: Optional[float] = None) -> Optional[dict]:

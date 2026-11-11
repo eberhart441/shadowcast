@@ -86,6 +86,7 @@ class AdaptiveDetector:
         self.rebuild_fraction = rebuild_fraction
         self._all: deque[tuple[float, float]] = deque()   # every sample in the window (for rebuilds)
         self._base: deque[tuple[float, float]] = deque()  # the samples the baseline is computed from
+        self._base_s: deque[float] = deque()              # their scores alone, for a fast array
         self._first_t: Optional[float] = None
         self._last_t: Optional[float] = None
         self._stats: Optional[tuple[float, float, float, float]] = None  # baseline, spread, enter, exit
@@ -94,6 +95,7 @@ class AdaptiveDetector:
         self._enter_since: Optional[float] = None
         self._strong_since: Optional[float] = None
         self._hist: deque[tuple[float, bool, bool]] = deque()  # (t, high, low) over the last cap_s
+        self._n_high = self._n_low = 0                          # running counts of high and low in _hist
         self._last: Optional[Reading] = None
 
     # ------------------------------------------------------------------ public
@@ -109,6 +111,7 @@ class AdaptiveDetector:
         self._trim(t)
         if not self._is_warm(t):
             self._base.append((t, score))
+            self._base_s.append(score)
             self._stats = None
             return self._set(Reading(t, WARMUP, score))
         self._refresh(t)
@@ -117,9 +120,14 @@ class AdaptiveDetector:
         low = score <= baseline / self.ratio_floor
         if not high or not self.exclude_high:  # high samples stay out of the baseline until a sustained high level is taken as the new normal
             self._base.append((t, score))
+            self._base_s.append(score)
         self._hist.append((t, high, low))
+        self._n_high += high
+        self._n_low += low
         while self._hist and self._hist[0][0] < t - self.cap_s:
-            self._hist.popleft()
+            _, old_high, old_low = self._hist.popleft()
+            self._n_high -= old_high
+            self._n_low -= old_low
         if self._should_rebuild(t):
             self._rebuild(t - self.cap_s)
         if self._stats is None:  # rebuilt: the thresholds follow the new baseline
@@ -143,6 +151,7 @@ class AdaptiveDetector:
             self._all.popleft()
         while self._base and self._base[0][0] < t - self.window_s:
             self._base.popleft()
+            self._base_s.popleft()
 
     def _is_warm(self, t: float) -> bool:
         return t - self._first_t >= self.warmup_s and len(self._base) >= self.min_samples
@@ -150,7 +159,7 @@ class AdaptiveDetector:
     def _refresh(self, t: float) -> None:
         if self._stats is not None and self._stats_t is not None and t - self._stats_t < self.recalc_s:
             return
-        values = np.array([s for _, s in self._base])
+        values = np.fromiter(self._base_s, dtype=float, count=len(self._base_s))
         baseline = max(float(np.median(values)), _TINY)
         spread = MAD_SCALE * float(np.median(np.abs(values - baseline)))
         enter = max(baseline + self.k * spread, self.ratio_floor * baseline)
@@ -166,14 +175,16 @@ class AdaptiveDetector:
         if not self._hist or self._hist[0][0] > t - 0.9 * self.cap_s:
             return False
         n = len(self._hist)
-        high = sum(h for _, h, _ in self._hist) / n
-        low = sum(lo for _, _, lo in self._hist) / n
+        high = self._n_high / n
+        low = self._n_low / n
         return high >= self.rebuild_fraction or low >= self.rebuild_fraction
 
     def _rebuild(self, since: float) -> None:
         """The level since ``since`` is the new normal: the baseline is made of those samples only."""
         self._base = deque((t, s) for t, s in self._all if t >= since)
+        self._base_s = deque(s for _, s in self._base)
         self._hist.clear()
+        self._n_high = self._n_low = 0
         self._stats = None
         self._stats_t = None
 

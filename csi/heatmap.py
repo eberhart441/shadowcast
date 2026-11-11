@@ -54,6 +54,7 @@ R_FULL = 3.0              # score / baseline at which a link's evidence reaches 
 BASELINE_WINDOW_S = 60.0  # host-time span of the quiet baseline
 BASELINE_PERCENTILE = 50.0
 BASELINE_WARMUP_S = 10.0  # history needed before a link's baseline is trusted
+BASELINE_RECALC_S = 0.5   # host time between recomputations of a baseline: it spans 60 s, and 870 links need it
 RISE_TAU_S = 0.05         # time constant of a cell heating up (0.05 s: the team's pick on the rig)
 DECAY_TAU_S = 0.3         # time constant of a cell cooling down
 STEP_S = 0.1              # host-time step between smoothing updates while packets arrive
@@ -76,12 +77,19 @@ def link_evidence(score: Optional[float], baseline: Optional[float], r_floor: fl
 
 
 class QuietBaseline:
-    """Low percentile of a link's score over the last ``window_s`` of host time, once warmed up."""
+    """Low percentile of a link's score over the last ``window_s`` of host time, once warmed up.
+
+    The percentile is recomputed at most once per ``recalc_s`` of sample time; in between, ``value`` returns the
+    last one (a 60 s baseline hardly moves in half a second, and at 30 nodes it is computed for 870 links).
+    """
 
     def __init__(self, window_s: float = BASELINE_WINDOW_S, percentile: float = BASELINE_PERCENTILE,
-                 warmup_s: float = BASELINE_WARMUP_S) -> None:
+                 warmup_s: float = BASELINE_WARMUP_S, recalc_s: float = BASELINE_RECALC_S) -> None:
         self._window_s, self._percentile, self._warmup_s = window_s, percentile, warmup_s
+        self._recalc_s = recalc_s
         self._samples: deque[tuple[float, float]] = deque()
+        self._value: Optional[float] = None
+        self._value_t = -math.inf
 
     def push(self, t: float, score: float) -> None:
         self._samples.append((t, score))
@@ -92,7 +100,12 @@ class QuietBaseline:
         """The baseline, or None until the window holds ``warmup_s`` of history."""
         if not self._samples or self._samples[-1][0] - self._samples[0][0] < self._warmup_s:
             return None
-        return float(np.percentile([s for _, s in self._samples], self._percentile))
+        newest = self._samples[-1][0]
+        if self._value is None or not 0 <= newest - self._value_t < self._recalc_s:
+            self._value = float(np.percentile([s for _, s in self._samples], self._percentile))
+            self._value_t = newest
+        return self._value
+
 
 
 def cell_centres(cols: int, rows: int, width_m: float, depth_m: float) -> np.ndarray:

@@ -4,6 +4,7 @@ Round broadcasts come from the simulated rig (csi.simulate.simulate_rounds) for 
 transceiver rooms; assertions are on DashboardState's payload and on the server's HTTP interface.
 """
 import json
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -174,3 +175,49 @@ def test_frames_of_an_8_node_rig_still_carry_every_link_row():
         server.stop()
     assert all(len(payload["links"]) == 56 for payload, _ in events)
     assert events[-1][0]["status"]["links_in_frames"] is True
+
+
+# ---------------------------------------------------------------- CPU budget at 30 nodes
+
+PIPELINE_BUDGET = 1.0       # CPU seconds per second of traffic, steady state: the whole pipeline fits in one core
+CAPTURE_BUDGET_S = 0.015    # per frame, under the server lock
+FRAME_BUDGET_S = 0.025      # per frame, capture + render + JSON
+FRAME_BYTES_MAX = 40_000
+
+
+@pytest.mark.slow
+def test_a_30_node_rig_keeps_5_hz_frames_within_the_cpu_budget():
+    """30 s of a simulated 30-node rig (870 links, 600 round broadcasts/s) with a walker after 15 s, through the
+    same calls the server makes. The budget is measured over the last 10 s, once every link and heatmap baseline
+    is warm. Laptop (Core Ultra 7, under load): about 0.5 CPU-s/s, 6 ms and 16 KB per frame."""
+    from csi.server import default_walk
+
+    seconds = 30.0
+    stream = list(simulate_rounds(TR30, default_walk(TR30), duration_s=seconds, quiet_first_s=15.0, seed=3, t0=T0))
+    state = DashboardState(TR30, mode="auto")
+    steady_from = T0 + 20.0
+    cpu = capture_s = frame_s = 0.0
+    frames, sizes, next_frame = 0, [], T0 + 0.2
+    for host_ts, data in stream:
+        start = time.process_time()
+        state.push_broadcast(host_ts, data)
+        if host_ts >= next_frame:
+            next_frame = host_ts + 0.2
+            began = time.process_time()
+            cap = state.capture(host_ts)
+            captured = time.process_time()
+            text = json.dumps(state.render(cap, links=False))
+            done = time.process_time()
+            if host_ts >= steady_from:
+                frames += 1
+                capture_s += captured - began
+                frame_s += done - began
+                sizes.append(len(text))
+        if host_ts >= steady_from:
+            cpu += time.process_time() - start
+    steady_s = stream[-1][0] - steady_from
+    assert 49 <= frames <= 51                                  # 5 Hz of packet time
+    assert cpu / steady_s < PIPELINE_BUDGET
+    assert capture_s / frames < CAPTURE_BUDGET_S
+    assert frame_s / frames < FRAME_BUDGET_S
+    assert max(sizes) < FRAME_BYTES_MAX
