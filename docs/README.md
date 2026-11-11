@@ -22,6 +22,8 @@ detail: how the rig is built, how to operate it, how the detection works, and wh
   baseline and the rest), defined once.
 - [round-broadcast.md](round-broadcast.md): Round broadcast format, version 1. The bytes a transceiver
   sends each round (round header and link reports), defined once for the host and the firmware.
+- [round-recording.md](round-recording.md): Round recording format, version 1. The file `--record` writes
+  and `--replay-rounds` reads: round broadcasts with host time and source, labels, and the room config.
 - [adr/README.md](adr/README.md): Architecture decision records. The index of the decisions recorded in
   [`adr/`](adr/).
 
