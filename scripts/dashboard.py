@@ -2,6 +2,7 @@
 """Dashboard server: the multi-link pipeline plus a small HTTP interface (JSON state, SSE events, a page).
 
     dashboard.py --simulate-room                                   # a simulated person walks the room, no hardware
+    dashboard.py --simulate --room config/room_tr8.json            # simulated transceiver rig: round broadcasts
     dashboard.py --simulate-room --http-port 8000 --host 0.0.0.0   # reachable from the network (opt-in)
     dashboard.py --port rx1=/dev/cu.usbmodem2101 --port rx2=/dev/cu.usbmodem101   # fixed: links UNCALIBRATED until set
     dashboard.py --auto-ports                                      # each receiver's port found by its serial (scripts/ports.py)
@@ -19,6 +20,8 @@ or set). --auto-threshold switches live sources to auto mode (experimental: each
 see csi/adaptive.py) and ignores any thresholds file. A Set on a link makes it fixed.
 Ctrl+C (or SIGTERM) stops the server and releases every port.
 A replay needs no serial port; when it has finished, the final state stays up (status.finished is true).
+--simulate runs the transceiver pipeline: the room's transceivers send round broadcasts (docs/round-broadcast.md)
+and every link is judged by its own adaptive baseline (WARMUP for its first 10 s or so).
 """
 from __future__ import annotations
 
@@ -44,7 +47,7 @@ from csi.replay import ReplayError, ReplayServer, load_log, session_dashboard  #
 from csi.room import DEFAULT_ROOM_PATH, Room, load_room  # noqa: E402
 from csi.server import DEFAULT_HOST, DEFAULT_PORT, DEFAULT_THRESHOLDS_FILE, DashboardServer, FrameServer, \
     controls_allowed, \
-    default_walk, looping_room_streams, simulated_thresholds  # noqa: E402
+    default_walk, looping_room_streams, simulated_rig_streams, simulated_thresholds  # noqa: E402
 
 TICK_S = 0.5
 
@@ -78,6 +81,10 @@ def build_parser() -> argparse.ArgumentParser:
     g = ap.add_argument_group("packet source")
     g.add_argument("--simulate-room", action="store_true",
                    help="a simulated person walks a loop through the room in real time (no hardware)")
+    g.add_argument("--simulate", action="store_true",
+                   help="a simulated transceiver rig: the room's transceivers send round broadcasts while a person "
+                        "walks a loop (no hardware; every link in auto mode). Needs a room with transceivers, "
+                        "for example --room config/room_tr8.json")
     g.add_argument("--port", action="append", metavar="[NAME=]PATH",
                    help="serial port of a csi_recv node; repeat for each receiver. Unnamed ports get rx1, rx2...")
     g.add_argument("--auto-ports", action="store_true",
@@ -89,7 +96,7 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--baud", type=int, default=921600)
     g.add_argument("--seed", type=int, default=0, help="simulator seed")
     g.add_argument("--sim-quiet-first", type=quiet_seconds, default=0.0, metavar="SECONDS",
-                   help="with --simulate-room: the simulated room is empty for SECONDS before the walk starts, "
+                   help="with --simulate-room or --simulate: the room is empty for SECONDS before the walk starts, "
                         "so Calibrate can run in the demo (the default calibration takes about 45 s; default 0)")
     r = ap.add_argument_group("replay (no hardware)")
     r.add_argument("--replay", type=Path, metavar="run.jsonl",
@@ -135,7 +142,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def check_source(args: argparse.Namespace) -> None:
-    chosen = [flag for flag, on in (("--simulate-room", args.simulate_room), ("--port", bool(args.port)),
+    chosen = [flag for flag, on in (("--simulate-room", args.simulate_room), ("--simulate", args.simulate),
+                                    ("--port", bool(args.port)),
                                     ("--auto-ports", args.auto_ports),
                                     ("--gateway", args.gateway is not None),
                                     ("--replay", args.replay is not None),
@@ -143,13 +151,18 @@ def check_source(args: argparse.Namespace) -> None:
     if len(chosen) > 1:
         raise SystemExit(f"error: use one source, not {' and '.join(chosen)}")
     if not chosen:
-        raise SystemExit("error: pass a source: --simulate-room, --port [NAME=]PATH (repeat for each receiver), "
+        raise SystemExit("error: pass a source: --simulate-room, --simulate, --port [NAME=]PATH (repeat for each receiver), "
                          "--auto-ports, --replay run.jsonl or --replay-session DIR")
     replaying = args.replay is not None or args.replay_session is not None
     if args.speed is not None and not replaying:
         raise SystemExit("error: --speed applies to --replay and --replay-session only")
-    if args.sim_quiet_first and not args.simulate_room:
-        raise SystemExit("error: --sim-quiet-first applies to --simulate-room only")
+    if args.sim_quiet_first and not (args.simulate_room or args.simulate):
+        raise SystemExit("error: --sim-quiet-first applies to --simulate-room and --simulate only")
+    if args.simulate and args.thresholds is not None:
+        raise SystemExit("error: --thresholds does not apply to --simulate: every transceiver link is judged by its "
+                         "own adaptive baseline")
+    if args.simulate and args.raw_log is not None:
+        raise SystemExit("error: --raw-log records CSI lines; --simulate sends round broadcasts, which it cannot record")
     if args.margin is not None and args.replay_session is None:
         raise SystemExit("error: --margin applies to --replay-session only")
     if args.replay is not None and args.log is not None:
@@ -197,13 +210,18 @@ def server_mode(args: argparse.Namespace) -> str:
     """
     if args.replay is not None or args.replay_session is not None:
         return "fixed"
-    return "auto" if args.auto_threshold else "fixed"
+    return "auto" if args.auto_threshold or args.simulate else "fixed"
 
 
 def build_sources(args: argparse.Namespace, room: Room) -> tuple[dict[str, Stream], Optional[Mapping[str, float]]]:
     """Named (host_ts, line) streams and the per-link fixed thresholds for them (None in auto mode).
     Serial ports open on first read."""
     fixed = server_mode(args) == "fixed"
+    if args.simulate:
+        if len(room.transceivers) < 2:
+            raise SystemExit(f"error: --simulate needs a room with at least two transceivers; {args.room} has "
+                             f"{len(room.transceivers)} (try --room config/room_tr8.json)")
+        return simulated_rig_streams(room, seed=args.seed, quiet_first_s=args.sim_quiet_first), None
     if args.simulate_room:
         thresholds = None
         if fixed:
@@ -242,7 +260,9 @@ def build_server(args: argparse.Namespace) -> FrameServer:
             server._web_index = page  # session_dashboard takes no web_index; the page is read on each GET /
         return server
     sources, thresholds = build_sources(args, room)
-    if args.simulate_room:
+    if args.simulate:
+        source = "simulate (transceiver rig)"
+    elif args.simulate_room:
         source = "simulate-room"
     elif args.gateway is not None:
         source = f"gateway {args.gateway}"

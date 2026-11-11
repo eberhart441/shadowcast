@@ -16,6 +16,7 @@ version) cannot be placed: it is counted as unplaced. Nothing is dropped without
 from __future__ import annotations
 
 from collections import Counter
+from dataclasses import dataclass
 from typing import Iterable, Optional
 
 from .broadcast import BroadcastError, LinkReport, decode_broadcast
@@ -25,6 +26,13 @@ from .room import Room
 # A stream of (host time, round broadcast bytes); a quiet source may yield (host_ts, None) as a heartbeat.
 BroadcastStream = Iterable[tuple[float, Optional[bytes]]]
 SCHEDULES_KEPT = 4   # schedule versions whose node indices are remembered
+
+
+@dataclass(frozen=True)
+class HeardBroadcast:
+    """One round broadcast as a source delivered it: the bytes and the host time they were heard at."""
+    host_ts: float
+    data: bytes
 
 
 class RoundIngest:

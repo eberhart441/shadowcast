@@ -1,7 +1,8 @@
 """Read several receivers concurrently into one queue of (receiver_name, CSIPacket).
 
 Each source is an iterable of (host_ts, line), the same seam as ``serial_stream``; a replayed source may
-yield (host_ts, CSIPacket) instead. Each one is read on
+yield (host_ts, CSIPacket) instead, and a transceiver source yields (host_ts, round broadcast bytes), which are
+queued undecoded as a ``HeardBroadcast`` (csi/rounds.py). Each one is read on
 its own thread with its own CSIParser, so one receiver's layout warm-up or malformed lines never touch
 another's. A source that raises is recorded in ``errors()`` and the others keep running.
 
@@ -20,6 +21,7 @@ import threading
 from typing import Mapping, Optional, Sequence
 
 from .parser import CSIPacket, CSIParser, ParserStats, Stream
+from .rounds import HeardBroadcast
 
 PENDING, RUNNING, DONE, STOPPED = "pending", "running", "done", "stopped"
 
@@ -84,8 +86,14 @@ class MultiSource:
                     break
                 if line is None:  # heartbeat from a quiet port: only the stop check above matters
                     continue
-                # a replayed recording yields parsed packets, which need no parsing
-                packets = [line] if isinstance(line, CSIPacket) else self._parsers[name].feed(line, host_ts)
+                # a replayed recording yields parsed packets, which need no parsing; round broadcasts are
+                # decoded downstream, where rejections are counted
+                if isinstance(line, (bytes, bytearray)):
+                    packets = [HeardBroadcast(host_ts, bytes(line))]
+                elif isinstance(line, CSIPacket):
+                    packets = [line]
+                else:
+                    packets = self._parsers[name].feed(line, host_ts)
                 for pkt in packets:
                     self._queue.put((name, pkt))
             self._set(name, STOPPED if self._stop.is_set() else DONE)
