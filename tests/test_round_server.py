@@ -45,7 +45,7 @@ def test_the_server_reads_round_broadcast_sources_into_link_states():
     assert payload["status"]["room"]["state"] == "MOTION"
     assert payload["status"]["receivers"] == {"gateway": "finished"}
     assert payload["status"]["broadcasts"]["accepted"] == 8 * 17 * 20
-    assert payload["status"]["broadcasts"]["rejected"] == {}
+    assert sum(payload["status"]["broadcasts"]["rejected"].values()) == 0
     assert payload["status"]["uncalibrated_links"] == []      # auto mode: every link judges itself
 
 
@@ -59,7 +59,8 @@ def test_a_source_mixing_bad_bytes_keeps_running_and_counts_them():
         payload = get_state(server)
     finally:
         server.stop()
-    assert payload["status"]["broadcasts"]["rejected"] == {"short": 1}
+    assert payload["status"]["broadcasts"]["rejected"]["short"] == 1
+    assert sum(payload["status"]["broadcasts"]["rejected"].values()) == 1
     assert payload["status"]["broadcasts"]["accepted"] == len(good)
     assert payload["status"]["receivers"] == {"gateway": "finished"}
 
