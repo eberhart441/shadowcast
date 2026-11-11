@@ -137,6 +137,10 @@ static void all_seen(rs_t *s, int64_t t)
 
 static void begin_listening(rs_t *s, int64_t now)
 {
+    /* the round that starts now gets the next number: after anything sent, the one after it */
+    s->base_us = now;
+    s->base_round = s->sent_any ? (uint16_t)(s->last_sent_round + 1) : (uint16_t)rnd(s);
+    s->sched_offset_known = false;
     s->state = RS_LISTENING;
     s->my_index = RS_NO_INDEX;
     s->membership = 0;
@@ -146,7 +150,22 @@ static void begin_listening(rs_t *s, int64_t now)
     s->grant_pending = false;
     s->listen_until_us = now + LISTEN_MIN_ROUNDS * s->period_us
                          + (int64_t)(rnd(s) % (uint32_t)(LISTEN_SPREAD_ROUNDS * s->period_us));
-    s->base_round = (uint16_t)rnd(s);   /* the first round number if this node founds */
+}
+
+/* Is round number r (this node's) one the scheduler numbers even (join requests) rather than odd (grants)? */
+static bool sched_even(const rs_t *s, uint16_t r)
+{
+    bool scheduler = s->state == RS_MEMBER && rs_slot_of(s->membership, s->my_index) == 0;
+    return !((uint16_t)(r + (uint16_t)(scheduler ? 0 : s->sched_offset)) & 1u);
+}
+
+/* After the phase was set outright at time t: keep counting from the number the round running at t had. */
+static void keep_numbering(rs_t *s, uint16_t before, int64_t t)
+{
+    if (s->sent_any && (int16_t)(uint16_t)(s->last_sent_round + 1 - before) > 0) {
+        before = (uint16_t)(s->last_sent_round + 1);
+    }
+    s->base_round = (uint16_t)(before - (uint16_t)floor_div(t - s->base_us, s->period_us));
 }
 
 static void found(rs_t *s, int64_t at)
@@ -160,6 +179,7 @@ static void found(rs_t *s, int64_t at)
     memcpy(s->sched_id, s->id, RB_NODE_ID_BYTES);
     s->sched_known = true;
     s->synced = true;
+    s->base_round = wire_round(s, floor_div(at - s->base_us, s->period_us));   /* the number promised by rs_next */
     s->base_us = at;
     s->last_related_us = at;
     all_seen(s, at);
@@ -168,11 +188,11 @@ static void found(rs_t *s, int64_t at)
     s->count.founded++;
 }
 
-/* Plan the first join request of a joiner: one of the next BACKOFF_START even rounds after t. */
+/* Plan the first join request of a joiner: one of the next BACKOFF_START request rounds after t. */
 static void plan_requests(rs_t *s, int64_t t)
 {
     uint16_t r = wire_round(s, floor_div(t - s->base_us, s->period_us) + 1);
-    if (r & 1u) {
+    if (!sched_even(s, r)) {
         r++;
     }
     s->backoff_window = BACKOFF_START;
@@ -186,18 +206,15 @@ static int64_t timing(rs_t *s, int64_t t_rx, const rb_broadcast_t *b)
     int64_t start = t_rx - rs_airtime_us(broadcast_bytes(b->membership)) - latency;   /* on air, by this clock */
     int64_t implied = start - (int64_t)b->slot * (s->period_us / b->slots_per_round);  /* its round's start */
     if (!s->synced) {
-        s->base_us = implied;
-        s->base_round = b->round;
+        s->base_us = implied;   /* the caller keeps the numbering (keep_numbering) */
         s->synced = true;
+        s->last_k = 0;
         return latency;
     }
     int64_t k = floor_div(implied - s->base_us + s->period_us / 2, s->period_us);
     int64_t err = implied - (s->base_us + k * s->period_us);
     s->base_us += err / 2;
-    int16_t ahead = (int16_t)(uint16_t)(b->round - wire_round(s, k));
-    if (ahead > 0) {
-        s->base_round = (uint16_t)(s->base_round + (uint16_t)ahead);   /* round numbers only move forward */
-    }
+    s->last_k = k;
     return err + latency;
 }
 
@@ -214,9 +231,13 @@ static void target(rs_t *s, int64_t t_rx, const rb_broadcast_t *b)
     if (s->sched_known) {
         memcpy(s->sched_id, b->node_id, RB_NODE_ID_BYTES);
     }
+    uint16_t before = wire_round(s, floor_div(t_rx - s->base_us, s->period_us));
     s->synced = false;
     s->grant_pending = false;
     timing(s, t_rx, b);
+    keep_numbering(s, before, t_rx);
+    s->sched_offset_known = b->slot == 0;
+    s->sched_offset = (int16_t)(uint16_t)(b->round - wire_round(s, 0));
     s->last_related_us = t_rx;
     all_seen(s, t_rx);
     memset(s->lateness, 0, sizeof s->lateness);
@@ -368,6 +389,8 @@ static void on_request(rs_t *s, int64_t t, const rb_broadcast_t *b)
     s->grant_index = index;
     memcpy(s->grant_id, b->node_id, RB_NODE_ID_BYTES);
     s->grant_by_us = t + GRANT_KEEP_ROUNDS * s->period_us;
+    s->grant_round = b->round;
+    s->grant_k = floor_div(t - s->base_us, s->period_us);
 }
 
 rs_heard_t rs_heard(rs_t *s, int64_t t_rx_us, const rb_broadcast_t *b)
@@ -433,6 +456,8 @@ rs_heard_t rs_heard(rs_t *s, int64_t t_rx_us, const rb_broadcast_t *b)
     if (b->slot == 0) {
         memcpy(s->sched_id, b->node_id, RB_NODE_ID_BYTES);
         s->sched_known = true;
+        s->sched_offset = (int16_t)(uint16_t)(b->round - wire_round(s, s->last_k));
+        s->sched_offset_known = true;
     }
     if (newer(b->schedule_version, s->version)) {
         adopt(s, t_rx_us, b);
@@ -476,17 +501,20 @@ static int64_t slot_time(const rs_t *s, rs_tx_kind_t kind, int64_t k)
         if (s->state != RS_MEMBER) {
             return -1;
         }
-        if (s->sent_any && s->last_sent_version == s->version && (int16_t)(uint16_t)(r - s->last_sent_round) <= 0) {
-            return -1;   /* never two round broadcasts with one round number in one schedule version */
+        if (s->sent_any && (int16_t)(uint16_t)(r - s->last_sent_round) <= 0) {
+            return -1;   /* round numbers never repeat or go back */
         }
         return round_start + rs_slot_of(s->membership, s->my_index) * slot_us(s);
     case RS_TX_JOIN_GRANT:
-        if (s->state != RS_MEMBER || !s->grant_pending || rs_slot_of(s->membership, s->my_index) != 0 || !(r & 1u)) {
+        if (s->state != RS_MEMBER || !s->grant_pending || rs_slot_of(s->membership, s->my_index) != 0
+                || sched_even(s, r)) {
             return -1;
         }
         return round_start + (slots(s) - 1) * slot_us(s);
     case RS_TX_JOIN_REQUEST:
-        if (s->state != RS_JOINING || (r & 1u) || (int16_t)(uint16_t)(r - s->next_request_round) < 0) {
+        if (s->state != RS_JOINING || !s->sched_offset_known || !sched_even(s, r)
+                || (int16_t)(uint16_t)(r - s->next_request_round) < 0
+                || (s->sent_any && (int16_t)(uint16_t)(r - s->last_sent_round) <= 0)) {
             return -1;
         }
         return round_start + (slots(s) - 1) * slot_us(s);
@@ -507,7 +535,7 @@ static rs_tx_t first(const rs_t *s, rs_tx_kind_t kind, int64_t after)
             k += wait;
         }
     }
-    if (kind == RS_TX_ROUND && s->sent_any && s->last_sent_version == s->version) {
+    if ((kind == RS_TX_ROUND || kind == RS_TX_JOIN_REQUEST) && s->sent_any) {
         int16_t behind = (int16_t)(uint16_t)(s->last_sent_round - wire_round(s, k));
         if (behind >= 0) {
             k += behind;   /* the round after the last one sent is the earliest */
@@ -529,7 +557,8 @@ rs_tx_t rs_next(rs_t *s, int64_t after_us)
 {
     maintain(s, after_us);
     if (s->state == RS_LISTENING) {
-        rs_tx_t tx = {RS_TX_ROUND, s->listen_until_us, s->base_round};
+        rs_tx_t tx = {RS_TX_ROUND, s->listen_until_us,
+                      wire_round(s, floor_div(s->listen_until_us - s->base_us, s->period_us))};
         return tx;
     }
     rs_tx_t best = {RS_TX_NONE, 0, 0};
@@ -580,7 +609,6 @@ bool rs_take(rs_t *s, const rs_tx_t *tx, int64_t now_us, rb_broadcast_t *out)
         out->node_index = s->my_index;
         memcpy(out->node_id, s->id, RB_NODE_ID_BYTES);
         s->sent_any = true;
-        s->last_sent_version = s->version;
         s->last_sent_round = tx->round;
         return true;
     case RS_TX_JOIN_GRANT: {
@@ -596,7 +624,9 @@ bool rs_take(rs_t *s, const rs_tx_t *tx, int64_t now_us, rb_broadcast_t *out)
         s->version++;
         s->grant_pending = false;
         s->count.admitted++;
-        header(s, out, RB_FRAME_JOIN_GRANT, tx->round);
+        /* in the joiner's numbering: its request's round number plus the rounds since */
+        header(s, out, RB_FRAME_JOIN_GRANT,
+               (uint16_t)(s->grant_round + (uint16_t)(k_of_round(s, tx->round) - s->grant_k)));
         out->slot = (uint8_t)(spr - 1);
         out->slots_per_round = spr;
         out->node_index = s->grant_index;
@@ -612,6 +642,8 @@ bool rs_take(rs_t *s, const rs_tx_t *tx, int64_t now_us, rb_broadcast_t *out)
         }
         out->node_index = ask;
         memcpy(out->node_id, s->id, RB_NODE_ID_BYTES);
+        s->sent_any = true;
+        s->last_sent_round = tx->round;
         s->count.requests++;
         s->next_request_round = (uint16_t)(tx->round + 2 + 2 * (rnd(s) % s->backoff_window));
         if (s->backoff_window < BACKOFF_MAX) {

@@ -92,6 +92,10 @@ typedef struct {
     uint32_t sent_keys[SIM_SENT_KEPT];
     int n_sent;
     bool duplicate_round;       /* it sent two round broadcasts with one (schedule version, round) */
+    bool stale_round;           /* a frame carrying its serial broke the freshness rule of #16 */
+    bool id_sent_any;
+    uint16_t id_last_round;     /* the last frame carrying its serial (its own, or a grant naming it) */
+    int64_t id_last_T;
     uint32_t delivered, lost;   /* round broadcasts from members it heard / lost to overlap (as receiver) */
 } sim_node_t;
 
@@ -192,6 +196,7 @@ static void sim_power_on(sim_t *sim, int i)
     make_id(id, i + 1);
     nd->on = true;
     nd->gen++;
+    nd->id_sent_any = false;   /* a power cycle may restart the count (the 2 s loss of #16 is expected) */
     nd->was_member = false;
     link_table_init(&nd->links);
     int64_t now = clock_of(nd, sim->now);
@@ -231,6 +236,26 @@ static void sim_fire(sim_t *sim, int i)
                 }
             }
             nd->sent_keys[nd->n_sent++ % SIM_SENT_KEPT] = key;
+        }
+        /* #16's freshness rule, per serial: within 2 s, 1 to 16 + 1/ms rounds ahead of the last one */
+        int named = -1;
+        for (int j = 0; j < sim->n; j++) {
+            uint8_t id[RB_NODE_ID_BYTES];
+            make_id(id, j + 1);
+            if (memcmp(id, b.node_id, RB_NODE_ID_BYTES) == 0) {
+                named = j;
+            }
+        }
+        if (named >= 0) {
+            sim_node_t *x = &sim->node[named];
+            int64_t gap = sim->now - x->id_last_T;
+            int16_t ahead = (int16_t)(uint16_t)(b.round - x->id_last_round);
+            if (x->id_sent_any && gap <= 2000000 && (ahead < 1 || ahead > 16 + gap / 1000)) {
+                x->stale_round = true;
+            }
+            x->id_sent_any = true;
+            x->id_last_round = b.round;
+            x->id_last_T = sim->now;
         }
         sim_frame_t *f = &sim->frame[sim->n_frames++ % SIM_FRAMES];
         f->len = rb_encode(&b, f->bytes, sizeof f->bytes);
@@ -397,10 +422,21 @@ static bool any_left_member(const sim_t *sim)
     return false;
 }
 
+/* A node sent one round number twice in a schedule version, or a frame with its serial was not fresh (#16). */
 static bool any_duplicate_round(const sim_t *sim)
 {
     for (int i = 0; i < sim->n; i++) {
-        if (sim->node[i].duplicate_round) {
+        if (sim->node[i].duplicate_round || sim->node[i].stale_round) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool any_stale_round(const sim_t *sim)
+{
+    for (int i = 0; i < sim->n; i++) {
+        if (sim->node[i].stale_round) {
             return true;
         }
     }
@@ -481,14 +517,21 @@ static void a_node_missing_for_three_rounds_is_dropped(void)
 {
     sim_t *sim = &g_sim;
     settled_rig(sim, 5, HZ, 23, 0, 4000000);
+    int sent = sim->node[3].n_sent;
+    while (sim->node[3].n_sent == sent) {   /* switch it off just after its round broadcast has been heard */
+        sim_run(sim, sim->now + 100);
+    }
+    sim_run(sim, sim->now + 2000);
+    int64_t since_last = 2000;
     sim_power_off(sim, 3);
     uint8_t dropped_index = index_of(sim, 3);
     int64_t t0 = sim->now;
     while ((sim->node[0].rs.membership >> dropped_index & 1u) && sim->now - t0 < 1000000) {
         sim_run(sim, sim->now + 1000);
     }
-    int64_t took = sim->now - t0;
-    CHECK(took > 3 * P_US && took <= 5 * P_US, "dropped after 3 missed rounds, before the 5th (%.1f rounds)",
+    int64_t took = sim->now - t0 + since_last;
+    CHECK(took > 3 * P_US && took <= 4 * P_US + P_US / 10,
+          "dropped once 3 of its slots went unheard, at the scheduler's next slot (%.1f rounds after its last)",
           (double)took / P_US);
     CHECK(sim_until_one_schedule(sim, 3 * P_US) >= 0, "every remaining node takes the new schedule");
     CHECK(!any_left_member(sim), "nobody else restarted");
@@ -696,6 +739,35 @@ static void the_scheduler_admits_no_more_members_than_the_slots_hold(void)
     CHECK(sim->collisions == 0, "the full round runs without collisions (%u)", sim->collisions);
 }
 
+static void round_numbers_only_count_forward_through_joins_merges_and_failover(void)
+{
+    /* #16 drops a broadcast whose round number is not 1 to 16 + 1/ms ahead of its sender's last one (within 2 s),
+     * so a node's numbers must never step back or leap, whatever happens to its schedule */
+    sim_t *sim = &g_sim;
+    sim_setup(sim, 6, HZ, 101);
+    for (int a = 0; a < 6; a++) {
+        for (int b = 0; b < 6; b++) {
+            sim->cut[a][b] = (a < 3) != (b < 3);
+        }
+    }
+    for (int i = 0; i < 6; i++) {
+        sim_power_on(sim, i);
+        sim_run(sim, sim->now + 7000);
+    }
+    sim_run(sim, sim->now + 2000000);
+    memset(sim->cut, 0, sizeof sim->cut);                 /* merge */
+    CHECK(sim_until_one_schedule(sim, 5000000) >= 0, "the halves merge");
+    sim_run(sim, sim->now + 500000);
+    for (int i = 0; i < 6; i++) {                          /* fail the scheduler over */
+        if (sim->node[i].rs.my_index == 0) {
+            sim_power_off(sim, i);
+        }
+    }
+    CHECK(sim_until_one_schedule(sim, 1000000) >= 0, "failover");
+    sim_run(sim, sim->now + 1000000);
+    CHECK(!any_stale_round(sim), "every frame carrying a node's serial counts 1 to 16 + 1/ms rounds on from the last");
+}
+
 int main(void)
 {
     a_lone_node_listens_then_founds_its_own_schedule();
@@ -705,6 +777,7 @@ int main(void)
     when_the_scheduler_dies_the_next_member_takes_over();
     unplugging_a_node_and_plugging_it_back_restarts_nobody_and_its_reports_resume();
     split_groups_merge_into_the_schedule_with_the_lower_scheduler_id();
+    round_numbers_only_count_forward_through_joins_merges_and_failover();
     drifting_clocks_stay_in_their_slots();
     slot_lateness_shows_how_late_each_node_starts_in_its_slot();
     thirty_nodes_powered_at_once_fill_a_full_round();

@@ -46,17 +46,36 @@ The part of a round in which one node, and only that node, transmits its round b
 _Avoid_: turn, window (reserved for the score window)
 
 **Round broadcast**:
-The ESP-NOW broadcast a transceiver sends in its slot: a round header (version, round number, slot, membership, the sender's board serial, an authentication tag) and one link report per other member. It is both the frame the others measure CSI on and the data for the host. Format version 1 is defined in [`docs/round-broadcast.md`](docs/round-broadcast.md).
+The ESP-NOW broadcast a transceiver sends in its slot: a round header (version, round number, slot, membership, the sender's board serial, an authentication tag) and one link report per other member. The join frames of the join slot share its header. It is both the frame the others measure CSI on and the data for the host. Format version 1 is defined in [`docs/round-broadcast.md`](docs/round-broadcast.md).
 _Avoid_: packet (that is a parsed CSI_DATA line), frame (that is the dashboard's event)
 _See_: `csi/broadcast.py`, [ADR-0022](docs/adr/0022-host-time-round-broadcast-seam.md)
 
 **Link report**:
-The 4 bytes a receiving node sends about one of its links in its round broadcast: the quantised score, the RSSI, how many round broadcasts it heard from the transmitter in the last 15 rounds and how many rounds since the last one, and flags (baseline warming, possible move, raw mode). A heard count of 0 makes the link NO_SIGNAL.
+The 4 bytes a receiving node sends about one of its links in its round broadcast: the quantised score, the RSSI, how many round broadcasts it heard from the transmitter in the last 15 rounds and how many rounds since the last one, flags (baseline warming, possible move, raw mode) and the transmitter's slot lateness. A heard count of 0 makes the link NO_SIGNAL.
 _See_: `csi/broadcast.py` (`LinkReport`), `csi/links.py` (`push_report`)
 
 **Fixed round**:
-The round of the first transceiver image (ticket #13): a set number of members, node index = slot, a set round rate, no join slot, and slot timing taken from any heard round broadcast. The round scheduler (#14) replaces it.
-_See_: `firmware/core/fixed_round.h`
+The round of the first transceiver image (ticket #13): a set number of members, node index = slot, a set round rate, no join slot, and slot timing taken from any heard round broadcast. Replaced by the round scheduler (#14); the code is gone.
+
+**Round scheduler**:
+The node's state machine that decides who is in the round and when this node sends: heard round broadcasts and the device clock in; this node's node index, slot, the membership and the schedule version out. Nodes join, drop out and merge on their own; there is no timing master and no per-board setting.
+_See_: `firmware/core/round_scheduler.h`, [ADR-0027](docs/adr/0027-round-scheduler.md)
+
+**Schedule**:
+One membership of the round with its schedule version. The member in slot 0 is its **scheduler**: only it admits and drops members, each time bumping the schedule version. Its board serial is the **scheduler ID**; when two schedules meet, the one with the lower scheduler ID wins and the other's nodes join it.
+_Avoid_: master, coordinator (no node is a timing master)
+
+**Join slot**:
+The last slot of every round, kept free for joining: a node that is not a member sends a **join request** there in even rounds, and the scheduler answers with a **join grant** (naming the joiner's serial and its node index) there in odd rounds. Both are join frames, the round header alone (frame types 2 and 3).
+_See_: [`docs/round-broadcast.md`](docs/round-broadcast.md) (join frames)
+
+**Slot guard**:
+The margin a slot keeps beyond the round broadcast's airtime, a kit-wide setting (`guard_us`, 250 µs until the slot-jitter bench test sets it). The scheduler admits no more members than slots of airtime plus guard fit in a round, and a node whose slot timer fires more than the guard late skips that slot.
+_Avoid_: gap, margin (alone)
+
+**Slot lateness**:
+How far into its slot a node's round broadcast starts on air, as another node's schedule places that slot. Each receiving node sends it per link in the link report (32 µs steps); the dashboard shows each node's median over the receiving nodes.
+_See_: `csi/coverage.py` (`SlotLateness`), `node_health[].slot_lateness`
 
 **Gateway**:
 A node of the transceiver rig on the dashboard host's USB that only listens: it sends nothing on the channel and writes every round broadcast it hears to USB as a heard record with its receive time. The same image as a transceiver, with the role setting `gateway`. (The hackathon's wireless receivers had a different gateway board, `CSI_GATEWAY=1`, that wrote text lines.)
@@ -67,7 +86,7 @@ One framed binary record on a node's USB port: heard (receive time, RSSI, a roun
 _See_: `csi/gateway_records.py`, `firmware/core/gateway_record.h`, [ADR-0026](docs/adr/0026-one-node-image-runtime-settings-gateway-records.md)
 
 **Node settings**:
-What differs between boards running the one node image: role (transceiver or gateway), channel, node index, members and round rate. Kept in the node's flash and set over USB with `scripts/node.py`, never by a build flag. A transceiver that was never set only listens.
+What differs between boards running the one node image: role (transceiver or gateway), channel, round rate and slot guard. Kept in the node's flash and set over USB with `scripts/node.py`, never by a build flag. A transceiver needs none of them (the defaults join any round on channel 6); the node index is not a setting but given out by the round scheduler.
 _Avoid_: build flags, SENDER_ID (for these nodes)
 _See_: `firmware/core/node_settings.h`, `scripts/node.py`
 

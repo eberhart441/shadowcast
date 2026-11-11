@@ -8,15 +8,20 @@
  *               join slot; all slots are equally long (period / slots per round).
  *   Timing      from any round broadcast of this node's schedule: it implies when that round started on this
  *               node's clock (receive time - airtime - this node's own send latency - slot x slot length). The
- *               first one sets the phase outright, later ones move it halfway. Round numbers only move forward:
- *               a member that hears a round number ahead of its own takes it.
+ *               first one sets the phase outright, later ones move it halfway.
+ *   Numbers     every node numbers its own frames: one up every round, never back, across schedule versions,
+ *               joins and merges. Round numbers are not shared between nodes (the host keys everything by
+ *               sender), so the freshness rule of authenticated broadcasts (ticket #16: 1 to 16 + 1/ms ahead of
+ *               the sender's last) always holds, except after a power cycle.
  *   Scheduler   the member in slot 0. Only it admits joiners and drops members, by bumping the schedule version;
  *               every other member takes a newer schedule from any member's round broadcast or from a join grant.
  *               Its board serial is the schedule's scheduler ID.
- *   Joining     a node that powers on listens. When it hears a schedule it syncs to it and sends a join request in
- *               the join slot of an even round (random backoff, doubling after each try); the scheduler answers
- *               with a join grant naming the joiner's serial and its node index in the join slot of the next odd
- *               round. A node that hears nothing for 3 to 7 rounds founds its own schedule, alone in slot 0.
+ *   Joining     a node that powers on listens. When it hears a schedule it syncs to it and, once it has heard
+ *               slot 0, sends a join request in the join slot of a round the scheduler numbers even (random
+ *               backoff, doubling after each try); the scheduler answers with a join grant naming the joiner's
+ *               serial and its node index in the join slot of the next round it numbers odd. Both join frames carry
+ *               the joiner's round numbers. A node that hears nothing for 3 to 7 rounds founds its own schedule,
+ *               alone in slot 0.
  *   Dropping    a member nobody has heard for RS_MISSING_ROUNDS rounds (directly, or by anyone's link reports)
  *               is dropped by the scheduler. When the scheduler itself is missing, the next member in slot order
  *               whose earlier members are all missing drops them and becomes slot 0 (failover).
@@ -28,8 +33,8 @@
  *               node's schedule. Sent to the host in the link report (docs/round-broadcast.md).
  *
  * Never two different round broadcasts with one round number in one schedule version (the host drops the second
- * as a duplicate, docs/round-broadcast.md): rs_next never plans a round at or before the last one sent in the
- * same schedule version.
+ * as a duplicate, docs/round-broadcast.md): rs_next never plans a frame at or before the last round number this
+ * node sent, in any schedule version.
  *
  * Portable C11: no allocation, no I/O, no platform calls.
  */
@@ -126,11 +131,15 @@ typedef struct {
     uint8_t grant_id[RB_NODE_ID_BYTES];
     uint8_t grant_index;
     int64_t grant_by_us;                      /* forget the request after this */
+    uint16_t grant_round;                     /* the request's round number (the joiner's count) */
+    int64_t grant_k;                          /* and the round (from base) it was heard in */
 
-    /* the contract with the host */
+    /* round numbers: this node's own count */
     bool sent_any;
-    uint8_t last_sent_version;
-    uint16_t last_sent_round;
+    uint16_t last_sent_round;                 /* of the last frame carrying this node's serial that it sent */
+    int16_t sched_offset;                     /* the scheduler's round number minus this node's, in one round */
+    bool sched_offset_known;
+    int64_t last_k;                           /* timing: the round (from base) the last heard broadcast fell in */
 
     uint8_t lateness[RB_MAX_NODES];           /* lateness code per member, since the last report */
     uint32_t restarts;                        /* links whose node index now means another node */
