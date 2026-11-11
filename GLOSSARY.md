@@ -113,6 +113,10 @@ _See_: `csi/detect.py` (`MotionScorer`)
 The 1 s of device time a score is computed over. It needs at least 5 packets spanning 0.9 s, or there is no score yet.
 _See_: `csi/detect.py` (`WINDOW_S`, `MIN_WINDOW_PACKETS`)
 
+**Score code**:
+The score as one byte, as a link report carries it. Code 0 means no score. Code c from 1 to 255 stands for 2^((c − 1)/10 − 10), on a log scale of 10 codes per octave, from about 0.001 to about 43 000.
+_See_: `csi/score_code.py`, `firmware/core/motion_score.h`, [ADR-0021](docs/adr/0021-on-node-score-streaming-window-and-score-code.md)
+
 ## Link states
 
 A link is in exactly one state. The dashboard uses the first five; STILL_PRESENT exists only in the single-link tools, with `--breathing`.
