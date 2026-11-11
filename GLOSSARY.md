@@ -373,7 +373,7 @@ _See_: `csi/evaluate.py`, [ADR-0018](docs/adr/0018-evaluate-by-recording.md)
 **Round recording**:
 One binary file of a transceiver run: every round broadcast as its source delivered it, with its host time and source name, labels that each hold from a host time on, and the room config. Written by `dashboard.py --record`, replayed by `--replay-rounds`.
 _Avoid_: recording (alone; that is a CSV file of packets)
-_See_: `csi/round_recording.py`, [docs/round-recording.md](docs/round-recording.md), [ADR-0027](docs/adr/0023-round-recordings.md)
+_See_: `csi/round_recording.py`, [docs/round-recording.md](docs/round-recording.md), [ADR-0023](docs/adr/0023-round-recordings.md)
 
 **Run log**:
 A `--log` file: one header line, then one dashboard payload per line.
