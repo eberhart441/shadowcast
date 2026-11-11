@@ -13,7 +13,7 @@ The rectangle the rig covers, in metres, with the origin at the top-left corner,
 _See_: `csi/room.py` (`Room`, `load_room`)
 
 **Node**:
-A board at a fixed position in the room, with a role (receiver or sender) and a name such as `rx1` or `tx0`. A node with `"enabled": false` is ignored everywhere: it has no links and its port is never opened.
+A board at a fixed position in the room, with a role (receiver, sender or transceiver) and a name such as `rx1`, `tx0` or `n3`. A node with no role is a transceiver. A node with `"enabled": false` is ignored everywhere: it has no links and its port is never opened.
 _Avoid_: device, station, puck
 _See_: `csi/room.py` (`Node`)
 
@@ -28,9 +28,31 @@ _Avoid_: transmitter, beacon (reserved for the proposed TDMA sync beacon, issue 
 _See_: `firmware/csi_send/`
 
 **Link**:
-One (receiver, sender) pair, labelled `<receiver><-<last byte of the sender address>`, for example `rx1<-00`. Every enabled receiver pairs with every enabled sender. The link is the unit that is scored, thresholded, calibrated and drawn.
+One (receiver, sender) pair, labelled `<receiver><-<last byte of the sender address>`, for example `rx1<-00`. Every enabled receiver pairs with every enabled sender. Between transceivers a link is one ordered pair (receiving node, transmitting node) by full node identity, labelled `<receiver><-<transmitter>` with both node names, for example `n1<-n5`; N transceivers give N(N-1) links. The link is the unit that is scored, thresholded, calibrated and drawn.
 _Avoid_: channel, pair, path
-_See_: `csi/links.py` (`LinkId`), `csi/room.py` (`Room.links`)
+_See_: `csi/links.py` (`LinkId`, `NodeLinkId`), `csi/room.py` (`Room.links`, `Room.transceiver_links`)
+
+**Transceiver**:
+A node that both transmits and receives: in its slot it sends a round broadcast, and it measures CSI on every other node's round broadcast. Every node of the rig in spec #2 is one, running the same firmware; it is known by its board serial.
+_Avoid_: sender, receiver (for these nodes), station
+_See_: `csi/room.py` (`Room.transceivers`), [`docs/round-broadcast.md`](docs/round-broadcast.md)
+
+**Round**:
+One turn of the transceiver schedule: each member node broadcasts once, in its own slot, and a join slot ends it. The round rate is the rate at which every link is measured (20 Hz in the simulator). Rounds are numbered (u16, wrapping).
+_See_: `csi/simulate.py` (`simulate_rounds`, `ROUND_HZ`)
+
+**Slot**:
+The part of a round in which one node, and only that node, transmits its round broadcast.
+_Avoid_: turn, window (reserved for the score window)
+
+**Round broadcast**:
+The ESP-NOW broadcast a transceiver sends in its slot: a round header (version, round number, slot, membership, the sender's board serial, an authentication tag) and one link report per other member. It is both the frame the others measure CSI on and the data for the host. Format version 1 is defined in [`docs/round-broadcast.md`](docs/round-broadcast.md).
+_Avoid_: packet (that is a parsed CSI_DATA line), frame (that is the dashboard's event)
+_See_: `csi/broadcast.py`, [ADR-0022](docs/adr/0022-host-time-round-broadcast-seam.md)
+
+**Link report**:
+The 4 bytes a receiving node sends about one of its links in its round broadcast: the quantised score, the RSSI, how many round broadcasts it heard from the transmitter in the last 15 rounds and how many rounds since the last one, and flags (baseline warming, possible move, raw mode). A heard count of 0 makes the link NO_SIGNAL.
+_See_: `csi/broadcast.py` (`LinkReport`), `csi/links.py` (`push_report`)
 
 **Sender address**:
 The MAC a sender transmits from, `1a:00:00:00:00:<SENDER_ID>`. A receiver accepts every packet whose address starts `1a:00:00:00:00`, so a forgotten board with such an address shows up as a ghost sender.
@@ -131,7 +153,7 @@ The link's score is above its threshold. It takes effect on the first window abo
 _See_: `csi/detect.py` (`classify`, `_Debouncer`)
 
 **WARMUP**:
-The link has a threshold but no full window yet; in auto mode, its first 10 s.
+The link has a threshold but no full window yet; in auto mode, its first 10 s. On a transceiver link, also a link report with the warming flag or no score.
 _See_: `csi/links.py`
 
 **UNCALIBRATED**:
@@ -139,7 +161,7 @@ The link has no threshold, so it is scored but not judged.
 _See_: `csi/links.py`
 
 **NO_SIGNAL**:
-No packet on the link for more than 2 s of host time.
+No packet (or link report) on the link for more than 2 s of host time. On a transceiver link, also a link report whose heard count is 0.
 _See_: `csi/links.py` (`NO_SIGNAL_S`)
 
 **STILL_PRESENT**:
@@ -276,9 +298,9 @@ _See_: `csi/heatmap.py`, `csi/server.py` (`PARAM_RANGES`)
 ## Sources, time and data
 
 **Stream**:
-The input from one receiver: a sequence of `(host_ts, line)` pairs, from a serial port, the simulator or a replay. Every source plugs into the pipeline through it.
+The input from one receiver: a sequence of `(host_ts, line)` pairs, from a serial port, the simulator or a replay. Every source plugs into the pipeline through it. In the transceiver pipeline a stream is a sequence of `(host time, round broadcast bytes)` pairs, from a gateway, the simulator or a replay.
 _Avoid_: feed, channel
-_See_: `csi/parser.py` (`Stream`), [ADR-0012](docs/adr/0012-host-ts-line-stream-seam.md)
+_See_: `csi/parser.py` (`Stream`), `csi/rounds.py` (`BroadcastStream`), [ADR-0012](docs/adr/0012-host-ts-line-stream-seam.md), [ADR-0022](docs/adr/0022-host-time-round-broadcast-seam.md)
 
 **Source**:
 A named stream (receiver name to stream) given to the dashboard. Sources are read concurrently, each on its own thread with its own parser.
@@ -302,7 +324,7 @@ The laptop's clock at the moment of processing. Used to pace the event stream, r
 _See_: `csi/server.py` (`_clock`, `_Reorder`)
 
 **Simulator**:
-Generates CSI_DATA text for a simulated room: empty, motion and still-with-breathing segments, or a person walking a loop (`--simulate-room`). It is seeded, so a run repeats exactly.
+Generates CSI_DATA text for a simulated room: empty, motion and still-with-breathing segments, or a person walking a loop (`--simulate-room`). For a room of transceivers it generates round broadcasts instead, with a person walking, dead nodes and lossy links (`--simulate`). It is seeded, so a run repeats exactly.
 _See_: `csi/simulate.py`
 
 **Recording**:

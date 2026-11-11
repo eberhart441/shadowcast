@@ -5,7 +5,8 @@
     server.wait_finished()  # for finite sources: True once every source is exhausted
     server.stop()           # closes the sources and the HTTP server
 
-``sources`` maps receiver name to a (host_ts, line) stream, the same seam as ``serial_stream``. A
+``sources`` maps receiver name to a (host_ts, line) stream, the same seam as ``serial_stream``, or, for the
+transceiver pipeline, a source name (a gateway) to a (host_ts, round broadcast bytes) stream. A
 source that raises is reported in ``status.receivers`` / ``status.errors`` and the others keep running.
 Without ``thresholds`` every link is UNCALIBRATED (reported in ``status.messages``), not an error.
 
@@ -46,11 +47,12 @@ from urllib.parse import urlsplit
 
 from .dashboard import DashboardState
 from .live_calibration import CalibrationJob, RequestError, parse_request
-from .links import LinkId, calibrate_links, save_thresholds
+from .links import calibrate_links, room_link_ids, save_thresholds
 from .multisource import MultiSource
 from .parser import CSIPacket, Stream
 from .room import Room, Walk
-from .simulate import simulate_room, simulate_room_links
+from .rounds import HeardBroadcast
+from .simulate import simulate_room, simulate_room_links, simulate_rounds
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8000
@@ -463,7 +465,7 @@ class DashboardServer(FrameServer):
         super().__init__(host, port, web_index, trusted_host=host if network_control else None)
         self._room = room
         self._state = DashboardState(room, dict(thresholds or {}), mode=mode, **heatmap_params)
-        self._expected = [LinkId(rx.name, tx.mac) for rx, tx in room.links()]
+        self._expected = [link_id for link_id, _, _ in room_link_ids(room)]
         self._labels = {link.label for link in self._expected}
         self._controls_on = controls_allowed(host, allow_control)
         self._replay = replay
@@ -583,11 +585,14 @@ class DashboardServer(FrameServer):
                     raise _PipelineError(receiver) from e
             self._last_mono = time.monotonic()
 
-    def _push_packet(self, receiver: str, pkt: CSIPacket) -> None:
+    def _push_packet(self, receiver: str, pkt: Union[CSIPacket, HeardBroadcast]) -> None:
         """Caller holds the lock."""
-        self._state.push(receiver, pkt)
-        if self._calib is not None and self._calib.active:
-            self._calib.observe(receiver, pkt, time.monotonic())
+        if isinstance(pkt, HeardBroadcast):
+            self._state.push_broadcast(pkt.host_ts, pkt.data)
+        else:
+            self._state.push(receiver, pkt)
+            if self._calib is not None and self._calib.active:
+                self._calib.observe(receiver, pkt, time.monotonic())
         if self._last_host is None or pkt.host_ts > self._last_host:
             self._last_host = pkt.host_ts
         if self._next_frame_at is None:
@@ -870,3 +875,11 @@ def _looping(name: str, room: Room, person: Walk, period: float, seed: int, quie
         lines = streams[name]
         yield from (lines if cycle == 0 else itertools.islice(lines, 1, None))  # one header is enough
         start_s += duration_s
+
+
+def simulated_rig_streams(room: Room, *, seed: int = 0, quiet_first_s: float = 0.0,
+                          realtime: bool = True) -> dict[str, Stream]:
+    """One endless round broadcast stream from the simulated transceiver rig, as one gateway ("sim-gateway") hears
+    it: ``default_walk`` repeated, after ``quiet_first_s`` seconds of an empty room."""
+    return {"sim-gateway": simulate_rounds(room, default_walk(room), quiet_first_s=quiet_first_s, seed=seed,
+                                           realtime=realtime)}

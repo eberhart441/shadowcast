@@ -20,6 +20,8 @@ detail: how the rig is built, how to operate it, how the detection works, and wh
 
 - [../GLOSSARY.md](../GLOSSARY.md): Glossary. The project's terms (link, score, threshold, gain
   baseline and the rest), defined once.
+- [round-broadcast.md](round-broadcast.md): Round broadcast format, version 1. The bytes a transceiver
+  sends each round (round header and link reports), defined once for the host and the firmware.
 - [adr/README.md](adr/README.md): Architecture decision records. The index of the decisions recorded in
   [`adr/`](adr/).
 
