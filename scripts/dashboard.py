@@ -54,12 +54,14 @@ from csi.parser import Stream, serial_stream  # noqa: E402
 from csi.recording import LABELS, validate_label  # noqa: E402
 from csi.replay import ReplayError, ReplayServer, load_log, rounds_dashboard, session_dashboard  # noqa: E402
 from csi.room import DEFAULT_ROOM_PATH, Room, load_room  # noqa: E402
+from csi.round_auth import TEST_KIT_KEY, KitKeyError, kit_key_check, load_kit_key  # noqa: E402
 from csi.round_recording import RoundRecorder  # noqa: E402
 from csi.server import DEFAULT_HOST, DEFAULT_PORT, DEFAULT_THRESHOLDS_FILE, DashboardServer, FrameServer, \
     controls_allowed, \
     default_walk, looping_room_streams, simulated_rig_streams, simulated_thresholds  # noqa: E402
 
 TICK_S = 0.5
+DEFAULT_KIT_KEY_PATH = Path(__file__).resolve().parents[1] / "data" / "kit.key"   # data/ is not in git
 
 
 def speed_arg(text: str) -> float:
@@ -147,6 +149,9 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--log", type=Path, metavar="run.jsonl",
                     help="append the state stream to this file: a header line (room, thresholds, start time) and "
                          "then one payload per line, the same as /api/events")
+    ap.add_argument("--kit-key", type=Path, default=None, metavar="PATH",
+                    help="the kit key file the round broadcasts are verified with (scripts/node.py keygen); "
+                         "--node-gateway defaults to data/kit.key, --replay-rounds to the simulator's test key")
     ap.add_argument("--room", type=Path, default=DEFAULT_ROOM_PATH, help="room configuration (default config/room.json)")
     ap.add_argument("--thresholds", metavar="links.json",
                     help="per-link fixed thresholds from links_live.py --calibrate. With --simulate-room the default is "
@@ -199,6 +204,9 @@ def check_source(args: argparse.Namespace) -> None:
     if rounds and args.raw_log is not None:
         raise SystemExit(f"error: --raw-log records CSI lines; {rounds} carries round broadcasts, which it cannot "
                          "record (--record does)")
+    if args.kit_key is not None and not (rounds == "--node-gateway" or args.replay_rounds is not None):
+        raise SystemExit("error: --kit-key applies to --node-gateway and --replay-rounds only (--simulate signs with "
+                         "the published test key)")
     if args.replay_rounds is not None and args.thresholds is not None:
         raise SystemExit("error: --thresholds does not apply to --replay-rounds: every transceiver link is judged by "
                          "its own adaptive baseline")
@@ -262,6 +270,17 @@ def server_mode(args: argparse.Namespace) -> str:
     return "auto" if args.auto_threshold or args.simulate or args.node_gateway is not None else "fixed"
 
 
+def kit_key(args: argparse.Namespace) -> bytes:
+    """The kit key the round broadcasts are verified with: --kit-key, else data/kit.key for the real rig (which
+    must exist) and the published test key for a round replay. Raises SystemExit for a missing or bad key file."""
+    if args.kit_key is None and args.node_gateway is None:
+        return TEST_KIT_KEY
+    try:
+        return load_kit_key(args.kit_key or DEFAULT_KIT_KEY_PATH)
+    except KitKeyError as e:
+        raise SystemExit(f"error: {e}")
+
+
 def record_rounds(args: argparse.Namespace, room: Room, streams: dict, notes: str) -> dict:
     """With --record: tee the round broadcast streams into a round recording (args.recorder). Else unchanged."""
     if args.record is None:
@@ -286,6 +305,7 @@ def build_sources(args: argparse.Namespace, room: Room) -> tuple[dict[str, Strea
         if len(room.transceivers) < 2:
             raise SystemExit(f"error: --node-gateway needs a room with at least two transceivers; {args.room} has "
                              f"{len(room.transceivers)} (try --room config/room_tr2.json)")
+        args.key = kit_key(args)
         streams = {"gateway": gateway_source(args.node_gateway, args.baud)}
         return record_rounds(args, room, streams, f"dashboard.py --node-gateway {args.node_gateway}"), None
     if args.simulate_room:
@@ -318,7 +338,7 @@ def build_server(args: argparse.Namespace) -> FrameServer:
         return ReplayServer(load_log(args.replay), speed=speed, host=args.host, port=args.http_port, web_index=page)
     if args.replay_rounds is not None:
         return rounds_dashboard(args.replay_rounds, speed=speed, host=args.host, port=args.http_port, log=args.log,
-                                web_index=page)
+                                web_index=page, kit_key=kit_key(args))
     room = load_room(args.room)
     if args.replay_session is not None:
         thresholds = load_link_thresholds(args.thresholds)
@@ -331,6 +351,7 @@ def build_server(args: argparse.Namespace) -> FrameServer:
             server._web_index = page  # session_dashboard takes no web_index; the page is read on each GET /
         return server
     args.recorder = None
+    args.key = TEST_KIT_KEY
     sources, thresholds = build_sources(args, room)
     if args.simulate:
         source = "simulate (transceiver rig)"
@@ -349,9 +370,13 @@ def build_server(args: argparse.Namespace) -> FrameServer:
     else:
         thresholds_source = (f"loaded from {args.thresholds}" if args.thresholds else
                              ("simulated empty room" if args.simulate_room else "none"))
+    notes = [] if args.node_gateway is None else [
+        f"Round broadcasts are verified with the kit key, check {kit_key_check(args.key)}: every node's "
+        "`scripts/node.py PORT key` must show the same check."]
     return DashboardServer(room, sources, thresholds, host=args.host, port=args.http_port, log=args.log,
-                           allow_control=args.allow_control, thresholds_path=save_to, mode=mode,
-                           log_meta={"source": source, "thresholds_source": thresholds_source}, web_index=page)
+                           allow_control=args.allow_control, thresholds_path=save_to, mode=mode, kit_key=args.key,
+                           notes=notes, log_meta={"source": source, "thresholds_source": thresholds_source},
+                           web_index=page)
 
 
 def read_labels(lines, recorder: RoundRecorder) -> None:

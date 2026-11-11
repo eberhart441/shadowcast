@@ -68,7 +68,7 @@ rb_status_t rb_decode(const uint8_t *data, size_t len, rb_broadcast_t *out)
     out->node_index = index;
     out->membership = membership;
     memcpy(out->node_id, data + 12, RB_NODE_ID_BYTES);
-    memcpy(out->tag, data + 18, RB_TAG_BYTES);
+    memcpy(out->tag, data + RB_TAG_OFFSET, RB_TAG_BYTES);
     const uint8_t *p = data + RB_HEADER_BYTES;
     uint8_t k = 0;
     for (uint8_t i = 0; i < RB_MAX_NODES; i++) {
@@ -116,7 +116,7 @@ size_t rb_encode(const rb_broadcast_t *b, uint8_t *out, size_t cap)
     out[7] = b->node_index;
     put_u32(out + 8, b->membership);
     memcpy(out + 12, b->node_id, RB_NODE_ID_BYTES);
-    memcpy(out + 18, b->tag, RB_TAG_BYTES);
+    memcpy(out + RB_TAG_OFFSET, b->tag, RB_TAG_BYTES);
     uint8_t *p = out + RB_HEADER_BYTES;
     for (k = 0; k < b->n_reports; k++) {
         const rb_report_t *r = &b->reports[k];

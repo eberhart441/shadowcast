@@ -317,6 +317,26 @@ def test_cli_records_a_simulated_run_with_its_labels_and_replays_it(tmp_path, ca
     assert payload["status"]["commands"]["available"] is False and len(payload["links"]) == 56
 
 
+def test_cli_replays_a_real_rigs_recording_with_its_kit_key(tmp_path):
+    from csi.round_auth import write_kit_key
+
+    key = write_kit_key(tmp_path / "kit.key")
+    path = tmp_path / "rig.rounds"
+    with RoundRecorder(path, ROOM, ["gateway"]) as rec:
+        for host_ts, data in simulate_rounds(ROOM, duration_s=0.5, t0=T0, kit_key=key):
+            rec.write("gateway", host_ts, data)
+    counts = {}
+    for extra in ([], ["--kit-key", str(tmp_path / "kit.key")]):
+        replay = cli.build_server(cli_args("--replay-rounds", str(path), "--speed", "max", *extra))
+        replay.start()
+        try:
+            assert replay.wait_finished(timeout=30)
+            counts[bool(extra)] = run_until(replay, 0)["status"]["broadcasts"]
+        finally:
+            replay.stop()
+    assert counts[False]["rejected"]["auth"] == counts[True]["accepted"] == 8 * 10   # without it: the test key
+
+
 @pytest.mark.parametrize("argv, message", [
     (["--simulate-room", "--record", "x.rounds"], "--record"),
     (["--simulate", "--label", "empty"], "--label needs --record"),

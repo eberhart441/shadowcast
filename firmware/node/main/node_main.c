@@ -5,9 +5,10 @@
  * scripts/node.py), never by a build flag. Its identity is its board serial (base MAC).
  *
  *   transceiver  In its slot of the fixed round it sends a round broadcast (docs/round-broadcast.md): an
- *                unacknowledged ESP-NOW broadcast at HT20 MCS0 carrying one link report per other member. It
- *                measures CSI on every other member's round broadcast and scores each link with the C scorer.
- *                Until it has been configured (scripts/node.py PORT set index=...) it only listens.
+ *                unacknowledged ESP-NOW broadcast at HT20 MCS0 carrying one link report per other member, signed
+ *                with the kit key (node_auth.h). It measures CSI on every other member's round broadcast whose tag
+ *                and round number check out, and scores each link with the C scorer. Until it has been configured
+ *                (scripts/node.py PORT set index=... and PORT key FILE) it only listens.
  *   gateway      Listens on the channel and sends nothing. Every ESP-NOW frame it hears goes to USB as a binary
  *                heard record with its receive time (docs/gateway-record.md).
  *
@@ -46,6 +47,7 @@
 #include "fixed_round.h"
 #include "gateway_record.h"
 #include "link_table.h"
+#include "node_auth.h"
 #include "node_settings.h"
 #include "round_broadcast.h"
 
@@ -198,7 +200,10 @@ static void run_command(const char *line)
 {
     char reply[200];
     node_settings_t next = s_settings;
-    node_cmd_t action = node_settings_command(&next, s_serial_text, line, reply, sizeof reply);
+    node_cmd_t action;
+    if (!node_auth_command(line, reply, sizeof reply, &action)) {
+        action = node_settings_command(&next, s_serial_text, line, reply, sizeof reply);
+    }
     if (action == NODE_CMD_SAVE_AND_RESTART) {
         esp_err_t err = save_settings(&next);
         if (err != ESP_OK) {
@@ -244,8 +249,8 @@ static void usb_task(void *arg)
             next_status = now + STATUS_PERIOD_US;
         }
         if (!s_configured && now >= next_nag) {
-            usb_text("not configured: this node only listens until scripts/node.py sets it (serial %s)",
-                     s_serial_text);
+            usb_text("not configured: this node only listens until scripts/node.py sets it%s (serial %s)",
+                     node_auth_ready() ? "" : " and gives it the kit key (PORT key FILE)", s_serial_text);
             next_nag = now + 10 * STATUS_PERIOD_US;
         }
     }
@@ -379,7 +384,7 @@ static void send_round_broadcast(uint16_t round)
     size_t n = rb_encode(&b, bytes, sizeof bytes);
     s_sent_any = true;
     s_last_sent_round = round;
-    if (n && esp_now_send(BROADCAST_MAC, bytes, n) == ESP_OK) {
+    if (n && node_auth_sign(bytes, n) && esp_now_send(BROADCAST_MAC, bytes, n) == ESP_OK) {
         count(GR_COUNT_SENT);
     } else {
         count(GR_COUNT_SEND_ERRORS);
@@ -411,8 +416,8 @@ static void on_heard(const node_item_t *item)
     const uint8_t *body;
     size_t body_len;
     if (!espnow_body(item->payload, item->payload_len, &body, &body_len) || rb_decode(body, body_len, &b) != RB_OK
-            || b.node_index >= s_settings.nodes) {
-        count(GR_COUNT_REJECTED);   /* not a v1 round broadcast, or from outside the fixed round */
+            || b.node_index >= s_settings.nodes || !node_auth_accept(body, body_len, item->t_us)) {
+        count(GR_COUNT_REJECTED);   /* not a v2 round broadcast, from outside the fixed round, forged or replayed */
         return;
     }
     if (memcmp(b.node_id, s_serial, RB_NODE_ID_BYTES) == 0) {
@@ -563,6 +568,9 @@ void app_main(void)
     esp_log_set_vprintf(log_to_usb);
 
     s_configured = load_settings(&s_settings);
+    if (!node_auth_start() && s_settings.role != NODE_ROLE_GATEWAY) {
+        s_configured = false;   /* a transceiver without the kit key only listens: it cannot sign or verify */
+    }
     wifi_start(s_settings.channel);
     ESP_ERROR_CHECK(esp_now_init());
     if (s_settings.role == NODE_ROLE_GATEWAY) {

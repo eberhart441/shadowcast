@@ -1,0 +1,73 @@
+{
+  "comment": "Golden round broadcasts, format v2 (docs/round-broadcast.md): the v1 layout with version 2 and a real authentication tag, the first 8 bytes of HMAC-SHA256(kit key, the broadcast with its tag bytes 18..25 set to zero). The layout bytes are written by hand; every tag was computed with openssl (`openssl dgst -sha256 -mac HMAC -macopt hexkey:<key>`), not by the code under test. 'key' is the published test kit key (never provision it on a real kit) and 'key_check' its check value, the first 4 bytes of HMAC-SHA256(key, 'shadowcast kit key check'). 'valid' cases decode to 'broadcast', encode back to 'hex' and verify under 'key'; each has the same name, fields and bytes as its v1 case apart from the version byte and the tag. 'forged' cases decode but fail verification (reason auth). 'invalid' cases are rejected before verification with 'reason'. 'freshness' is one sequence of authenticated broadcasts (t_us = receive time in microseconds, node id, round), in order, each 'fresh' or 'replay' under the freshness rule (resync after 2 s of silence, forward window 16 + 1 per ms).",
+  "key": "000102030405060708090a0b0c0d0e0f",
+  "key_check": "88a46367",
+  "valid": [
+    {
+      "name": "three_nodes_middle_slot",
+      "hex": "020134120104070107000000020000000002a843f381c52bf1118acef00000800f01",
+      "broadcast": {
+        "version": 2, "frame_type": 1, "round": 4660, "slot": 1, "slots_per_round": 4, "schedule_version": 7,
+        "node_index": 1, "membership": 7, "node_id": "02:00:00:00:00:02", "tag": "a843f381c52bf111",
+        "reports": [
+          {"transmitter_index": 0, "score": 138, "rssi": -50, "heard": 15, "since": 0, "flags": 0},
+          {"transmitter_index": 2, "score": 0, "rssi": null, "heard": 0, "since": 15, "flags": 1}
+        ]
+      }
+    },
+    {
+      "name": "lone_node_no_reports",
+      "hex": "0201ffff0509ff052000000010bda3cc85bcedf68666734a0fe9",
+      "broadcast": {
+        "version": 2, "frame_type": 1, "round": 65535, "slot": 5, "slots_per_round": 9, "schedule_version": 255,
+        "node_index": 5, "membership": 32, "node_id": "10:BD:A3:CC:85:BC", "tag": "edf68666734a0fe9",
+        "reports": []
+      }
+    },
+    {
+      "name": "highest_and_lowest_index",
+      "hex": "020100001f21001f01000080aabbccddeefffce7977433cdb00fff051e06",
+      "broadcast": {
+        "version": 2, "frame_type": 1, "round": 0, "slot": 31, "slots_per_round": 33, "schedule_version": 0,
+        "node_index": 31, "membership": 2147483649, "node_id": "AA:BB:CC:DD:EE:FF", "tag": "fce7977433cdb00f",
+        "reports": [
+          {"transmitter_index": 0, "score": 255, "rssi": 5, "heard": 1, "since": 14, "flags": 6}
+        ]
+      }
+    }
+  ],
+  "forged": [
+    {"name": "tag_one_bit_flipped", "hex": "0201ffff0509ff052000000010bda3cc85bcedf68666734a0fe8"},
+    {"name": "tag_zeros_as_v1_sent", "hex": "0201ffff0509ff052000000010bda3cc85bc0000000000000000"},
+    {"name": "score_changed_after_signing", "hex": "020134120104070107000000020000000002a843f381c52bf1118bcef00000800f01"},
+    {"name": "node_id_changed_after_signing", "hex": "0201ffff0509ff052000000010bda3cc85bdedf68666734a0fe9"},
+    {"name": "round_changed_after_signing", "hex": "0201feff0509ff052000000010bda3cc85bcedf68666734a0fe9"},
+    {"name": "signed_with_another_key", "hex": "0201ffff0509ff052000000010bda3cc85bc4ff19a7185372be7"}
+  ],
+  "invalid": [
+    {"name": "shorter_than_the_header", "hex": "02013412010407010700", "reason": "short"},
+    {"name": "a_v1_broadcast", "hex": "0101ffff0509ff052000000010bda3cc85bc0102030405060708", "reason": "version"},
+    {"name": "unknown_version", "hex": "0301ffff0509ff052000000010bda3cc85bcedf68666734a0fe9", "reason": "version"},
+    {"name": "unknown_frame_type", "hex": "027fffff0509ff052000000010bda3cc85bcedf68666734a0fe9", "reason": "frame_type"},
+    {"name": "one_report_missing", "hex": "020134120104070107000000020000000002a843f381c52bf1118acef000", "reason": "length"},
+    {"name": "sender_not_a_member", "hex": "0201ffff0509ff050100000010bda3cc85bcedf68666734a0fe9", "reason": "membership"}
+  ],
+  "freshness": [
+    {"t_us": 0, "node_id": "02:00:00:00:00:01", "round": 100, "expect": "fresh", "why": "first broadcast heard from the node"},
+    {"t_us": 25000, "node_id": "02:00:00:00:00:01", "round": 101, "expect": "fresh", "why": "the next round"},
+    {"t_us": 50000, "node_id": "02:00:00:00:00:01", "round": 101, "expect": "replay", "why": "the same round again"},
+    {"t_us": 75000, "node_id": "02:00:00:00:00:01", "round": 100, "expect": "replay", "why": "an older round"},
+    {"t_us": 100000, "node_id": "02:00:00:00:00:01", "round": 104, "expect": "fresh", "why": "two rounds lost in between"},
+    {"t_us": 100000, "node_id": "02:00:00:00:00:02", "round": 5, "expect": "fresh", "why": "each node has its own round state"},
+    {"t_us": 125000, "node_id": "02:00:00:00:00:01", "round": 50000, "expect": "replay", "why": "too far ahead: 25 ms allows 16 + 25 rounds"},
+    {"t_us": 150000, "node_id": "02:00:00:00:00:01", "round": 150, "expect": "fresh", "why": "46 ahead after 50 ms, inside 16 + 50"},
+    {"t_us": 200000, "node_id": "02:00:00:00:00:02", "round": 65530, "expect": "replay", "why": "behind across the wrap (11 rounds before 5)"},
+    {"t_us": 1000000, "node_id": "02:00:00:00:00:03", "round": 65530, "expect": "fresh", "why": "first broadcast heard from the node"},
+    {"t_us": 1025000, "node_id": "02:00:00:00:00:03", "round": 3, "expect": "fresh", "why": "9 ahead across the wrap"},
+    {"t_us": 1900000, "node_id": "02:00:00:00:00:01", "round": 7, "expect": "replay", "why": "behind; heard 1.75 s ago, not yet resynced"},
+    {"t_us": 2151000, "node_id": "02:00:00:00:00:01", "round": 7, "expect": "fresh", "why": "silent for more than 2 s: resync (it restarted or renumbered)"},
+    {"t_us": 2176000, "node_id": "02:00:00:00:00:01", "round": 8, "expect": "fresh", "why": "the next round after the resync"},
+    {"t_us": 2190000, "node_id": "02:00:00:00:00:01", "round": 151, "expect": "replay", "why": "a recording of the old numbering, while the node is heard"},
+    {"t_us": 2201000, "node_id": "02:00:00:00:00:01", "round": 9, "expect": "fresh", "why": "the node again"}
+  ]
+}

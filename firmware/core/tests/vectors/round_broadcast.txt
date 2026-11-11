@@ -1,11 +1,11 @@
-# Round broadcast v1 vectors, written by scripts/gen_wire_vectors.py from
-# tests/fixtures/round_broadcast_v1.json. Do not edit by hand; the format is in the script's docstring.
-valid three_nodes_middle_slot 01013412010407010700000002000000000200000000000000008acef00000800f01 1 1 4660 1 4 7 1 7 020000000002 0000000000000000 2 0 138 -50 15 0 0 2 0 -128 0 15 1
-valid lone_node_no_reports 0101ffff0509ff052000000010bda3cc85bc0102030405060708 1 1 65535 5 9 255 5 32 10bda3cc85bc 0102030405060708 0
-valid highest_and_lowest_index 010100001f21001f01000080aabbccddeeff0000000000000000ff051e06 1 1 0 31 33 0 31 2147483649 aabbccddeeff 0000000000000000 1 0 255 5 1 14 6
-invalid shorter_than_the_header 01013412010407010700 short
-invalid unknown_version 0201ffff0509ff052000000010bda3cc85bc0102030405060708 version
-invalid unknown_frame_type 017fffff0509ff052000000010bda3cc85bc0102030405060708 frame_type
-invalid one_report_missing 01013412010407010700000002000000000200000000000000008acef000 length
-invalid one_report_too_many 0101ffff0509ff052000000010bda3cc85bc010203040506070880cef000 length
-invalid sender_not_a_member 0101ffff0509ff050100000010bda3cc85bc0102030405060708 membership
+# Round broadcast v2 vectors, written by scripts/gen_wire_vectors.py from
+# tests/fixtures/round_broadcast_v2.json. Do not edit by hand; the format is in the script's docstring.
+valid three_nodes_middle_slot 020134120104070107000000020000000002a843f381c52bf1118acef00000800f01 2 1 4660 1 4 7 1 7 020000000002 a843f381c52bf111 2 0 138 -50 15 0 0 2 0 -128 0 15 1
+valid lone_node_no_reports 0201ffff0509ff052000000010bda3cc85bcedf68666734a0fe9 2 1 65535 5 9 255 5 32 10bda3cc85bc edf68666734a0fe9 0
+valid highest_and_lowest_index 020100001f21001f01000080aabbccddeefffce7977433cdb00fff051e06 2 1 0 31 33 0 31 2147483649 aabbccddeeff fce7977433cdb00f 1 0 255 5 1 14 6
+invalid shorter_than_the_header 02013412010407010700 short
+invalid a_v1_broadcast 0101ffff0509ff052000000010bda3cc85bc0102030405060708 version
+invalid unknown_version 0301ffff0509ff052000000010bda3cc85bcedf68666734a0fe9 version
+invalid unknown_frame_type 027fffff0509ff052000000010bda3cc85bcedf68666734a0fe9 frame_type
+invalid one_report_missing 020134120104070107000000020000000002a843f381c52bf1118acef000 length
+invalid sender_not_a_member 0201ffff0509ff050100000010bda3cc85bcedf68666734a0fe9 membership
