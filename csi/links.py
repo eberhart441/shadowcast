@@ -43,7 +43,7 @@ from .broadcast import LinkReport
 from .health import LinkHealth, ReportHealth
 from .parser import CSIPacket
 from .room import Node, Room
-from .room_state import RoomState, ZoneMap
+from .room_state import POSSIBLY_OCCUPIED, POSSIBLY_OCCUPIED_S, RoomState, ZoneMap
 
 NO_SIGNAL = "NO_SIGNAL"
 WARMUP = "WARMUP"
@@ -203,12 +203,13 @@ class LinkMonitor:
     ``expected`` lists links to show from the start, so a link that never transmits appears as NO_SIGNAL
     instead of being absent. The room decision (``room_state``) is updated on every packet, at its time; from link
     reports at most once per ``room_step_s`` of host time (a round), and brought up to date by ``snapshot``.
+    ``possibly_occupied_s`` is the transceiver room state's possibly-occupied hold (csi/room_state.py).
     """
 
     def __init__(self, thresholds: Optional[Mapping[str, float]] = None, *, mode: str = FIXED,
                  expected: Iterable[LinkId] = (), debounce_s: float = DEBOUNCE_S,
                  send_rate_hz: Optional[float] = None, no_signal_s: float = NO_SIGNAL_S,
-                 room: Optional[Room] = None) -> None:
+                 room: Optional[Room] = None, possibly_occupied_s: float = POSSIBLY_OCCUPIED_S) -> None:
         if mode not in (FIXED, AUTO):
             raise ValueError(f"mode must be 'fixed' or 'auto', got {mode!r}")
         self._mode = mode
@@ -225,7 +226,8 @@ class LinkMonitor:
         self._zones: Optional[RoomState] = None     # the transceiver links' room state (csi/room_state.py)
         if room is not None and room.transceivers:
             self._zones = RoomState(ZoneMap(room, [(NodeLinkId(rx.name, tx.name).label, rx, tx)
-                                                   for rx, tx in room.transceiver_links()]), no_signal_s=no_signal_s)
+                                                   for rx, tx in room.transceiver_links()]), no_signal_s=no_signal_s,
+                                    possibly_occupied_s=possibly_occupied_s)
         for link_id in expected:
             self._get(link_id)
 
@@ -306,10 +308,14 @@ class LinkMonitor:
     @property
     def room_state(self) -> str:
         """Room-level state, up to date with every report pushed so far: MOTION if the hackathon links' decision or
-        the transceiver room state says so, else EMPTY if either is warm, else WARMUP."""
+        the transceiver room state says so, else POSSIBLY_OCCUPIED if the transceiver room state holds a zone after
+        motion (csi/room_state.py), else EMPTY if either is warm, else WARMUP."""
         self._settle_room()
         states = [self._room_state] if self._zones is None else [self._room_state, self._zones.state]
-        return MOTION if MOTION in states else ("EMPTY" if "EMPTY" in states else WARMUP)
+        for state in (MOTION, POSSIBLY_OCCUPIED, "EMPTY"):
+            if state in states:
+                return state
+        return WARMUP
 
     @property
     def room_elevated(self) -> list[str]:

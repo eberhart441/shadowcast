@@ -26,7 +26,7 @@ from .broadcast import (FLAG_WARMING, FORMAT_VERSION, FRAME_ROUND, HEARD_WINDOW_
 from .round_auth import TEST_KIT_KEY, sign_broadcast
 from .links import LinkId
 from .parser import DEFAULT_HEADER, CSIPacket, CSIParser, parse_stream
-from .room import FALLOFF_SIGMA_M, Person, Room, link_responses, load_room
+from .room import FALLOFF_SIGMA_M, Person, Room, link_responses, load_room, movement
 
 N_SUBCARRIERS = 64
 NULL_SUBCARRIERS = tuple(range(0, 6)) + (32,) + tuple(range(59, 64))  # 12 nulls (LLTF-like)
@@ -456,7 +456,7 @@ def _round_response(person: Union[Person, Sequence[Person], None], t: float, a: 
     ab = b - a
     u = np.clip(np.einsum("ij,ij->i", p - a, ab) / np.maximum(np.einsum("ij,ij->i", ab, ab), 1e-12), 0.0, 1.0)
     d = np.linalg.norm(p - (a + u[:, None] * ab), axis=1)
-    return np.exp(-d ** 2 / (2 * FALLOFF_SIGMA_M ** 2))
+    return movement(person, np.array([t]))[0] * np.exp(-d ** 2 / (2 * FALLOFF_SIGMA_M ** 2))
 
 
 def simulate_gateways(

@@ -21,9 +21,12 @@ pipeline ``push_broadcast(host_ts, data)`` does the same from one round broadcas
     track     {x, y, vx, vy, confidence} or None: the motion track, a Kalman-smoothed dot following the
                 heatmap's hot blob (csi/tracker.py). Where change is, like the heatmap; not a person count.
     status    {time_s, links_by_state, parameters, room}
-                room: {state, elevated (labels), mode, zones}: room-level MOTION. With transceivers, from zones
-                    and links that share no node (csi/room_state.py); zones: {zone id: MOTION, EMPTY or WARMUP}. The
-                    hackathon links: from link agreement (csi/adaptive.py), and no zones key
+                room: {state, elevated (labels), mode, zones, possibly_occupied_s}: room-level MOTION. With
+                    transceivers, from zones and links that share no node (csi/room_state.py); zones: {zone id:
+                    MOTION, POSSIBLY_OCCUPIED, EMPTY or WARMUP}. A zone leaving MOTION reads POSSIBLY_OCCUPIED for
+                    possibly_occupied_s (the hold, default 60 s) before EMPTY, and so does the room while no zone is
+                    MOTION. The hackathon links: from link agreement (csi/adaptive.py), and no zones or
+                    possibly_occupied_s key
                 broadcasts: {heard, accepted, rejected {reason: n}, unknown_nodes {serial: n}, unplaced_reports,
                 join_frames {request, grant}, sources {name: {heard, accepted, duplicate, queue_overflow}}}, the
                 round broadcasts ingested
@@ -58,6 +61,7 @@ from .heatmap import RTI, Heatmap
 from .links import LinkMonitor, NO_SIGNAL, UNCALIBRATED, WARMUP, room_link_ids
 from .parser import CSIPacket
 from .room import Room
+from .room_state import POSSIBLY_OCCUPIED_S
 from .round_auth import TEST_KIT_KEY
 from .rounds import RoundIngest
 from .tracker import Tracker
@@ -68,10 +72,12 @@ PAYLOAD_DECIMALS = 4
 
 class DashboardState:
     def __init__(self, room: Room, thresholds: Optional[Mapping[str, float]] = None, *, mode: str = "fixed",
-                 kit_key: bytes = TEST_KIT_KEY, **heatmap_params) -> None:
+                 kit_key: bytes = TEST_KIT_KEY, possibly_occupied_s: float = POSSIBLY_OCCUPIED_S,
+                 **heatmap_params) -> None:
         self._room = room
         expected = [link_id for link_id, _, _ in room_link_ids(room)]
-        self._monitor = LinkMonitor(thresholds or {}, mode=mode, expected=expected, room=room)
+        self._monitor = LinkMonitor(thresholds or {}, mode=mode, expected=expected, room=room,
+                                    possibly_occupied_s=possibly_occupied_s)
         self._ingest = RoundIngest(room, kit_key)
         self._heat = Heatmap(room, **heatmap_params)
         self._track = Tracker(room.width_m, room.depth_m, self._heat.centres)
@@ -162,13 +168,15 @@ class DashboardState:
         heat = self._heat
         heat.advance(now, rows)
         self._track.update(now, heat.target)
+        zones = self._monitor.room_zones
         # every value below is a new object per advance or per call, never changed in place afterwards
         return Capture(now=now, rows=rows, heat_values=heat.values, contributing=tuple(heat.contributing),
                        evidence=heat.evidence, baselines=heat.baselines, track=self._track.state(now),
                        room_state=self._monitor.room_state, room_elevated=tuple(self._monitor.room_elevated),
                        mode=self._monitor.mode, broadcasts=self._ingest.counts(), parameters=self.parameters(),
                        heard_at=dict(self._heard_at), lateness=self._lateness.by_node(now),
-                       room_zones=None if self._monitor.room_zones is None else self._monitor.room_zones.zone_states)
+                       room_zones=None if zones is None else zones.zone_states,
+                       possibly_occupied_s=None if zones is None else zones.possibly_occupied_s)
 
     def render(self, cap: "Capture", *, links: bool = True) -> dict:
         """The payload from a capture. Reads nothing that the pipeline changes, so it is safe off the lock."""
@@ -267,6 +275,7 @@ class DashboardState:
         room = {"state": cap.room_state, "elevated": list(cap.room_elevated), "mode": cap.mode}
         if cap.room_zones is not None:
             room["zones"] = dict(cap.room_zones)
+            room["possibly_occupied_s"] = cap.possibly_occupied_s
         return {
             "time_s": cap.now,
             "links_by_state": by_state,
@@ -294,6 +303,7 @@ class Capture:
     heard_at: dict
     lateness: dict
     room_zones: Optional[dict] = None   # {zone id: state} of a transceiver room (a new dict per capture), else None
+    possibly_occupied_s: Optional[float] = None   # the room state's possibly-occupied hold (a transceiver room)
 
 
 def _round(value: Optional[float]) -> Optional[float]:

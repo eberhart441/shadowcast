@@ -37,6 +37,7 @@ import numpy as np
 # in config/room.json never changes test outcomes).
 DEFAULT_ROOM_PATH = Path(os.environ.get("CSI_ROOM") or Path(__file__).resolve().parent.parent / "config" / "room.json")
 FALLOFF_SIGMA_M = 0.25  # response is exp(-1/2) (about 60 %) at this distance from the segment
+STOP_FADE_S = 1.5       # a person who stops dead leaves the score within this (high-pass plus 1 s window)
 WALL_INSET_M = 0.25     # how far inside the wall a person stands for "near a wall"
 WALLS = ("left", "right", "top", "bottom")
 TRANSCEIVER = "transceiver"
@@ -146,11 +147,11 @@ def link_responses(room: Room, person: Optional["Person"], t: np.ndarray,
     n = len(t)
     if person is None:
         return {(rx.name, tx.mac): np.zeros(n) for rx, tx in room.links()}
-    positions = person.position(t)
+    positions, moving = person.position(t), movement(person, t)
     out = {}
     for rx, tx in room.links():
         d = point_segment_distance(positions, (rx.x, rx.y), (tx.x, tx.y))
-        out[(rx.name, tx.mac)] = gain * np.exp(-d ** 2 / (2 * FALLOFF_SIGMA_M ** 2))
+        out[(rx.name, tx.mac)] = gain * moving * np.exp(-d ** 2 / (2 * FALLOFF_SIGMA_M ** 2))
     return out
 
 
@@ -191,7 +192,39 @@ class Stand:
         return np.tile([self.x, self.y], (len(t), 1)).astype(float)
 
 
-Person = Union[Walk, Stand]
+@dataclass(frozen=True)
+class WalkAndStop:
+    """Walk through ``waypoints`` at ``speed_mps``, then stand still at the last one, raising no link.
+
+    ``Walk`` and ``Stand`` raise the links near them for as long as they are there, like a person who keeps moving
+    slightly in place; the adaptive baseline absorbs that in about 30 s. This person instead stops dead: a still
+    body is static to the score's high-pass, so the links' response fades out over ``STOP_FADE_S`` after the stop
+    (docs/theory.md, section 11: one to two seconds). The simulators scale the response by ``moving(t)``.
+    """
+    waypoints: tuple[tuple[float, float], ...]
+    speed_mps: float = 0.5
+
+    @property
+    def stop_s(self) -> float:
+        """Time the person reaches the last waypoint and stops."""
+        pts = np.asarray(self.waypoints, dtype=float)
+        return float(np.linalg.norm(np.diff(pts, axis=0), axis=1).sum()) / self.speed_mps
+
+    def position(self, t: np.ndarray) -> np.ndarray:
+        return Walk(self.waypoints, self.speed_mps).position(t)
+
+    def moving(self, t: np.ndarray) -> np.ndarray:
+        """How much the person still moves at each time, 1 (walking) to 0 (still): falls linearly after the stop."""
+        return np.clip(1.0 - (np.asarray(t, dtype=float) - self.stop_s) / STOP_FADE_S, 0.0, 1.0)
+
+
+Person = Union[Walk, Stand, WalkAndStop]
+
+
+def movement(person: "Person", t: np.ndarray) -> np.ndarray:
+    """How much ``person`` moves at each time, 0..1: their ``moving(t)``, else 1 (the response follows position)."""
+    moving = getattr(person, "moving", None)
+    return np.ones(len(t)) if moving is None else moving(t)
 
 
 def stand_near_wall(room: Room, side: str, inset: float = WALL_INSET_M) -> Stand:

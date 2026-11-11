@@ -220,12 +220,17 @@ Experimental and opt-in (`--breathing`): no motion, but a breathing rate of 6 to
 _See_: `csi/breathing.py`, `csi/detect.py`, [ADR-0008](docs/adr/0008-motion-only-by-default.md)
 
 **Room state**:
-The room-level decision in the payload's `status.room`. It is not any one link's state. With transceivers: MOTION while any zone is MOTION; a zone is MOTION while, at one of its probe points, the elevated links covering the point hold enough independent links, and for 1 s after. Enough is a third of the independent links that could cover the point, and at least two (three where three exist). For the hackathon links: MOTION when at least two links are elevated together, or one link is strongly elevated (auto mode only), held for 1 s.
+The room-level decision in the payload's `status.room`. It is not any one link's state. With transceivers: MOTION while any zone is MOTION, else POSSIBLY_OCCUPIED while any zone is, else EMPTY; a zone is MOTION while, at one of its probe points, the elevated links covering the point hold enough independent links, and for 1 s after. Enough is a third of the independent links that could cover the point, and at least two (three where three exist). For the hackathon links: MOTION when at least two links are elevated together, or one link is strongly elevated (auto mode only), held for 1 s.
 _See_: `csi/room_state.py` (`RoomState`), `csi/adaptive.py` (`RoomDecision`), [ADR-0029](docs/adr/0029-adaptive-baseline-only-and-a-room-state-from-zones.md)
 
 **Zone**:
 A square of the room, about 1 m on a side, that the room state reports on: `A1` is the top-left zone, letters run along x and numbers down y. Each zone holds a grid of probe points 0.25 m apart; a link covers a probe point when its segment passes within 0.3 m of it.
 _See_: `csi/room_state.py` (`ZoneMap`)
+
+**POSSIBLY_OCCUPIED**:
+A zone (or the room) that was MOTION recently but is not now: after a zone leaves MOTION it reads possibly occupied for the possibly-occupied hold (60 s by default, `--possibly-occupied-s`), then EMPTY. It is there because a person who stops moving fades from the score; once the hold ends, a person still standing there is not reported. Transceiver rooms only.
+_Avoid_: present, occupied (the system does not sense presence)
+_See_: `csi/room_state.py` (`POSSIBLY_OCCUPIED_S`), [ADR-0030](docs/adr/0030-possibly-occupied-hold.md)
 
 **Independent links**:
 Links that share no node. One node's fault (a front-end glitch, a gain step) raises all of its links at once, so links that share a node count as one witness, and both directions of a node pair are one link here. Counted as the largest set of links in which no two share a node.

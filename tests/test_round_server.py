@@ -268,3 +268,30 @@ def test_cli_node_gateway_records_the_real_rigs_round_broadcasts(monkeypatch, tm
     recording = load_rounds(out)
     assert [b.data for b in recording.broadcasts] == [data for _, data in broadcasts]
     assert {b.source for b in recording.broadcasts} == {"gateway"}
+
+
+def served_room(argv):
+    """status.room of the first payload served by dashboard.py with ``argv``."""
+    args = cli.build_parser().parse_args([*argv, "--http-port", "0"])
+    cli.check_source(args)
+    server = cli.build_server(args)
+    server.start()
+    try:
+        return get_state(server)["status"]["room"]
+    finally:
+        server.stop()
+
+
+def test_cli_possibly_occupied_s_sets_the_hold_and_the_payload_reports_it():
+    assert served_room(["--simulate", "--room", str(TR8)])["possibly_occupied_s"] == 60.0
+    assert served_room(["--simulate", "--room", str(TR8), "--possibly-occupied-s", "20"])["possibly_occupied_s"] == 20.0
+
+
+@pytest.mark.parametrize("argv, message", [
+    (["--simulate-room", "--possibly-occupied-s", "20"], "--possibly-occupied-s applies to"),
+    (["--simulate", "--room", str(TR8), "--possibly-occupied-s", "-1"], "seconds"),
+])
+def test_cli_possibly_occupied_s_is_refused_where_it_does_not_apply(argv, message, capsys):
+    with pytest.raises(SystemExit) as err:
+        cli.check_source(cli.build_parser().parse_args(argv))
+    assert message in str(err.value) + capsys.readouterr().err
