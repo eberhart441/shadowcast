@@ -117,7 +117,7 @@ def onsets(room, points, seed):
 def test_a_walker_anywhere_in_the_8_node_room_raises_motion_within_one_second_except_at_a_corner_node():
     """15 points over the room, 0.3 m from the walls at the edge. At the four corner points the person is within
     0.5 m of a corner node and no other node's link passes within 0.75 m: only that node's links see them, which is
-    what a fault of that node looks like, so MOTION waits until they walk into another node's link (ADR-0027)."""
+    what a fault of that node looks like, so MOTION waits until they walk into another node's link (ADR-0029)."""
     points = grid(TR8)
     corners = {(0.3, 0.3), (3.7, 0.3), (0.3, 2.7), (3.7, 2.7)}
     for point, (delay, before) in zip(points, onsets(TR8, points, seed=2)):
