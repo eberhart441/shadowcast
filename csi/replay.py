@@ -6,6 +6,9 @@
 
 A replayed log serves its logged payloads verbatim, at their logged times divided by ``speed``, through the
 same /api/state and /api/events as a live run. The last payload is marked ``status.finished``.
+
+    server = rounds_dashboard("run.rounds", speed=8)  # a round recording (csi/round_recording.py) through the
+                                                      # live transceiver pipeline, every link in auto mode
 """
 from __future__ import annotations
 
@@ -24,6 +27,7 @@ from .links import LinkId, calibrate_links_report
 from .parser import CSIPacket
 from .recording import META_NAME, Session, load_session
 from .room import Room
+from .round_recording import RecordingFormatError, load_rounds
 from .server import DEFAULT_HOST, FRAME_INTERVAL_S, LOG_FORMAT, REPLAY_OFF, DashboardServer, FrameServer
 from .simulate import DEFAULT_MAC
 
@@ -73,7 +77,7 @@ def _json_line(path: Path, n: int, line: str):
 def _payload(path: Path, n: int, line: str) -> dict:
     obj = _json_line(path, n, line)
     status = obj.get("status") if isinstance(obj, dict) else None
-    # a frame of a room over 64 links carries the link matrix instead of per-link rows (ADR-0023)
+    # a frame of a room over 64 links carries the link matrix instead of per-link rows (ADR-0024)
     if (not isinstance(obj, dict)
             or not (isinstance(obj.get("links"), list) or isinstance(obj.get("link_matrix"), dict))
             or not isinstance(obj.get("heatmap"), dict) or not isinstance(status, dict)
@@ -134,6 +138,33 @@ class ReplayServer(FrameServer):
     def state_json(self) -> str:
         with self._lock:
             return self._latest
+
+
+# ---------------------------------------------------------------- round recordings
+
+def rounds_dashboard(path: Pathlike, *, speed: float = 1.0, room: Optional[Room] = None, host: str = DEFAULT_HOST,
+                     port: int = 0, log: Optional[Pathlike] = None, frame_interval_s: float = FRAME_INTERVAL_S,
+                     web_index: Union[Path, str, None] = None) -> DashboardServer:
+    """A DashboardServer that replays a round recording through the live transceiver pipeline, not yet started.
+
+    Each recorded source is fed as itself, its round broadcasts at their recorded host times, the gaps divided by
+    ``speed`` (math.inf: as fast as possible). Every link is judged by its own adaptive baseline, as live. The room
+    is the one recorded with the run unless ``room`` is given. Read-only, like every replay.
+    """
+    speed = validate_speed(speed)
+    try:
+        recording = load_rounds(path)
+    except RecordingFormatError as e:
+        raise ReplayError(str(e)) from e
+    if not recording.broadcasts:
+        raise ReplayError(f"{path} holds no round broadcasts")
+    notes = []
+    if recording.truncated_bytes:
+        notes.append(f"the recording's last record was cut short: {recording.truncated_bytes} B left out")
+    return DashboardServer(
+        room or recording.room, recording.streams(speed), host=host, port=port, log=log,
+        frame_interval_s=frame_interval_s, replay=True, mode="auto", web_index=web_index, notes=notes,
+        log_meta={"source": f"replay-rounds {path}", "speed": speed, "thresholds_source": "none (auto mode)"})
 
 
 # ---------------------------------------------------------------- recorded sessions

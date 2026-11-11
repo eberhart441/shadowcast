@@ -20,8 +20,9 @@ pipeline ``push_broadcast(host_ts, data)`` does the same from one round broadcas
                 heatmap's hot blob (csi/tracker.py). Where change is, like the heatmap; not a person count.
     status    {time_s, links_by_state, parameters, room}
                 room: {state, elevated (labels), mode}: room-level MOTION from link agreement (csi/adaptive.py)
-                broadcasts: {accepted, rejected {reason: n}, unknown_nodes {serial: n}, unplaced_reports}, the
-                round broadcasts ingested (all 0 in the line pipeline)
+                broadcasts: {heard, accepted, rejected {reason: n}, unknown_nodes {serial: n}, unplaced_reports,
+                sources {name: {heard, accepted, duplicate, queue_overflow}}}, the round broadcasts ingested
+                (all 0 in the line pipeline); reasons are csi.rounds.REJECT_REASONS, each always present
     node_health [{name, state, heard_by, hears, peers, last_heard_s, link_rate_hz, slot_lateness}] per transceiver
                 state "ok" or "missing" (no round broadcast reached the host for > 2 s); slot_lateness is the
                 string "unknown" until the nodes report it (ticket #14), then microseconds
@@ -34,7 +35,7 @@ pipeline ``push_broadcast(host_ts, data)`` does the same from one round broadcas
 
 Time is host time from the packets. ``snapshot()`` with no argument uses the newest packet time, so the
 payload is deterministic for simulated streams; pass ``now`` to advance the decay while packets stop.
-``snapshot(now, links=False)`` leaves ``links`` out (frames of a large room, ADR-0023), and
+``snapshot(now, links=False)`` leaves ``links`` out (frames of a large room, ADR-0024), and
 ``link_detail(label)`` gives one link's row. ``snapshot`` is ``render(capture(now))``: ``capture`` is the only
 part that touches live state (the server runs it under its lock), ``render`` reads only the capture.
 
@@ -77,13 +78,18 @@ class DashboardState:
         self._monitor.push(receiver, pkt)
         self._advance(pkt.host_ts)
 
-    def push_broadcast(self, host_ts: float, data: bytes) -> None:
-        """One round broadcast heard at ``host_ts``: its link reports drive their links. Bytes that cannot be
-        used are counted in ``status.broadcasts``, never raised."""
-        self._monitor.push_reports(host_ts, self._ingest.place(data))
+    def push_broadcast(self, host_ts: float, data: bytes, source: str = "") -> None:
+        """One round broadcast heard at ``host_ts`` by ``source`` (a gateway): its link reports drive their links.
+        Bytes that cannot be used, and copies another gateway already delivered, are counted in
+        ``status.broadcasts``, never raised."""
+        self._monitor.push_reports(host_ts, self._ingest.place(data, host_ts, source))
         if self._ingest.last_node is not None:
             self._heard_at[self._ingest.last_node] = max(host_ts, self._heard_at.get(self._ingest.last_node, host_ts))
         self._advance(host_ts)
+
+    def count_dropped(self, source: str, n: int) -> None:
+        """``n`` round broadcasts from ``source`` were dropped before ingest (a full queue): counted, not used."""
+        self._ingest.count_dropped(source, n)
 
     def _advance(self, host_ts: float) -> None:
         self._last_host = host_ts

@@ -1,4 +1,4 @@
-# 0023. Per-link detail on demand, and frames rendered off the server lock
+# 0024. Per-link detail on demand, and frames rendered off the server lock
 
 - **Status:** Accepted
 - **Date:** 2026-11-11
