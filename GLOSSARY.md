@@ -490,7 +490,7 @@ _See_: `csi/coverage.py` (`link_matrix`)
 
 
 **Commands**:
-The five POST endpoints that calibrate, set or save thresholds, and tune the heatmap. They run only when the server is bound to a loopback address or started with `--allow-control`.
+The six POST endpoints (`COMMAND_PATHS`) that calibrate (and cancel a calibration), set or save thresholds, tune the heatmap, and switch raw mode on or off for a link (`/api/raw-mode`). They run only when the server is bound to a loopback address or started with `--allow-control`.
 _Avoid_: API (alone)
 _See_: `csi/server.py` (`COMMAND_PATHS`), [ADR-0015](docs/adr/0015-stdlib-http-server-loopback-commands.md)
 
