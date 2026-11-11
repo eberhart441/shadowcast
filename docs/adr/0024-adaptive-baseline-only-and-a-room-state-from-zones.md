@@ -1,4 +1,4 @@
-# 0023. Transceiver links: adaptive baseline only, and a room state from zones and independent links
+# 0024. Transceiver links: adaptive baseline only, and a room state from zones and independent links
 
 - **Status:** Accepted
 - **Date:** 2026-11-11

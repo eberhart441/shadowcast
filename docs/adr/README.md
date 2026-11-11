@@ -14,7 +14,7 @@ All of these decisions were made during the CodeMetalForge hackathon and recorde
 | [0006](0006-identify-boards-by-usb-serial.md) | Identify boards by USB serial, not by port name | Accepted | 2026-11-07 |
 | [0007](0007-amplitude-only-motion-score.md) | Motion score from CSI amplitude only, with the breathing band removed | Accepted | 2026-11-07 |
 | [0008](0008-motion-only-by-default.md) | Motion-only by default; breathing is opt-in | Accepted | 2026-11-07 |
-| [0009](0009-fixed-thresholds-by-default.md) | Fixed per-link thresholds by default; adaptive mode is experimental | Accepted for the line pipeline; superseded by [0023](0023-adaptive-baseline-only-and-a-room-state-from-zones.md) for the transceiver pipeline | 2026-11-07 |
+| [0009](0009-fixed-thresholds-by-default.md) | Fixed per-link thresholds by default; adaptive mode is experimental | Accepted for the line pipeline; superseded by [0024](0024-adaptive-baseline-only-and-a-room-state-from-zones.md) for the transceiver pipeline | 2026-11-07 |
 | [0010](0010-two-noisy-room-calibration-methods.md) | Two noisy-room calibration methods, no winner declared | Experimental | 2026-11-07 |
 | [0011](0011-heatmap-evidence-from-quiet-baseline.md) | Heatmap evidence from each link's quiet baseline, not its threshold | Accepted | 2026-11-07 |
 | [0012](0012-host-ts-line-stream-seam.md) | Every packet source is a `(host_ts, line)` stream | Accepted for the line pipeline; superseded by [0022](0022-host-time-round-broadcast-seam.md) for the transceiver pipeline | 2026-11-07 |
@@ -28,7 +28,11 @@ All of these decisions were made during the CodeMetalForge hackathon and recorde
 | [0020](0020-plug-and-play-no-per-layout-training.md) | Plug and play: no per-layout training | Accepted | 2026-11-08 |
 | [0021](0021-on-node-score-streaming-window-and-score-code.md) | On-node score: streaming window statistics, and a log-scale score code | Accepted | 2026-11-11 |
 | [0022](0022-host-time-round-broadcast-seam.md) | Every transceiver source is a `(host time, round broadcast)` stream | Accepted | 2026-11-11 |
-| [0023](0023-adaptive-baseline-only-and-a-room-state-from-zones.md) | Transceiver links: adaptive baseline only, and a room state from zones and independent links | Accepted | 2026-11-11 |
+<<<<<<< HEAD
+| [0024](0024-adaptive-baseline-only-and-a-room-state-from-zones.md) | Transceiver links: adaptive baseline only, and a room state from zones and independent links | Accepted | 2026-11-11 |
+=======
+| [0023](0023-round-recordings.md) | Round recordings: the undecoded bytes, host time and source, in one versioned binary file | Accepted | 2026-11-11 |
+>>>>>>> integrate/30-nodes
 
 Reading order: 0001 is the principle the detection records (0007 to 0011) argue from. 0002 to 0006 are the hardware and radio. 0012 to 0018 are the software architecture and how it is tested.
 

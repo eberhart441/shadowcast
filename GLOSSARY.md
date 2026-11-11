@@ -170,7 +170,7 @@ _See_: `csi/breathing.py`, `csi/detect.py`, [ADR-0008](docs/adr/0008-motion-only
 
 **Room state**:
 The room-level decision in the payload's `status.room`. It is not any one link's state. With transceivers: MOTION while any zone is MOTION; a zone is MOTION while, at one of its probe points, the elevated links covering the point hold enough independent links, and for 1 s after. Enough is a third of the independent links that could cover the point, and at least two (three where three exist). For the hackathon links: MOTION when at least two links are elevated together, or one link is strongly elevated (auto mode only), held for 1 s.
-_See_: `csi/room_state.py` (`RoomState`), `csi/adaptive.py` (`RoomDecision`), [ADR-0023](docs/adr/0023-adaptive-baseline-only-and-a-room-state-from-zones.md)
+_See_: `csi/room_state.py` (`RoomState`), `csi/adaptive.py` (`RoomDecision`), [ADR-0024](docs/adr/0024-adaptive-baseline-only-and-a-room-state-from-zones.md)
 
 **Zone**:
 A square of the room, about 1 m on a side, that the room state reports on: `A1` is the top-left zone, letters run along x and numbers down y. Each zone holds a grid of probe points 0.25 m apart; a link covers a probe point when its segment passes within 0.3 m of it.
@@ -348,12 +348,17 @@ _See_: `csi/recording.py` (`load_session`)
 Replaying a session's recordings through the live detector and comparing each decision with the label of its file. The first empty recording calibrates; the split is by recording, never by random window.
 _See_: `csi/evaluate.py`, [ADR-0018](docs/adr/0018-evaluate-by-recording.md)
 
+**Round recording**:
+One binary file of a transceiver run: every round broadcast as its source delivered it, with its host time and source name, labels that each hold from a host time on, and the room config. Written by `dashboard.py --record`, replayed by `--replay-rounds`.
+_Avoid_: recording (alone; that is a CSV file of packets)
+_See_: `csi/round_recording.py`, [docs/round-recording.md](docs/round-recording.md), [ADR-0024](docs/adr/0023-round-recordings.md)
+
 **Run log**:
 A `--log` file: one header line, then one dashboard payload per line.
 _See_: `csi/server.py` (`LOG_FORMAT`)
 
 **Replay**:
-Serving a run log (`--replay`), or feeding a session through the live pipeline (`--replay-session`), at 1×, N× or maximum speed. A replay is read-only: commands return 409.
+Serving a run log (`--replay`), or feeding a session (`--replay-session`) or a round recording (`--replay-rounds`) through the live pipeline, at 1×, N× or maximum speed. A replay is read-only: commands return 409.
 _See_: `csi/replay.py`
 
 ## Dashboard

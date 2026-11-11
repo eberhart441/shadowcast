@@ -13,7 +13,7 @@ import pytest
 from csi.broadcast import decode_broadcast
 from csi.dashboard import DashboardState
 from csi.room import FALLOFF_SIGMA_M, Walk, load_room, point_segment_distance
-from csi.simulate import simulate_rounds
+from csi.simulate import simulate_gateways, simulate_rounds
 
 ROOM = load_room(Path(__file__).parent / "fixtures" / "room_tr8.json")
 NODES = {n.name: n for n in ROOM.transceivers}
@@ -110,3 +110,18 @@ def test_the_same_seed_gives_the_same_bytes():
     b = list(itertools.islice(simulate_rounds(ROOM, seed=7, t0=T0), 200))
     c = list(itertools.islice(simulate_rounds(ROOM, seed=8, t0=T0), 200))
     assert a == b and a != c
+
+
+def test_simulated_gateways_hear_their_own_nodes_with_the_rigs_exact_bytes():
+    rig = [data for _, data in simulate_rounds(ROOM, duration_s=1.0, seed=3, t0=T0)]
+    views = simulate_gateways(ROOM, hears={"gw1": ["n1", "n2"], "gw2": ["n2", "n3"], "lossy": ["n4"]},
+                              loss={"lossy": 0.5}, duration_s=1.0, seed=3, t0=T0)
+    got = {name: [data for _, data in stream] for name, stream in views.items()}
+    sender = {n.serial: n.name for n in ROOM.transceivers}
+
+    def of(*names):
+        return [data for data in rig if sender[decode_broadcast(data).node_id] in names]
+    assert got["gw1"] == of("n1", "n2") and got["gw2"] == of("n2", "n3")
+    assert 0 < len(got["lossy"]) < len(of("n4"))                # it misses about half
+    with pytest.raises(ValueError, match="n9"):
+        simulate_gateways(ROOM, hears={"gw1": ["n9"]}, duration_s=1.0)
