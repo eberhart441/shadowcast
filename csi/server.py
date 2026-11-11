@@ -93,6 +93,7 @@ COMMAND_PATHS = frozenset({"/api/calibrate", "/api/calibrate/cancel", "/api/thre
 MAX_BODY_BYTES = 64 * 1024
 DEFAULT_THRESHOLDS_FILE = "links_thresholds.json"   # working directory, unless --save-thresholds says otherwise
 COMMAND_LOG_MAX = 20
+SEND_TIMEOUT_S = 2.0       # a command's write to a gateway's port that takes longer is given up (503 "timeout")
 # live heatmap parameters: request key -> (heatmap attribute, allowed range)
 PARAM_RANGES = {
     "sensitivity": ("sensitivity", (0.01, 10.0)),
@@ -785,7 +786,14 @@ class DashboardServer(FrameServer):
             return {"thresholds": self._state.thresholds, "path": str(self._thresholds_path.resolve())}
 
     def command(self, path: str, body: Mapping) -> tuple[int, dict]:
-        """Run one POST command under the lock. Returns (HTTP status, JSON object)."""
+        """Run one POST command under the lock. Returns (HTTP status, JSON object).
+
+        A handler may return a callable instead: the part that writes to a gateway's port, which runs after the
+        lock is released (ADR-0016), so a slow or wedged port never stalls the pump or /api/state."""
+        outcome = self._command_locked(path, body)
+        return outcome() if callable(outcome) else outcome
+
+    def _command_locked(self, path: str, body: Mapping):
         with self._lock:
             if not self._controls_on:
                 return 403, {"error": CONTROL_OFF}
@@ -911,14 +919,20 @@ class DashboardServer(FrameServer):
             frames = self._state.raw_mode_request(link, on, 0.0 if now is None else now, sender)
         except RawModeRefused as e:
             return (400 if e.reason == "unknown_link" else 409), {"error": str(e), "reason": e.reason}
-        try:
-            for frame in frames:
-                self._transmitters[via].send_frame(frame)
-        except (OSError, RuntimeError) as e:
-            return 503, {"error": f"gateway {via} could not send the raw mode request: {e}", "reason": "send"}
-        self._commands.append(f"raw mode {'on' if on else 'off'} {link} (sent via {via}, {len(frames)} copies)")
-        status = self._state.raw_mode_status(0.0 if now is None else now)
-        return 200, {"raw_mode": status, "sent": len(frames), "via": via}
+        transmitter = self._transmitters[via]
+
+        def send() -> tuple[int, dict]:   # off the lock: a port write may block
+            error = send_with_timeout(transmitter, frames, SEND_TIMEOUT_S)
+            if error is not None:
+                reason, why = error
+                return 503, {"error": f"gateway {via} could not send the raw mode request: {why}", "reason": reason}
+            with self._lock:
+                self._commands.append(f"raw mode {'on' if on else 'off'} {link} (sent via {via}, {len(frames)} "
+                                      "copies)")
+                status = self._state.raw_mode_status(0.0 if now is None else now)
+            return 200, {"raw_mode": status, "sent": len(frames), "via": via}
+
+        return send
 
     def _transmitter_for(self, label: str) -> Optional[str]:
         """The source to send a raw mode request through: the one that last delivered the target node's round
@@ -934,6 +948,28 @@ class DashboardServer(FrameServer):
         self._state.set_threshold(label, value)
         self._commands.append(f"threshold {label} = {value:.4g} (calibration)")
 
+
+def send_with_timeout(transmitter: Transmitter, frames: Sequence[bytes],
+                      timeout_s: float) -> Optional[tuple[str, str]]:
+    """Hand ``frames`` to ``transmitter`` on a worker thread and wait at most ``timeout_s`` for it. None when every
+    frame was written; else (reason, message): "send" for a port error, "timeout" for a write still blocked (the
+    worker is left to finish or fail on its own; it is a daemon, so it never holds the process up)."""
+    result: list[Optional[tuple[str, str]]] = []
+
+    def write() -> None:
+        try:
+            for frame in frames:
+                transmitter.send_frame(frame)
+            result.append(None)
+        except (OSError, RuntimeError) as e:
+            result.append(("send", str(e) or type(e).__name__))
+
+    worker = threading.Thread(target=write, name="gateway-send", daemon=True)
+    worker.start()
+    worker.join(timeout_s)
+    if not result:
+        return "timeout", f"the port write did not finish within {timeout_s:g} s"
+    return result[0]
 
 
 def broadcast_messages(counts: Mapping) -> list[str]:

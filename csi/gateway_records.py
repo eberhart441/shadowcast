@@ -42,6 +42,7 @@ ROLES = {0: "transceiver", 1: "gateway"}
 COUNTER_NAMES = ("heard", "queue_full", "usb_dropped", "sent", "send_errors", "rejected", "csi_skipped")
 MAX_SPREAD_S = 2.0                # records of one read are never placed more than this before its arrival
 TEXTS_KEPT = 50
+WRITE_TIMEOUT_S = 1.0             # a command line to the gateway that cannot be written in this long fails
 
 Chunks = Iterable[tuple[float, Optional[bytes]]]
 
@@ -257,6 +258,7 @@ class SerialChunks:
         with self._lock:
             if self._ser is None:
                 self._ser = open_serial(self._port, self._baud, self._timeout)
+                self._ser.write_timeout = WRITE_TIMEOUT_S   # pyserial raises SerialTimeoutException (an OSError)
             ser = self._ser
         try:
             while True:

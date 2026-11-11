@@ -247,6 +247,12 @@ Meanwhile the job is in state `processing` and takes no packets, so the clips th
 `/api/state` and commands keep flowing. When a run ends, `_finish_run` waits for the calibration thread, without
 holding the lock and for at most 30 s, so that the final frame shows the result.
 
+Writing to a gateway's USB port is the other slow step: a port can block. A command that sends frames through a
+gateway (raw mode, `POST /api/raw-mode`) builds and signs them under the lock, then releases it and hands them to a
+`gateway-send` thread (`csi.server.send_with_timeout`), waiting at most `SEND_TIMEOUT_S` (2 s) before answering 503
+with reason `timeout`. The port itself has a write timeout (`csi.gateway_records.WRITE_TIMEOUT_S`). So a wedged port
+costs that one request, never a frame or `/api/state`.
+
 ### 3.6 Boards are identified by USB serial, not by port name
 
 Port names such as `/dev/cu.usbmodem*` change on every replug. A board's USB serial is its base MAC address and
@@ -308,6 +314,7 @@ person is the costly error, so the code chooses the safe side wherever the two k
 | `dashboard-http` | 1 | `serve_forever` (polls every 0.1 s) | None |
 | Request handlers | One per connection (`daemon_threads`) | `/api/state` renders a fresh payload. `/api/link` renders one link's row. `/api/events` streams frames. POST requests run commands | The server lock for state and commands (`/api/state` only for its capture). `FrameLog`'s condition variable for SSE |
 | `dashboard-calibration` | 0 or 1 | Computes a finished calibration's report | Runs without the lock. Takes it only to apply the result |
+| `gateway-send` | 0 or 1 per command | Writes a command's frames to a gateway's port (raw mode) | Runs without the lock; the request waits for it at most `SEND_TIMEOUT_S` |
 | `dashboard-replay` | 1, in log replay only | Appends the logged payloads at the logged pace, divided by `--speed` | The server lock and `FrameLog` |
 
 **Locks.** `FrameServer._lock` is one coarse lock over all mutable dashboard state: `DashboardState`, the calibration

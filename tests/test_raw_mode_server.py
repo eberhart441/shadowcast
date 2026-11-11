@@ -198,3 +198,40 @@ def test_the_cli_sends_raw_mode_through_the_node_gateway_and_simulate_through_th
         wait_for(server, lambda p: raw_row(p, "n2<-n3").get("state") == "on")
     finally:
         server.stop()
+
+
+class StuckGateway:
+    """A transmitter whose port write never returns until released: a wedged USB port."""
+
+    def __init__(self, rig):
+        self._rig = rig
+        self.sender_id = rig.sender_id
+        self.release = __import__("threading").Event()
+
+    def send_frame(self, frame):
+        self.release.wait(30)
+
+
+def test_a_stuck_gateway_write_neither_blocks_the_state_nor_hangs_the_command(serve, monkeypatch):
+    import threading
+
+    import csi.server
+
+    monkeypatch.setattr(csi.server, "SEND_TIMEOUT_S", 0.5)
+    rig = SimulatedRig(ROOM, None, duration_s=30.0, realtime=True)
+    stuck = StuckGateway(rig)
+    server = serve({"sim": rig}, transmitters={"sim": stuck})
+    try:
+        wait_for(server, everyone_heard)
+        answer = {}
+        thread = threading.Thread(target=lambda: answer.update(r=post(server, {"link": "n1<-n5", "on": True})))
+        thread.start()
+        time.sleep(0.1)
+        started = time.monotonic()
+        state(server)                                  # the write holds no lock /api/state needs
+        assert time.monotonic() - started < 0.4
+        thread.join(10)
+        status, body = answer["r"]
+        assert (status, body["reason"]) == (503, "timeout")
+    finally:
+        stuck.release.set()

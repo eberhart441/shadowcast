@@ -14,6 +14,7 @@ The dashboard's state sits behind one lock: the pump thread takes it to feed pac
 - `CalibrationJob` takes a `defer(compute, complete)` hook (`csi/live_calibration.py`).
 - When the recording ends, the job enters `processing` and stops taking packets. The server runs `compute` on its own thread without the lock, then takes the lock only to apply the thresholds in `complete` (`csi/server.py`, `_defer_calibration`).
 - The final frame of a run waits, without the lock and for at most 30 s, for a calibration that is still processing, so the result is in it (`_join_calibration`, `CALIBRATION_JOIN_S`).
+- The same rule covers a command's write to a gateway's port (raw mode, ticket #17; review fix): the frames are built under the lock, written after it is released on a `gateway-send` thread, and the request waits at most `SEND_TIMEOUT_S` (2 s), then answers 503 `timeout` (`csi.server.send_with_timeout`). The serial port also has a write timeout (`csi.gateway_records.WRITE_TIMEOUT_S`).
 
 ## Alternatives considered
 
@@ -28,5 +29,5 @@ The dashboard's state sits behind one lock: the pump thread takes it to feed pac
 ## Evidence
 
 - **The motivation, in the commit:** "The report was computed while the server held its state lock, so every request and frame waited for it" (`74e4eab`).
-- **Pinned by tests** (`tests/test_dashboard_controls.py`): `test_state_requests_are_answered_while_a_calibration_is_processing` holds the computation open and requires `/api/state` to answer, in state `processing`, within 15 s; `test_a_run_that_ends_while_a_calibration_is_processing_ends_with_it_done` requires the final frame to carry the finished calibration.
+- **Pinned by tests**: `tests/test_raw_mode_server.py::test_a_stuck_gateway_write_neither_blocks_the_state_nor_hangs_the_command` holds a gateway write open and requires `/api/state` to answer at once and the command to answer 503 `timeout`. In `tests/test_dashboard_controls.py`: `test_state_requests_are_answered_while_a_calibration_is_processing` holds the computation open and requires `/api/state` to answer, in state `processing`, within 15 s; `test_a_run_that_ends_while_a_calibration_is_processing_ends_with_it_done` requires the final frame to carry the finished calibration.
 - **Not measured:** how long the stall lasted on the rig. The change was made from reading the code, not from a profile.
