@@ -24,6 +24,18 @@ case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) EXE=.exe ;; esac
 
 mkdir -p build
 CFLAGS=(-std=c11 -O2 -Wall -Wextra -Werror -pedantic -Wshadow -Wconversion -Wno-sign-conversion)
-# shellcheck disable=SC2086
-"$CC" "${CFLAGS[@]}" ${EXTRA_CFLAGS:-} -o "build/test_motion_score$EXE" motion_score.c tests/test_motion_score.c $LIBM
-"./build/test_motion_score$EXE" tests/vectors/motion_score.txt
+
+# build_and_run <test name> <sources...> -- <arguments>
+build_and_run() {
+  local name=$1; shift
+  local sources=()
+  while [ "$1" != "--" ]; do sources+=("$1"); shift; done
+  shift
+  # shellcheck disable=SC2086
+  "$CC" "${CFLAGS[@]}" ${EXTRA_CFLAGS:-} -o "build/$name$EXE" "${sources[@]}" $LIBM
+  "./build/$name$EXE" "$@"
+}
+
+build_and_run test_motion_score motion_score.c tests/test_motion_score.c -- tests/vectors/motion_score.txt
+build_and_run test_round_broadcast round_broadcast.c tests/test_round_broadcast.c -- tests/vectors/round_broadcast.txt
+build_and_run test_gateway_record gateway_record.c tests/test_gateway_record.c -- tests/vectors/gateway_record.txt
