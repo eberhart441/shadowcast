@@ -1,6 +1,6 @@
 /*
  * The node's round broadcast codec reproduces the golden fixtures the host decoder is pinned to
- * (tests/fixtures/round_broadcast_v1.json, flattened by scripts/gen_wire_vectors.py into
+ * (tests/fixtures/round_broadcast_v2.json, flattened by scripts/gen_wire_vectors.py into
  * tests/vectors/round_broadcast.txt): every valid case decodes to its fields and encodes back to the same bytes,
  * and every invalid case is rejected for the fixture's reason.
  *

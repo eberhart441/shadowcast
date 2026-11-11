@@ -7,8 +7,10 @@
  *   transceiver  The round scheduler (firmware/core/round_scheduler.h) gives it a node index and a slot: it
  *                listens, joins the round it hears (or founds one), and in its slot sends a round broadcast
  *                (docs/round-broadcast.md): an unacknowledged ESP-NOW broadcast at HT20 MCS0 carrying one link
- *                report per other member. It measures CSI on every other member's round broadcast and scores each
- *                link with the C scorer. It needs no settings: the defaults join any round on channel 6 at 40 Hz.
+ *                report per other member, signed with the kit key (node_auth.h). It measures CSI on every other
+ *                member's round broadcast whose tag and round number check out, and scores each link with the C
+ *                scorer. It needs no settings (the defaults join any round on channel 6 at 40 Hz), only the kit key:
+ *                without it (scripts/node.py PORT key FILE) it only listens.
  *   gateway      Listens on the channel and sends nothing. Every ESP-NOW frame it hears goes to USB as a binary
  *                heard record with its receive time (docs/gateway-record.md).
  *
@@ -47,6 +49,7 @@
 #include "espnow_frame.h"
 #include "gateway_record.h"
 #include "link_table.h"
+#include "node_auth.h"
 #include "node_settings.h"
 #include "round_broadcast.h"
 #include "round_scheduler.h"
@@ -69,6 +72,7 @@ static const uint8_t BROADCAST_MAC[6] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
 
 static node_settings_t s_settings;
 static bool s_configured;           /* settings were stored by scripts/node.py, not the defaults (which work too) */
+static bool s_keyed = true;         /* false: a transceiver without the kit key, which only listens */
 static uint8_t s_serial[6];         /* base MAC = USB serial = node id */
 static char s_serial_text[18];
 static uint8_t s_sta_mac[6];
@@ -198,7 +202,10 @@ static void run_command(const char *line)
 {
     char reply[200];
     node_settings_t next = s_settings;
-    node_cmd_t action = node_settings_command(&next, s_serial_text, line, reply, sizeof reply);
+    node_cmd_t action;
+    if (!node_auth_command(line, reply, sizeof reply, &action)) {
+        action = node_settings_command(&next, s_serial_text, line, reply, sizeof reply);
+    }
     if (action == NODE_CMD_SAVE_AND_RESTART) {
         esp_err_t err = save_settings(&next);
         if (err != ESP_OK) {
@@ -223,6 +230,7 @@ static void usb_task(void *arg)
     size_t len = 0;
     uint8_t buf[64];
     int64_t next_status = esp_timer_get_time() + STATUS_PERIOD_US;
+    int64_t next_nag = esp_timer_get_time();
     for (;;) {
         int n = usb_serial_jtag_read_bytes(buf, sizeof buf, pdMS_TO_TICKS(50));
         for (int i = 0; i < n; i++) {
@@ -241,6 +249,11 @@ static void usb_task(void *arg)
         if (now >= next_status) {
             send_status();
             next_status = now + STATUS_PERIOD_US;
+        }
+        if (!s_keyed && now >= next_nag) {
+            usb_text("no kit key: this node only listens until scripts/node.py gives it one (PORT key FILE; serial %s)",
+                     s_serial_text);
+            next_nag = now + 10 * STATUS_PERIOD_US;
         }
     }
 }
@@ -375,7 +388,7 @@ static void log_schedule(void)
  * by less than REARM_TOLERANCE_US (rs_take accepts a slot within the guard). */
 static void arm_next_slot(bool force)
 {
-    if (!s_sched_ok) {
+    if (!s_sched_ok || !s_keyed) {
         return;
     }
     int64_t now = esp_timer_get_time();
@@ -407,7 +420,7 @@ static void send_slot(const rs_tx_t *tx)
     size_t n = rb_encode(&b, bytes, sizeof bytes);
     s_sent_slot_at = tx->at_us;
     s_sent_len = n;
-    if (n && esp_now_send(BROADCAST_MAC, bytes, n) == ESP_OK) {
+    if (n && node_auth_sign(bytes, n) && esp_now_send(BROADCAST_MAC, bytes, n) == ESP_OK) {
         count(GR_COUNT_SENT);
     } else {
         count(GR_COUNT_SEND_ERRORS);
@@ -438,8 +451,9 @@ static void on_heard(const node_item_t *item)
     static float amp[CSI_LAYOUT_MAX_RAW / 2];
     const uint8_t *body;
     size_t body_len;
-    if (!espnow_body(item->payload, item->payload_len, &body, &body_len) || rb_decode(body, body_len, &b) != RB_OK) {
-        count(GR_COUNT_REJECTED);   /* not a v1 round broadcast or join frame */
+    if (!espnow_body(item->payload, item->payload_len, &body, &body_len) || rb_decode(body, body_len, &b) != RB_OK
+            || !node_auth_accept(body, body_len, item->t_us)) {
+        count(GR_COUNT_REJECTED);   /* not a v2 round broadcast or join frame, forged or replayed */
         return;
     }
     if (!s_sched_ok || rs_heard(&s_sched, item->t_us, &b) != RS_HEARD_MEMBER) {
@@ -595,6 +609,9 @@ void app_main(void)
     esp_log_set_vprintf(log_to_usb);
 
     s_configured = load_settings(&s_settings);
+    if (!node_auth_start() && s_settings.role != NODE_ROLE_GATEWAY) {
+        s_keyed = false;   /* a transceiver without the kit key only listens: it cannot sign or verify */
+    }
     wifi_start(s_settings.channel);
     ESP_ERROR_CHECK(esp_now_init());
     if (s_settings.role == NODE_ROLE_GATEWAY) {
@@ -606,5 +623,6 @@ void app_main(void)
 
     char text[96];
     node_settings_format(&s_settings, text, sizeof text);
-    ESP_LOGI(TAG, "node %s: %s%s (HT20 MCS0)", s_serial_text, text, s_configured ? "" : " configured=no");
+    ESP_LOGI(TAG, "node %s: %s%s%s (HT20 MCS0)", s_serial_text, text, s_configured ? "" : " configured=no",
+             s_keyed ? "" : " no kit key: listening only");
 }

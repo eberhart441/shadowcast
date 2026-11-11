@@ -7,8 +7,9 @@ over the last 2 s; ``"unknown"`` when no node has reported it.
 """
 from pathlib import Path
 
-from csi.broadcast import LinkReport, RoundBroadcast, encode_broadcast, quantise_score
+from csi.broadcast import FORMAT_VERSION, LinkReport, RoundBroadcast, encode_broadcast, quantise_score
 from csi.dashboard import DashboardState
+from csi.round_auth import TEST_KIT_KEY, sign_broadcast
 from csi.room import load_room
 
 ROOM = load_room(Path(__file__).parent / "fixtures" / "room_tr8.json")
@@ -24,8 +25,8 @@ def broadcast(sender, round_no, lateness=None):
     lateness = lateness or {}
     rows = tuple(LinkReport(i, quantise_score(2.0), -50, 15, 0, 0, lateness.get(NAMES[i], 0))
                  for i in range(len(NAMES)) if i != index)
-    return encode_broadcast(RoundBroadcast(1, 1, round_no, index, len(NAMES) + 1, 1, index, ALL, SERIAL[sender],
-                                           bytes(8), rows))
+    return sign_broadcast(encode_broadcast(RoundBroadcast(FORMAT_VERSION, 1, round_no, index, len(NAMES) + 1, 1, index,
+                                                          ALL, SERIAL[sender], bytes(8), rows)), TEST_KIT_KEY)
 
 
 def health(state, now):

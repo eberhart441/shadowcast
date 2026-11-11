@@ -11,6 +11,7 @@
 #include <string.h>
 
 #include "../link_table.h"
+#include "../round_auth.h"
 #include "../round_scheduler.h"
 
 static int failures = 0;
@@ -97,6 +98,8 @@ typedef struct {
     uint16_t id_last_round;     /* the last frame carrying its serial (its own, or a grant naming it) */
     int64_t id_last_T;
     uint32_t delivered, lost;   /* round broadcasts from members it heard / lost to overlap (as receiver) */
+    rb_auth_t auth;             /* #16's freshness rule, as node_auth_accept applies it before the scheduler */
+    uint32_t replays;           /* frames it dropped as replays (as receiver) */
 } sim_node_t;
 
 typedef struct {
@@ -197,6 +200,7 @@ static void sim_power_on(sim_t *sim, int i)
     nd->on = true;
     nd->gen++;
     nd->id_sent_any = false;   /* a power cycle may restart the count (the 2 s loss of #16 is expected) */
+    rb_auth_init(&nd->auth, NULL, NULL);
     nd->was_member = false;
     link_table_init(&nd->links);
     int64_t now = clock_of(nd, sim->now);
@@ -308,6 +312,10 @@ static void sim_deliver(sim_t *sim, const sim_event_t *e)
     rb_broadcast_t b;
     CHECK(rb_decode(f->bytes, f->len, &b) == RB_OK, "a frame on air does not decode");
     int64_t now = clock_of(nd, sim->now);
+    if (rb_auth_fresh(&nd->auth, b.node_id, b.round, now) != RB_AUTH_OK) {
+        nd->replays++;   /* node_main drops it before the scheduler sees it */
+        return;
+    }
     if (rs_heard(&nd->rs, now, &b) == RS_HEARD_MEMBER) {
         link_table_heard(&nd->links, b.node_index, now, -50, NULL, 0);
         nd->delivered++;
@@ -426,7 +434,7 @@ static bool any_left_member(const sim_t *sim)
 static bool any_duplicate_round(const sim_t *sim)
 {
     for (int i = 0; i < sim->n; i++) {
-        if (sim->node[i].duplicate_round || sim->node[i].stale_round) {
+        if (sim->node[i].duplicate_round || sim->node[i].stale_round || sim->node[i].replays) {
             return true;
         }
     }
@@ -436,7 +444,7 @@ static bool any_duplicate_round(const sim_t *sim)
 static bool any_stale_round(const sim_t *sim)
 {
     for (int i = 0; i < sim->n; i++) {
-        if (sim->node[i].stale_round) {
+        if (sim->node[i].stale_round || sim->node[i].replays) {
             return true;
         }
     }
@@ -488,7 +496,7 @@ static void a_node_powered_on_into_a_running_round_joins_within_a_few_rounds(voi
     sim_t *sim = &g_sim;
     settled_rig(sim, 6, HZ, 11, 0, 4000000);
     sim_power_off(sim, 5);
-    sim_run(sim, sim->now + 1000000);   /* the rig runs without node 5 */
+    sim_run(sim, sim->now + 2100000);   /* the rig runs without node 5 (unplugged for longer than #16's 2 s) */
     CHECK(sim_one_schedule(sim, NULL) && popcount(sim->node[0].rs.membership) == 5, "five members without node 5");
     int64_t worst = 0;
     for (int trial = 0; trial < 10; trial++) {
@@ -502,7 +510,7 @@ static void a_node_powered_on_into_a_running_round_joins_within_a_few_rounds(voi
         CHECK(sim_until_one_schedule(sim, 500000) >= 0, "after joining, all six share one schedule (trial %d)", trial);
         sim_run(sim, sim->now + 500000);
         sim_power_off(sim, 5);
-        sim_run(sim, sim->now + 500000);
+        sim_run(sim, sim->now + 2100000);
     }
     /* it listens up to 7 rounds before it may found; it hears the rig in its first round; then a request, a grant */
     CHECK(worst <= 12 * P_US, "a powered-on node is a member within 12 rounds (worst of 10: %.1f rounds)",
@@ -511,6 +519,20 @@ static void a_node_powered_on_into_a_running_round_joins_within_a_few_rounds(voi
            (double)worst / P_US);
     CHECK(!any_left_member(sim), "no member of the running round restarted or left while a node joined");
     CHECK(!any_duplicate_round(sim), "no node sends one round number twice in a schedule version");
+
+    /* A power blip: back within 2 s, its new round count is a replay to everyone until 2 s after its last frame
+     * (#16), so it joins then. */
+    sim_power_off(sim, 5);
+    sim_run(sim, sim->now + 300000);
+    sim_power_on(sim, 5);
+    int64_t t0 = sim->now;
+    while (sim->node[5].rs.state != RS_MEMBER && sim->now - t0 < 4000000) {
+        sim_run(sim, sim->now + 1000);
+    }
+    CHECK(sim->node[5].rs.state == RS_MEMBER && sim->now - t0 <= 1700000 + 12 * P_US,
+          "after a 0.3 s blip it is a member again within 2 s of its last frame and 12 rounds (%.2f s)",
+          (double)(sim->now - t0) / 1e6);
+    CHECK(!any_left_member(sim), "nobody else restarted over the blip");
 }
 
 static void a_node_missing_for_three_rounds_is_dropped(void)
@@ -555,6 +577,7 @@ static void when_the_scheduler_dies_the_next_member_takes_over(void)
     CHECK(sim_until_one_schedule(sim, 8 * P_US) >= 0, "the other four agree on a schedule without it within 8 rounds");
     CHECK(!any_left_member(sim), "nobody restarted");
     /* the new scheduler still admits nodes */
+    sim_run(sim, sim->now + 2100000);
     sim_power_on(sim, scheduler);
     CHECK(sim_until_one_schedule(sim, 20 * P_US) >= 0, "the old scheduler rejoins as an ordinary member");
 }

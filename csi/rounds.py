@@ -2,14 +2,19 @@
 
 Every transceiver source is a stream of ``(host time, round broadcast bytes)`` (``BroadcastStream``; see
 docs/adr/0022-host-time-round-broadcast-seam.md). ``RoundIngest`` decodes each round broadcast
-(csi/broadcast.py), names its sender by board serial from the room config, and places each link report on its
-link, ``NodeLinkId(receiving node, transmitting node)``:
+(csi/broadcast.py), checks its authentication tag against the kit key and its round number
+against replay (csi/round_auth.py), names its sender by board serial from the room config, and places each link
+report on its link, ``NodeLinkId(receiving node, transmitting node)``:
 
-    ingest = RoundIngest(room)
+    ingest = RoundIngest(room, kit_key)        # kit_key defaults to the simulator's TEST_KIT_KEY
     for link_id, report in ingest.place(data, host_ts, source="gw1"): ...
     ingest.count_dropped("gw1", n)   # records the source's queue dropped before they got here
     ingest.last_node    # the sender of the round broadcast just placed, None if it was not placed
     ingest.counts()     # see counts()
+
+A broadcast whose tag does not verify (forged, or another kit's key) is counted as ``auth`` before anything else
+looks at it, so a forgery never enters the de-duplication memory and cannot crowd out the real broadcast. One that
+verifies but whose round number is stale for its node (``round_auth.Freshness``) is counted as ``replay``.
 
 Several gateways may hear the same round broadcast. The first copy of (node serial, schedule version, round
 number) is placed; another copy within ``DEDUP_WINDOW_S`` of host time, from any source, is counted as a
@@ -34,17 +39,19 @@ from typing import Iterable, Optional
 from .broadcast import DECODE_REASONS, FRAME_JOIN_GRANT, JOIN_FRAMES, BroadcastError, LinkReport, decode_broadcast
 from .links import NodeLinkId
 from .room import Room
+from .round_auth import REPLAY, TEST_KIT_KEY, Freshness, tag_ok
 
 # A stream of (host time, round broadcast bytes); a quiet source may yield (host_ts, None) as a heartbeat.
 BroadcastStream = Iterable[tuple[float, Optional[bytes]]]
 SCHEDULES_KEPT = 4   # schedule versions whose node indices are remembered
 DEDUP_WINDOW_S = 2.0  # host time within which a second copy of (node, schedule version, round) is a duplicate
 DEDUP_MAX = 8192      # round broadcasts remembered for de-duplication (32 nodes x 40 Hz x 2 s = 2560)
+AUTH = "auth"          # the tag does not verify under the kit key
 DUPLICATE = "duplicate"
 QUEUE_OVERFLOW = "queue_overflow"
 UNKNOWN_NODES_KEPT = 32   # unknown serials counted by name; any further ones are counted together as OTHER_NODES
 OTHER_NODES = "other"
-REJECT_REASONS = DECODE_REASONS + (DUPLICATE, QUEUE_OVERFLOW)   # each has a counter in status.broadcasts.rejected
+REJECT_REASONS = DECODE_REASONS + (AUTH, REPLAY, DUPLICATE, QUEUE_OVERFLOW)   # each has a counter in status.broadcasts.rejected
 JOIN_FRAME_KINDS = ("request", "grant")                          # status.broadcasts.join_frames
 
 
@@ -56,7 +63,9 @@ class HeardBroadcast:
 
 
 class RoundIngest:
-    def __init__(self, room: Room) -> None:
+    def __init__(self, room: Room, kit_key: bytes = TEST_KIT_KEY) -> None:
+        self._key = bytes(kit_key)
+        self._fresh = Freshness()
         self._names = {node.serial.upper(): node.name for node in room.transceivers if node.serial}
         self._index: dict[int, dict[int, str]] = {}   # schedule version -> {node index: node name}
         self._seen: OrderedDict[tuple[str, int, int], float] = OrderedDict()  # (serial, schedule, round) -> host_ts
@@ -83,6 +92,9 @@ class RoundIngest:
         except BroadcastError as e:
             self._rejected[e.reason] += 1
             return []
+        if not tag_ok(data, self._key):
+            self._rejected[AUTH] += 1
+            return []
         if broadcast.frame_type in JOIN_FRAMES:
             self._join(broadcast)
             return []
@@ -95,6 +107,9 @@ class RoundIngest:
         if receiver is None:
             known = broadcast.node_id in self._unknown or len(self._unknown) < UNKNOWN_NODES_KEPT
             self._unknown[broadcast.node_id if known else OTHER_NODES] += 1
+            return []
+        if self._fresh.check(serial, broadcast.round, host_ts) == REPLAY:
+            self._rejected[REPLAY] += 1
             return []
         self._accepted += 1
         tally["accepted"] += 1

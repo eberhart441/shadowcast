@@ -23,6 +23,7 @@ import numpy as np
 
 from .broadcast import (FLAG_WARMING, FORMAT_VERSION, FRAME_ROUND, HEARD_WINDOW_ROUNDS, MAX_NODES, SINCE_MAX,
                         LinkReport, RoundBroadcast, decode_broadcast, encode_broadcast, quantise_score)
+from .round_auth import TEST_KIT_KEY, sign_broadcast
 from .links import LinkId
 from .parser import DEFAULT_HEADER, CSIPacket, CSIParser, parse_stream
 from .room import FALLOFF_SIGMA_M, Person, Room, link_responses, load_room
@@ -349,6 +350,7 @@ def simulate_rounds(
     seed: int = 0,
     realtime: bool = False,
     t0: float = 1_700_000_000.0,
+    kit_key: bytes = TEST_KIT_KEY,
 ) -> Iterator[tuple[float, bytes]]:
     """(host time, round broadcast bytes) from a simulated rig of the room's transceivers, as one gateway hears it.
 
@@ -358,7 +360,8 @@ def simulate_rounds(
     name to the seconds after which it stops broadcasting; it stays in the membership (no scheduler is
     simulated), so the others' heard counters for it fall to 0. ``drop_prob`` is the chance that a node misses
     one round broadcast from another. Seeded: the same arguments give the same bytes. ``realtime`` paces the
-    stream to the wall clock and stamps it with ``time.time()``.
+    stream to the wall clock and stamps it with ``time.time()``. Every broadcast is signed with ``kit_key``
+    (default the published test key, which the host also defaults to).
     """
     nodes = list(room.transceivers)
     n = len(nodes)
@@ -407,8 +410,9 @@ def simulate_rounds(
                 else:
                     reports.append(LinkReport(tx, quantise_score(float(scores[k])), int(rssi[k]), int(counts[k]),
                                               int(since[k])))
-            data = encode_broadcast(RoundBroadcast(FORMAT_VERSION, FRAME_ROUND, round_no % 65536, slot, n + 1, 1,
-                                                   slot, membership, node.serial, bytes(8), tuple(reports)))
+            data = sign_broadcast(encode_broadcast(RoundBroadcast(
+                FORMAT_VERSION, FRAME_ROUND, round_no % 65536, slot, n + 1, 1, slot, membership, node.serial, bytes(8),
+                tuple(reports))), kit_key)
             host_ts = t0 + t + slot * slot_s + float(rng.uniform(0.0, GATEWAY_LATENCY_S))
             if realtime:
                 time.sleep(max(0.0, start + (host_ts - t0) - time.time()))

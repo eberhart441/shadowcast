@@ -1,8 +1,10 @@
-"""Round broadcast format v1: encode and decode the bytes a transceiver sends once per round.
+"""Round broadcast format v2: encode and decode the bytes a transceiver sends once per round.
 
-The format is defined in docs/round-broadcast.md; this module is the host's copy of it, pinned to the golden
-byte fixtures in tests/fixtures/round_broadcast_v1.json, which the firmware must reproduce too. Change the
-three together and bump ``FORMAT_VERSION`` when the layout changes.
+The format is defined in docs/round-broadcast.md; this module is the host's copy of its layout, pinned to the
+golden byte fixtures in tests/fixtures/round_broadcast_v2.json, which the firmware must reproduce too. Change the
+three together and bump ``FORMAT_VERSION`` when the layout or the meaning of a field changes. v2 has v1's layout;
+its authentication tag is real, computed and checked by ``csi/round_auth.py``, so this codec carries the tag
+bytes as they are and does not verify them.
 
     broadcast = decode_broadcast(data)     # RoundBroadcast, or BroadcastError with a .reason
     data = encode_broadcast(broadcast)
@@ -22,7 +24,8 @@ from typing import NamedTuple, Optional
 
 from .score_code import decode_score, encode_score
 
-FORMAT_VERSION = 1
+FORMAT_VERSION = 2               # v1 had the same layout with an unchecked, zero tag
+TAG_OFFSET = 18                  # the authentication tag is header bytes 18..25
 FRAME_ROUND = 1                  # a round broadcast carrying link reports
 FRAME_JOIN_REQUEST = 2           # a node asking to join the round, in the join slot (header only)
 FRAME_JOIN_GRANT = 3             # the scheduler admitting it, in the join slot (header only)
@@ -52,7 +55,7 @@ DECODE_REASONS = ("short", "version", "frame_type", "length", "membership")   # 
 
 
 class BroadcastError(ValueError):
-    """Bytes that are not a v1 round broadcast. ``reason`` names why, for the rejection counters:
+    """Bytes that are not a v2 round broadcast. ``reason`` names why, for the rejection counters:
     short, version, frame_type, length or membership."""
 
     def __init__(self, reason: str, message: str) -> None:
@@ -108,7 +111,7 @@ class RoundBroadcast(NamedTuple):
     node_index: int              # the sender's index in the membership bitmap, 0..31
     membership: int              # u32 bitmap: bit i set when node index i is a member of the round
     node_id: str                 # the sender's board serial (base MAC), "AA:BB:CC:DD:EE:FF"
-    tag: bytes                   # 8-byte authentication tag; zeros until authentication is defined
+    tag: bytes                   # 8-byte authentication tag (csi/round_auth.py)
     reports: tuple[LinkReport, ...]
 
     @property

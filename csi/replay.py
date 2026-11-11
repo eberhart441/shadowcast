@@ -27,6 +27,7 @@ from .links import LinkId, calibrate_links_report
 from .parser import CSIPacket
 from .recording import META_NAME, Session, load_session
 from .room import Room
+from .round_auth import TEST_KIT_KEY
 from .round_recording import RecordingFormatError, load_rounds
 from .server import DEFAULT_HOST, FRAME_INTERVAL_S, LOG_FORMAT, REPLAY_OFF, DashboardServer, FrameServer
 from .simulate import DEFAULT_MAC
@@ -144,12 +145,14 @@ class ReplayServer(FrameServer):
 
 def rounds_dashboard(path: Pathlike, *, speed: float = 1.0, room: Optional[Room] = None, host: str = DEFAULT_HOST,
                      port: int = 0, log: Optional[Pathlike] = None, frame_interval_s: float = FRAME_INTERVAL_S,
-                     web_index: Union[Path, str, None] = None) -> DashboardServer:
+                     web_index: Union[Path, str, None] = None, kit_key: bytes = TEST_KIT_KEY) -> DashboardServer:
     """A DashboardServer that replays a round recording through the live transceiver pipeline, not yet started.
 
     Each recorded source is fed as itself, its round broadcasts at their recorded host times, the gaps divided by
     ``speed`` (math.inf: as fast as possible). Every link is judged by its own adaptive baseline, as live. The room
-    is the one recorded with the run unless ``room`` is given. Read-only, like every replay.
+    is the one recorded with the run unless ``room`` is given. Read-only, like every replay. The broadcasts are
+    verified again, with ``kit_key``: the key of the kit that was recorded (the default, the published test key,
+    fits a simulated run).
     """
     speed = validate_speed(speed)
     try:
@@ -164,7 +167,7 @@ def rounds_dashboard(path: Pathlike, *, speed: float = 1.0, room: Optional[Room]
     return DashboardServer(
         room or recording.room, recording.streams(speed), host=host, port=port, log=log,
         frame_interval_s=frame_interval_s, replay=True, mode="auto", web_index=web_index, notes=notes,
-        log_meta={"source": f"replay-rounds {path}", "speed": speed, "thresholds_source": "none (auto mode)"})
+        kit_key=kit_key, log_meta={"source": f"replay-rounds {path}", "speed": speed, "thresholds_source": "none (auto mode)"})
 
 
 # ---------------------------------------------------------------- recorded sessions

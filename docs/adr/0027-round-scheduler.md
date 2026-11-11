@@ -3,7 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-11-11
 - **Recorded in:** eberhart441/shadowcast issue #14 (spec #2), branch `ticket/14-scheduler`
-- **Related:** [0022](0022-host-time-round-broadcast-seam.md), [0026](0026-one-node-image-runtime-settings-gateway-records.md) (its fixed round and its `index`/`nodes` settings are superseded here), report 07 §2 (`docs/research/scaling-redo/07-network-architecture.md`)
+- **Related:** [0022](0022-host-time-round-broadcast-seam.md), [0028](0028-hmac-sha256-tag-and-round-number-freshness.md) (its freshness rule shapes the round numbers), [0026](0026-one-node-image-runtime-settings-gateway-records.md) (its fixed round and its `index`/`nodes` settings are superseded here), report 07 §2 (`docs/research/scaling-redo/07-network-architecture.md`)
 
 ## Context
 
@@ -99,7 +99,8 @@ round.
 - Bring-up of many nodes at once goes through one join slot per two rounds, slotted-ALOHA style: 30 nodes switched
   on within half a second share one schedule after about 12 s at 20 Hz in the simulation. A single node joins a
   running round in about 6 rounds (worst of 10 in the simulation; it first listens up to 7 rounds or until it hears
-  the round).
+  the round). A node power-cycled within 2 s of its last frame starts a new round count, which every receiver takes
+  as a replay until 2 s after that last frame (ADR-0028), so it joins only then.
 - Every join or drop bumps the schedule version, so the host relearns indices per version (unplaced reports for
   about one round; a grant tells it the joiner's index at once). Two separate schedules can share a version number
   (1 in 256); the host's index map could then mix them until they merge. A tag (#16) does not change this.
@@ -112,7 +113,8 @@ round.
 
 ## Evidence
 
-- PC tests, `firmware/core/tests/test_round_scheduler.c`, over a simulated radio (per-node clocks at ±20 ppm, 150 to
+- PC tests, `firmware/core/tests/test_round_scheduler.c`, over a simulated radio whose receivers apply #16's
+  freshness rule (`rb_auth_fresh`) as the node does (per-node clocks at ±20 ppm, 150 to
   250 µs send latency, airtime, half-duplex, collisions, cut links): lone node founds; two nodes settle; a node
   joins a running round of 5 in ≤ 6 rounds (worst of 10) with no member leaving; a dead node is dropped after 3 and
   before 5 rounds; scheduler failover within 8 rounds; unplug and replug restarts nobody and the reports resume;

@@ -46,9 +46,24 @@ The part of a round in which one node, and only that node, transmits its round b
 _Avoid_: turn, window (reserved for the score window)
 
 **Round broadcast**:
-The ESP-NOW broadcast a transceiver sends in its slot: a round header (version, round number, slot, membership, the sender's board serial, an authentication tag) and one link report per other member. The join frames of the join slot share its header. It is both the frame the others measure CSI on and the data for the host. Format version 1 is defined in [`docs/round-broadcast.md`](docs/round-broadcast.md).
+The ESP-NOW broadcast a transceiver sends in its slot: a round header (version, round number, slot, membership, the sender's board serial, an authentication tag) and one link report per other member. The join frames of the join slot share its header. It is both the frame the others measure CSI on and the data for the host. Format version 2 is defined in [`docs/round-broadcast.md`](docs/round-broadcast.md).
 _Avoid_: packet (that is a parsed CSI_DATA line), frame (that is the dashboard's event)
 _See_: `csi/broadcast.py`, [ADR-0022](docs/adr/0022-host-time-round-broadcast-seam.md)
+
+**Authentication tag**:
+The 8 bytes at offset 18 of a round broadcast: the first 8 bytes of HMAC-SHA256 under the kit key, over the whole round broadcast with the tag zeroed. A round broadcast whose tag does not verify is rejected as `auth` and never used, on the host or on a node.
+_Avoid_: signature (it is a MAC, not a public-key signature), checksum, CRC
+_See_: `csi/round_auth.py`, `firmware/core/round_auth.h`, [ADR-0028](docs/adr/0028-hmac-sha256-tag-and-round-number-freshness.md)
+
+**Kit key**:
+The 16-byte secret shared by every node of a kit and the dashboard host, that authentication tags are made with. Made once by `scripts/node.py keygen` (into `data/kit.key`), given to each node with `scripts/node.py PORT key`, and named by its 8-hex-digit check value, never shown itself. The published test kit key (`00 01 .. 0f`) is for the fixtures and the simulator only.
+_Avoid_: password, secret (alone)
+_See_: `csi/round_auth.py` (`load_kit_key`, `kit_key_check`), `firmware/node/main/node_auth.h`
+
+**Replay**:
+A round broadcast with a valid tag whose round number is stale for its sender: not 1 to 16 + 1 per millisecond ahead of the last fresh one. It is rejected as `replay` and not used. A sender silent for more than 2 s is taken at any round number again.
+_Avoid_: duplicate (that is a second gateway's copy, within 2 s)
+_See_: `csi/round_auth.py` (`Freshness`), `firmware/core/round_auth.h` (`rb_auth_fresh`)
 
 **Link report**:
 The 4 bytes a receiving node sends about one of its links in its round broadcast: the quantised score, the RSSI, how many round broadcasts it heard from the transmitter in the last 15 rounds and how many rounds since the last one, flags (baseline warming, possible move, raw mode) and the transmitter's slot lateness. A heard count of 0 makes the link NO_SIGNAL.

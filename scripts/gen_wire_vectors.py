@@ -1,14 +1,14 @@
 #!/usr/bin/env python
 """Write the node-core C tests' wire-format vectors from the golden JSON fixtures.
 
-    gen_wire_vectors.py            # rewrite firmware/core/tests/vectors/{round_broadcast,gateway_record}.txt
+    gen_wire_vectors.py            # rewrite firmware/core/tests/vectors/{round_broadcast,round_auth,gateway_record}.txt
 
 The golden bytes live in one place, the JSON fixtures under tests/fixtures/ (hand-written from the byte layout).
 C has no JSON reader, so this script flattens them into one line per case for firmware/core/tests, and
 tests/test_wire_vectors.py fails when a vector file no longer matches its fixture. Rerun this after changing a
 fixture, then run firmware/core/test.sh.
 
-round_broadcast.txt (fixture tests/fixtures/round_broadcast_v1.json, format docs/round-broadcast.md):
+round_broadcast.txt (fixture tests/fixtures/round_broadcast_v2.json, format docs/round-broadcast.md):
 
     valid <name> <hex> <version> <frame_type> <round> <slot> <slots> <schedule> <index> <membership>
           <node_id hex> <tag hex> <n_reports> then per report: <transmitter_index> <score> <rssi> <heard> <since> <flags>
@@ -16,6 +16,13 @@ round_broadcast.txt (fixture tests/fixtures/round_broadcast_v1.json, format docs
 
 The rssi of a report is the signed byte; -128 is "none" (null in the fixture). <flags> is the whole flags byte:
 the fixture's flags (bits 0-2) plus its lateness code (default 0) in bits 3-7.
+
+round_auth.txt (the same fixture: its key, valid, forged and freshness cases; docs/round-broadcast.md "Authentication"):
+
+    key <kit key hex> <key check hex>
+    signed <name> <hex>                     verifies under the key; signing it with its tag zeroed gives it back
+    forged <name> <hex>                     decodes, but its tag does not verify
+    fresh|replay <t_us> <node_id hex> <round>   one step of the freshness sequence, in order
 
 gateway_record.txt (fixture tests/fixtures/gateway_record_v1.json, format docs/gateway-record.md):
 
@@ -38,8 +45,8 @@ RSSI_NONE = -128
 
 
 def round_broadcast_lines(fixture: dict) -> list[str]:
-    lines = ["# Round broadcast v1 vectors, written by scripts/gen_wire_vectors.py from",
-             "# tests/fixtures/round_broadcast_v1.json. Do not edit by hand; the format is in the script's docstring."]
+    lines = ["# Round broadcast v2 vectors, written by scripts/gen_wire_vectors.py from",
+             "# tests/fixtures/round_broadcast_v2.json. Do not edit by hand; the format is in the script's docstring."]
     for case in fixture["valid"]:
         b = case["broadcast"]
         fields = ["valid", case["name"], case["hex"], b["version"], b["frame_type"], b["round"], b["slot"],
@@ -51,6 +58,17 @@ def round_broadcast_lines(fixture: dict) -> list[str]:
         lines.append(" ".join(str(f) for f in fields))
     for case in fixture["invalid"]:
         lines.append(f"invalid {case['name']} {case['hex']} {case['reason']}")
+    return lines
+
+
+def round_auth_lines(fixture: dict) -> list[str]:
+    lines = ["# Round broadcast authentication vectors, written by scripts/gen_wire_vectors.py from",
+             "# tests/fixtures/round_broadcast_v2.json. Do not edit by hand; the format is in the script's docstring.",
+             f"key {fixture['key']} {fixture['key_check']}"]
+    lines += [f"signed {case['name']} {case['hex']}" for case in fixture["valid"]]
+    lines += [f"forged {case['name']} {case['hex']}" for case in fixture["forged"]]
+    lines += [f"{step['expect']} {step['t_us']} {step['node_id'].replace(':', '').lower()} {step['round']}"
+              for step in fixture["freshness"]]
     return lines
 
 
@@ -76,7 +94,8 @@ def gateway_record_lines(fixture: dict) -> list[str]:
 
 
 TARGETS = {
-    "round_broadcast.txt": ("round_broadcast_v1.json", round_broadcast_lines),
+    "round_broadcast.txt": ("round_broadcast_v2.json", round_broadcast_lines),
+    "round_auth.txt": ("round_broadcast_v2.json", round_auth_lines),
     "gateway_record.txt": ("gateway_record_v1.json", gateway_record_lines),
 }
 

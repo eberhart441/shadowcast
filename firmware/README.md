@@ -21,6 +21,8 @@ cd build && esptool --chip esp32c5 -p <PORT> -b 460800 write-flash @flash_args
 # a transceiver needs no settings; to change the kit-wide ones, give every node the same values:
 python scripts/node.py <PORT> set channel=6 round_hz=40 guard_us=250
 python scripts/node.py <PORT> set role=gateway channel=6        # the board on the dashboard host
+python scripts/node.py keygen                                     # once per kit: data/kit.key
+python scripts/node.py <PORT> key data/kit.key                    # every transceiver
 python scripts/dashboard.py --node-gateway <GATEWAY PORT> --room config/room_tr2.json
 ```
 
@@ -28,7 +30,9 @@ python scripts/dashboard.py --node-gateway <GATEWAY PORT> --room config/room_tr2
   joins the round it hears (or founds one alone), and sends its round broadcast
   ([`docs/round-broadcast.md`](../docs/round-broadcast.md)) in its slot as an unacknowledged ESP-NOW broadcast at
   HT20, MCS0. It measures CSI on the others' round broadcasts (HT20 only), scores each link with
-  `core/motion_score` and carries the link reports. It needs no per-board setting.
+  `core/motion_score` and carries the link reports. Every frame it sends is signed with the kit key, and a heard
+  one whose tag or round number fails is ignored (`main/node_auth.c`, mbedTLS on the SHA accelerator). It needs
+  no per-board setting, only the kit key: without it, it only listens.
 - **Gateway:** listens only and writes every frame it hears to USB as a heard record with its receive time.
 - **USB carries only gateway records** ([`docs/gateway-record.md`](../docs/gateway-record.md)): status once a
   second, text (log lines and command replies), heard records on a gateway. Read a node with
@@ -131,7 +135,8 @@ The node image's other core modules, each with a test in `core/tests/`:
 
 | Module | What it does |
 |---|---|
-| `round_broadcast` | Round broadcast v1 encoder and decoder. Tests replay `tests/vectors/round_broadcast.txt`, flattened from the host's golden fixture `tests/fixtures/round_broadcast_v1.json` by `scripts/gen_wire_vectors.py`. |
+| `round_broadcast` | Round broadcast v2 encoder and decoder. Tests replay `tests/vectors/round_broadcast.txt`, flattened from the host's golden fixture `tests/fixtures/round_broadcast_v2.json` by `scripts/gen_wire_vectors.py`. |
+| `round_auth` | The authentication tag (HMAC-SHA256 from a function the platform supplies), the freshness rule against replay, the key check value. Tests replay `tests/vectors/round_auth.txt` (same fixture) with a reference HMAC-SHA256 (`tests/hmac_sha256.c`, checked against RFC 4231). |
 | `gateway_record` | Gateway record v1 encoder (and decoder, for the tests). Same, from `tests/fixtures/gateway_record_v1.json`. |
 | `espnow_frame` | The ESP-NOW body (the round broadcast) inside the frame the CSI callback hands over. |
 | `csi_layout` | One amplitude per kept subcarrier, nulls learned as `csi/parser.py` learns an unknown layout. |

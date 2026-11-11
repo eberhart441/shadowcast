@@ -39,16 +39,21 @@ One board at a time, so the port is never a guess:
    `python -m serial.tools.list_ports -v` (the `SER=` value is the board serial). Neither opens the port.
 2. Flash it from inside the build directory:
    `esptool --chip esp32c5 -p <PORT> -b 460800 write-flash @flash_args`.
-3. Set it. Both transceivers get the same kit-wide values (channel, nodes, round_hz) and different indices:
+3. Set it. Both transceivers get the same kit-wide values (channel, round_hz); the round scheduler (#14) gives
+   out the node indices, so there is no index to set:
 
    | Board | Command |
    |---|---|
-   | transceiver A | `python scripts/node.py <PORT> set role=transceiver index=0 nodes=2 channel=6 round_hz=40` |
-   | transceiver B | `python scripts/node.py <PORT> set role=transceiver index=1 nodes=2 channel=6 round_hz=40` |
+   | transceiver A | `python scripts/node.py <PORT> set role=transceiver channel=6 round_hz=40` |
+   | transceiver B | `python scripts/node.py <PORT> set role=transceiver channel=6 round_hz=40` |
    | gateway | `python scripts/node.py <PORT> set role=gateway channel=6` |
 
-   Expect `ok role=... (saved; restarting)`. Then `python scripts/node.py <PORT> show` must print the board's serial
-   and the settings, without `configured=no`.
+   Expect `ok role=... (saved; restarting)`.
+   Then give both transceivers the kit key (format v2, [`docs/round-broadcast.md`](../round-broadcast.md)
+   "Kit key"): once per kit `python scripts/node.py keygen` (writes `data/kit.key`), then for each transceiver
+   `python scripts/node.py <PORT> key data/kit.key`. Expect `ok key check=<8 hex> (saved; restarting)`; both must
+   show the same check. The gateway needs no key. Then `python scripts/node.py <PORT> show` must print the board's
+   serial and the settings, without `configured=no`.
 4. Write the transceivers' serials into `config/room_tr2.json` (`n1` and `n2`; which board is which does not
    matter, the dashboard learns each node's index from its own round broadcasts). Leave their positions as the
    real ones, in metres.
@@ -62,7 +67,7 @@ second a status line prints:
 
 - `sent` grows by about 40 per second (one round broadcast per round at 40 Hz);
 - `heard` grows by about 40 per second once B is powered (B's round broadcasts);
-- `rejected` stays near 0 (ESP-NOW frames that are not v1 round broadcasts, such as an old hackathon sender switched to HT20, or a board with another `nodes` setting);
+- `rejected` stays near 0 (ESP-NOW frames that are not v2 round broadcasts, such as an old hackathon sender switched to HT20, a board with another kit key);
 - `csi_skipped` grows for the first 20 frames (the CSI layout warm-up), then stays put. If it keeps growing, the
   CSI layout is not one the node can score: note the `W`/`E` lines and stop here;
 - `queue_full`, `send_errors` stay at 0.

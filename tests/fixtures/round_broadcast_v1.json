@@ -70,9 +70,6 @@
     {"name": "unknown_frame_type", "hex": "017fffff0509ff052000000010bda3cc85bc0102030405060708", "reason": "frame_type"},
     {"name": "one_report_missing", "hex": "01013412010407010700000002000000000200000000000000008acef000", "reason": "length"},
     {"name": "one_report_too_many", "hex": "0101ffff0509ff052000000010bda3cc85bc010203040506070880cef000", "reason": "length"},
-    {"name": "sender_not_a_member", "hex": "0101ffff0509ff050100000010bda3cc85bc0102030405060708", "reason": "membership"},
-    {"name": "join_request_with_a_report", "hex": "01021000030407030700000002000000000900000000000000008acef000", "reason": "length"},
-    {"name": "join_request_index_out_of_range", "hex": "0102100003040720070000000200000000090000000000000000", "reason": "membership"},
-    {"name": "join_grant_index_not_a_member", "hex": "0103110003040803070000000200000000090000000000000000", "reason": "membership"}
+    {"name": "sender_not_a_member", "hex": "0101ffff0509ff050100000010bda3cc85bc0102030405060708", "reason": "membership"}
   ]
 }
