@@ -7,7 +7,9 @@ link, ``NodeLinkId(receiving node, transmitting node)``:
 
     ingest = RoundIngest(room)
     for link_id, report in ingest.place(data): ...
-    ingest.counts()     # {"accepted", "rejected": {reason: n}, "unknown_nodes": {serial: n}, "unplaced_reports"}
+    ingest.last_node    # the sender of the round broadcast just placed, None if it was rejected or unknown
+    ingest.counts()     # {"accepted"
+, "rejected": {reason: n}, "unknown_nodes": {serial: n}, "unplaced_reports"}
 
 A link report names its transmitter only by node index. The index of a node is learned from that node's own
 round broadcasts, per schedule version, so a report about a node the host has not heard from yet (this schedule
@@ -43,9 +45,11 @@ class RoundIngest:
         self._rejected: Counter[str] = Counter()
         self._unknown: Counter[str] = Counter()
         self._unplaced = 0
+        self.last_node: Optional[str] = None   # sender of the round broadcast just placed (None: rejected or unknown)
 
     def place(self, data: bytes) -> list[tuple[NodeLinkId, LinkReport]]:
         """The link reports of one round broadcast, each on its link. Rejected bytes and unknown senders give []."""
+        self.last_node = None
         try:
             broadcast = decode_broadcast(data)
         except BroadcastError as e:
@@ -56,6 +60,7 @@ class RoundIngest:
             self._unknown[broadcast.node_id] += 1
             return []
         self._accepted += 1
+        self.last_node = receiver
         indices = self._index.setdefault(broadcast.schedule_version, {})
         indices[broadcast.node_index] = receiver
         while len(self._index) > SCHEDULES_KEPT:

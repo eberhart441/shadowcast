@@ -31,6 +31,7 @@ from __future__ import annotations
 import time
 from typing import Mapping, Optional
 
+from .coverage import coverage, node_health
 from .heatmap import Heatmap
 from .links import LinkMonitor, NO_SIGNAL, UNCALIBRATED, WARMUP, room_link_ids
 from .parser import CSIPacket
@@ -54,6 +55,7 @@ class DashboardState:
         self._senders = {tx.mac: tx.name for tx in room.senders}
         self._receivers = {rx.name for rx in room.receivers}
         self._last_host: Optional[float] = None
+        self._heard_at: dict[str, float] = {}   # transceiver name -> host time its last round broadcast arrived
 
     def push(self, receiver: str, pkt: CSIPacket) -> None:
         self._monitor.push(receiver, pkt)
@@ -63,6 +65,8 @@ class DashboardState:
         """One round broadcast heard at ``host_ts``: its link reports drive their links. Bytes that cannot be
         used are counted in ``status.broadcasts``, never raised."""
         self._monitor.push_reports(host_ts, self._ingest.place(data))
+        if self._ingest.last_node is not None:
+            self._heard_at[self._ingest.last_node] = max(host_ts, self._heard_at.get(self._ingest.last_node, host_ts))
         self._advance(host_ts)
 
     def _advance(self, host_ts: float) -> None:
@@ -111,6 +115,7 @@ class DashboardState:
         self._heat.advance(now, rows)
         self._track.update(now, self._heat.target)
         links = [self._link_payload(row) for row in rows]
+        health = node_health(self._room.transceivers, rows, self._heard_at, now)
         return {
             "room": {"width_m": self._room.width_m, "depth_m": self._room.depth_m},
             "nodes": self._nodes(),
@@ -118,7 +123,11 @@ class DashboardState:
             "heatmap": self._heatmap_payload(),
             "track": self._track_payload(now),
             "status": self._status_payload(now, rows),
+            "node_health": [{**node, "last_heard_s": _round(node["last_heard_s"]),
+                             "link_rate_hz": _round(node["link_rate_hz"])} for node in health],
+            "coverage": coverage(health, rows, self._ingest.counts()["unknown_nodes"]),
         }
+
 
     def _link_payload(self, row: Mapping) -> dict:
         score, threshold = row["score"], row["threshold"]
