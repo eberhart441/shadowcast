@@ -32,6 +32,36 @@
           {"transmitter_index": 0, "score": 255, "rssi": 5, "heard": 1, "since": 14, "flags": 6}
         ]
       }
+    },
+    {
+      "name": "slot_lateness_in_reports",
+      "hex": "01013412010407010700000002000000000200000000000000008acef05000800ff9",
+      "broadcast": {
+        "version": 1, "frame_type": 1, "round": 4660, "slot": 1, "slots_per_round": 4, "schedule_version": 7,
+        "node_index": 1, "membership": 7, "node_id": "02:00:00:00:00:02", "tag": "0000000000000000",
+        "reports": [
+          {"transmitter_index": 0, "score": 138, "rssi": -50, "heard": 15, "since": 0, "flags": 0, "lateness": 10},
+          {"transmitter_index": 2, "score": 0, "rssi": null, "heard": 0, "since": 15, "flags": 1, "lateness": 31}
+        ]
+      }
+    },
+    {
+      "name": "join_request",
+      "hex": "0102100003040703070000000200000000090000000000000000",
+      "broadcast": {
+        "version": 1, "frame_type": 2, "round": 16, "slot": 3, "slots_per_round": 4, "schedule_version": 7,
+        "node_index": 3, "membership": 7, "node_id": "02:00:00:00:00:09", "tag": "0000000000000000",
+        "reports": []
+      }
+    },
+    {
+      "name": "join_grant",
+      "hex": "01031100030408030f0000000200000000090000000000000000",
+      "broadcast": {
+        "version": 1, "frame_type": 3, "round": 17, "slot": 3, "slots_per_round": 4, "schedule_version": 8,
+        "node_index": 3, "membership": 15, "node_id": "02:00:00:00:00:09", "tag": "0000000000000000",
+        "reports": []
+      }
     }
   ],
   "invalid": [

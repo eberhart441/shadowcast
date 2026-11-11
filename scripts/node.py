@@ -1,10 +1,9 @@
 #!/usr/bin/env python
 """Set and read a node's runtime settings over its USB port, and watch its status (firmware/node).
 
-    node.py PORT show                                    # serial, role, channel, index, nodes, round rate
-    node.py PORT set index=1                             # a transceiver in slot 1 (the node saves and restarts)
-    node.py PORT set role=gateway                        # the board on the dashboard host's USB
-    node.py PORT set channel=11 nodes=2 round_hz=40      # kit-wide values: give every node the same ones
+    node.py PORT show                                    # serial, role, channel, round rate, slot guard
+    node.py PORT set role=gateway                        # the board on the dashboard host's USB (saves, restarts)
+    node.py PORT set channel=11 round_hz=40 guard_us=250 # kit-wide values: give every node the same ones
     node.py PORT restart
     node.py PORT status [--seconds 5]                    # status counters and log lines, as the node sends them
     node.py keygen [data/kit.key]                        # make the kit key, once per kit (no port)
@@ -12,8 +11,9 @@
     node.py PORT key                                     # the node's kit key check value, or "none"
 
 Every board runs the same image; what it does is these settings, kept in the node's flash. Settings: role
-(transceiver or gateway), channel (2.4 GHz, 1 to 13), index (the node's slot, below nodes), nodes (members of the
-fixed round, 2 to 32), round_hz (rounds per second). A transceiver that was never set only listens.
+(transceiver or gateway), channel (2.4 GHz, 1 to 13), round_hz (rounds per second), guard_us (the slot guard, 50 to
+5000 us). A transceiver needs none of them: with the defaults it joins the round on its own (the round scheduler
+gives it a node index and a slot; there is no index or member count to set).
 
 The kit key authenticates round broadcasts (docs/round-broadcast.md "Kit key"): every node of a kit and the dashboard
 host share it. keygen writes it to a file (default data/kit.key, which is not in git) and never overwrites one. key
@@ -119,7 +119,7 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("port", help="the node's serial port (python scripts/ports.py lists them by board serial)")
     ap.add_argument("command", choices=COMMANDS)
     ap.add_argument("settings", nargs="*", metavar="key=value",
-                    help="for set: role, channel, index, nodes, round_hz; for key: the kit key file")
+                    help="for set: role, channel, round_hz, guard_us; for key: the kit key file")
     ap.add_argument("--seconds", type=float, default=5.0, help="for status: how long to listen (default 5)")
     return ap
 

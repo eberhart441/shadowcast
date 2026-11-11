@@ -9,7 +9,8 @@ from pathlib import Path
 
 import pytest
 
-from csi.broadcast import (FORMAT_VERSION, BroadcastError, LinkReport, RoundBroadcast, decode_broadcast,
+from csi.broadcast import (FORMAT_VERSION, FRAME_JOIN_GRANT, FRAME_JOIN_REQUEST, BroadcastError, LinkReport,
+                           RoundBroadcast, decode_broadcast,
                            dequantise_score, encode_broadcast, quantise_score)
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -28,13 +29,19 @@ def as_fields(broadcast: RoundBroadcast) -> dict:
         "schedule_version": broadcast.schedule_version, "node_index": broadcast.node_index,
         "membership": broadcast.membership, "node_id": broadcast.node_id, "tag": broadcast.tag.hex(),
         "reports": [{"transmitter_index": r.transmitter_index, "score": r.score_q, "rssi": r.rssi,
-                     "heard": r.heard, "since": r.since, "flags": r.flags} for r in broadcast.reports],
+                     "heard": r.heard, "since": r.since, "flags": r.flags, "lateness": r.lateness}
+                    for r in broadcast.reports],
     }
 
 
+def with_defaults(fields: dict) -> dict:
+    """A fixture's broadcast with the optional report keys filled in: lateness 0 (none measured)."""
+    return {**fields, "reports": [{"lateness": 0, **r} for r in fields["reports"]]}
+
+
 def from_fields(fields: dict) -> RoundBroadcast:
-    reports = tuple(LinkReport(r["transmitter_index"], r["score"], r["rssi"], r["heard"], r["since"], r["flags"])
-                    for r in fields["reports"])
+    reports = tuple(LinkReport(r["transmitter_index"], r["score"], r["rssi"], r["heard"], r["since"], r["flags"],
+                               r.get("lateness", 0)) for r in fields["reports"])
     return RoundBroadcast(fields["version"], fields["frame_type"], fields["round"], fields["slot"],
                           fields["slots_per_round"], fields["schedule_version"], fields["node_index"],
                           fields["membership"], fields["node_id"], bytes.fromhex(fields["tag"]), reports)
@@ -63,7 +70,7 @@ def test_a_v1_broadcast_is_rejected_as_an_old_version(name):
 @pytest.mark.parametrize("name", sorted(VALID))
 def test_golden_bytes_decode_to_their_fields(name):
     case = VALID[name]
-    assert as_fields(decode_broadcast(bytes.fromhex(case["hex"]))) == case["broadcast"]
+    assert as_fields(decode_broadcast(bytes.fromhex(case["hex"]))) == with_defaults(case["broadcast"])
 
 
 @pytest.mark.parametrize("name", sorted(VALID))
@@ -120,3 +127,26 @@ def test_quantisation_keeps_the_order_of_scores_and_saturates_at_the_ends():
     assert quantise_score(1.0) < quantise_score(2.0) < quantise_score(4.0)
     assert quantise_score(0.0) == 1          # a real but tiny score is not "no score"
     assert quantise_score(1e12) == 255
+
+
+def test_slot_lateness_reads_in_microseconds():
+    early, late = decode_broadcast(bytes.fromhex(VALID["slot_lateness_in_reports"]["hex"])).reports
+    assert early.slot_lateness_us == 304    # code 10: 288 to 320 us, the middle
+    assert late.slot_lateness_us == 960     # code 31: 960 us or more
+    none, = decode_broadcast(bytes.fromhex(VALID["highest_and_lowest_index"]["hex"])).reports
+    assert none.slot_lateness_us is None
+
+
+def test_join_frames_are_header_only():
+    request = decode_broadcast(bytes.fromhex(VALID["join_request"]["hex"]))
+    grant = decode_broadcast(bytes.fromhex(VALID["join_grant"]["hex"]))
+    assert (request.frame_type, request.is_join_request, request.is_join_grant) == (FRAME_JOIN_REQUEST, True, False)
+    assert (grant.frame_type, grant.is_join_request, grant.is_join_grant) == (FRAME_JOIN_GRANT, False, True)
+    assert request.reports == grant.reports == ()
+
+
+def test_the_encoder_refuses_a_lateness_code_over_31():
+    broadcast = from_fields(VALID["slot_lateness_in_reports"]["broadcast"])
+    report = broadcast.reports[0]._replace(lateness=32)
+    with pytest.raises(ValueError):
+        encode_broadcast(broadcast._replace(reports=(report,) + broadcast.reports[1:]))

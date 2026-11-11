@@ -18,19 +18,21 @@ cd firmware/node
 idf.py -B build set-target esp32c5
 idf.py -B build build                                   # ESP-IDF 6.0; CI builds the same in espressif/idf:v6.0
 cd build && esptool --chip esp32c5 -p <PORT> -b 460800 write-flash @flash_args
-python scripts/node.py <PORT> set role=transceiver index=0 nodes=2 channel=6 round_hz=40
+# a transceiver needs no settings; to change the kit-wide ones, give every node the same values:
+python scripts/node.py <PORT> set channel=6 round_hz=40 guard_us=250
 python scripts/node.py <PORT> set role=gateway channel=6        # the board on the dashboard host
 python scripts/node.py keygen                                     # once per kit: data/kit.key
 python scripts/node.py <PORT> key data/kit.key                    # every transceiver
 python scripts/dashboard.py --node-gateway <GATEWAY PORT> --room config/room_tr2.json
 ```
 
-- **Transceiver:** sends its round broadcast ([`docs/round-broadcast.md`](../docs/round-broadcast.md)) in its slot
-  of the fixed round, as an unacknowledged ESP-NOW broadcast at HT20, MCS0. It measures CSI on the others' round
-  broadcasts (HT20 only), scores each link with `core/motion_score` and carries the link reports. Every round
-  broadcast is signed with the kit key, and a heard one whose tag or round number fails is ignored
-  (`main/node_auth.c`, mbedTLS on the SHA accelerator). A transceiver that was never set, or has no kit key, only
-  listens.
+- **Transceiver:** the round scheduler (`core/round_scheduler`) gives it a node index and a slot: it listens,
+  joins the round it hears (or founds one alone), and sends its round broadcast
+  ([`docs/round-broadcast.md`](../docs/round-broadcast.md)) in its slot as an unacknowledged ESP-NOW broadcast at
+  HT20, MCS0. It measures CSI on the others' round broadcasts (HT20 only), scores each link with
+  `core/motion_score` and carries the link reports. Every frame it sends is signed with the kit key, and a heard
+  one whose tag or round number fails is ignored (`main/node_auth.c`, mbedTLS on the SHA accelerator). It needs
+  no per-board setting, only the kit key: without it, it only listens.
 - **Gateway:** listens only and writes every frame it hears to USB as a heard record with its receive time.
 - **USB carries only gateway records** ([`docs/gateway-record.md`](../docs/gateway-record.md)): status once a
   second, text (log lines and command replies), heard records on a gateway. Read a node with
@@ -39,7 +41,8 @@ python scripts/dashboard.py --node-gateway <GATEWAY PORT> --room config/room_tr2
 - **Gain** is the hackathon receiver's (record 100 frames, then force their median gain) until ticket #15.
 - The logic that does not need ESP-IDF is in `core/` and tested on the PC; `node/main/node_main.c` is only the glue
   (Wi-Fi, ESP-NOW, CSI callback, timer, NVS, USB).
-- The two-board rig check is [`docs/rig-checks/two-nodes.md`](../docs/rig-checks/two-nodes.md).
+- The two-board rig check is [`docs/rig-checks/two-nodes.md`](../docs/rig-checks/two-nodes.md); the round
+  scheduler's (unplug and replug with 3+ boards) is [`docs/rig-checks/round-scheduler.md`](../docs/rig-checks/round-scheduler.md).
 
 ## Our edits to the stock examples
 
@@ -138,7 +141,7 @@ The node image's other core modules, each with a test in `core/tests/`:
 | `espnow_frame` | The ESP-NOW body (the round broadcast) inside the frame the CSI callback hands over. |
 | `csi_layout` | One amplitude per kept subcarrier, nulls learned as `csi/parser.py` learns an unknown layout. |
 | `link_table` | Per-transmitter link state and the link reports (calls `motion_score_get` once per link per round). |
-| `fixed_round` | The fixed round: slot timing from any heard round broadcast. The round scheduler (#14) replaces it. |
+| `round_scheduler` | The round scheduler: join, drop, failover and merge, slot timing from any heard round broadcast, slot lateness ([ADR-0027](../docs/adr/0027-round-scheduler.md)). Tests run up to 30 nodes over a simulated radio. |
 | `node_settings` | The runtime settings and their text commands. |
 
 `tests/test_wire_vectors.py` fails when a flattened vector file no longer matches its JSON fixture: rerun

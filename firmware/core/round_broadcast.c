@@ -48,15 +48,16 @@ rb_status_t rb_decode(const uint8_t *data, size_t len, rb_broadcast_t *out)
     if (data[0] != RB_VERSION) {
         return RB_BAD_VERSION;
     }
-    if (data[1] != RB_FRAME_ROUND) {
+    uint8_t frame = data[1];
+    if (frame != RB_FRAME_ROUND && frame != RB_FRAME_JOIN_REQUEST && frame != RB_FRAME_JOIN_GRANT) {
         return RB_FRAME_TYPE;
     }
     uint8_t index = data[7];
     uint32_t membership = get_u32(data + 8);
-    if (index >= RB_MAX_NODES || !(membership >> index & 1u)) {
+    if (index >= RB_MAX_NODES || (frame != RB_FRAME_JOIN_REQUEST && !(membership >> index & 1u))) {
         return RB_MEMBERSHIP;
     }
-    if (len != rb_size(membership)) {
+    if (len != (frame == RB_FRAME_ROUND ? rb_size(membership) : RB_HEADER_BYTES)) {
         return RB_LENGTH;
     }
     out->version = data[0];
@@ -71,7 +72,7 @@ rb_status_t rb_decode(const uint8_t *data, size_t len, rb_broadcast_t *out)
     memcpy(out->tag, data + RB_TAG_OFFSET, RB_TAG_BYTES);
     const uint8_t *p = data + RB_HEADER_BYTES;
     uint8_t k = 0;
-    for (uint8_t i = 0; i < RB_MAX_NODES; i++) {
+    for (uint8_t i = 0; i < RB_MAX_NODES && frame == RB_FRAME_ROUND; i++) {
         if (!(membership >> i & 1u) || i == index) {
             continue;
         }
@@ -82,6 +83,7 @@ rb_status_t rb_decode(const uint8_t *data, size_t len, rb_broadcast_t *out)
         r->heard = (uint8_t)(p[2] >> 4);
         r->since = (uint8_t)(p[2] & 0x0F);
         r->flags = (uint8_t)(p[3] & RB_FLAGS_KNOWN);
+        r->lateness = (uint8_t)(p[3] >> RB_LATENESS_SHIFT);
         p += RB_REPORT_BYTES;
     }
     out->n_reports = k;
@@ -90,20 +92,26 @@ rb_status_t rb_decode(const uint8_t *data, size_t len, rb_broadcast_t *out)
 
 size_t rb_encode(const rb_broadcast_t *b, uint8_t *out, size_t cap)
 {
-    if (b->node_index >= RB_MAX_NODES || !(b->membership >> b->node_index & 1u)) {
+    bool round = b->frame_type == RB_FRAME_ROUND;
+    if (!round && b->frame_type != RB_FRAME_JOIN_REQUEST && b->frame_type != RB_FRAME_JOIN_GRANT) {
         return 0;
     }
-    size_t n = rb_size(b->membership);
-    if (n > cap || b->n_reports != members(b->membership) - 1) {
+    if (b->node_index >= RB_MAX_NODES
+            || (b->frame_type != RB_FRAME_JOIN_REQUEST && !(b->membership >> b->node_index & 1u))) {
+        return 0;
+    }
+    size_t n = round ? rb_size(b->membership) : RB_HEADER_BYTES;
+    if (n > cap || b->n_reports != (round ? members(b->membership) - 1 : 0)) {
         return 0;
     }
     uint8_t k = 0;
-    for (uint8_t i = 0; i < RB_MAX_NODES; i++) {
+    for (uint8_t i = 0; i < RB_MAX_NODES && round; i++) {
         if (!(b->membership >> i & 1u) || i == b->node_index) {
             continue;
         }
         const rb_report_t *r = &b->reports[k++];
-        if (r->transmitter_index != i || r->heard > RB_COUNT_MAX || r->since > RB_COUNT_MAX) {
+        if (r->transmitter_index != i || r->heard > RB_COUNT_MAX || r->since > RB_COUNT_MAX
+                || r->flags > RB_FLAGS_KNOWN || r->lateness > RB_LATENESS_MAX) {
             return 0;
         }
     }
@@ -123,7 +131,7 @@ size_t rb_encode(const rb_broadcast_t *b, uint8_t *out, size_t cap)
         p[0] = r->score;
         p[1] = (uint8_t)r->rssi;
         p[2] = (uint8_t)(r->heard << 4 | r->since);
-        p[3] = r->flags;
+        p[3] = (uint8_t)(r->flags | r->lateness << RB_LATENESS_SHIFT);
         p += RB_REPORT_BYTES;
     }
     return n;

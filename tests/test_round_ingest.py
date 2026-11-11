@@ -232,3 +232,36 @@ def test_two_simulated_gateways_hearing_overlapping_nodes_give_the_links_of_one(
     assert counts["rejected"]["duplicate"] == 4 * 6 * 20              # n3..n6, heard by both
     assert counts["sources"]["gw1"]["heard"] == counts["sources"]["gw2"]["heard"] == 6 * 6 * 20
     assert two["status"]["receivers"] == {"gw1": "finished", "gw2": "finished"}
+
+
+def join_frame(frame_type, joiner, index, membership, *, schedule=1, round_no=0, key=TEST_KIT_KEY):
+    return sign_broadcast(encode_broadcast(RoundBroadcast(FORMAT_VERSION, frame_type, round_no, 8, 9, schedule, index,
+                                                          membership, SERIAL[joiner], bytes(8), ())), key)
+
+
+def test_join_frames_are_counted_apart_and_never_placed_or_rejected():
+    without_n8 = ALL & ~(1 << 7)
+    state = DashboardState(ROOM, mode="auto")
+    state.push_broadcast(T0, join_frame(2, "n8", 7, without_n8), "gw1")              # n8 asks to join
+    state.push_broadcast(T0 + 0.002, join_frame(2, "n8", 7, without_n8), "gw2")      # a second gateway's copy
+    state.push_broadcast(T0 + 0.05, join_frame(3, "n8", 7, ALL, schedule=2), "gw1")  # the scheduler admits it
+    counts = state.snapshot(T0 + 0.1)["status"]["broadcasts"]
+    assert counts["join_frames"] == {"request": 2, "grant": 1}
+    assert counts["accepted"] == 0 and sum(counts["rejected"].values()) == 0 and counts["heard"] == 3
+    assert broadcast_messages(counts) == []
+
+
+def test_a_join_grant_names_the_joiner_so_reports_about_it_place_before_its_own_broadcast():
+    state = DashboardState(ROOM, mode="auto")
+    state.push_broadcast(T0, join_frame(3, "n8", 7, ALL, schedule=5), "gw1")
+    state.push_broadcast(T0 + 0.01, broadcast("n1", 1, schedule=5), "gw1")
+    payload = state.snapshot(T0 + 0.01)
+    assert payload["status"]["broadcasts"]["unplaced_reports"] == 6       # n2..n7 not heard yet; n8 is named
+    assert links(payload)["n1<-n8"]["rssi"] == -50
+
+
+def test_a_forged_join_frame_is_rejected_as_auth():
+    state = DashboardState(ROOM, mode="auto")
+    state.push_broadcast(T0, join_frame(2, "n8", 7, ALL & ~(1 << 7), key=bytes(range(1, 17))), "gw1")
+    counts = state.snapshot(T0)["status"]["broadcasts"]
+    assert counts["rejected"]["auth"] == 1 and counts["join_frames"] == {"request": 0, "grant": 0}

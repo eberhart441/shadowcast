@@ -53,7 +53,8 @@ static void check_valid(char **tok, int n_tok)
         CHECK(r->rssi == atoi(f[2]), "%s: report %d rssi %d", name, k, r->rssi);
         CHECK(r->heard == atoi(f[3]), "%s: report %d heard %u", name, k, r->heard);
         CHECK(r->since == atoi(f[4]), "%s: report %d since %u", name, k, r->since);
-        CHECK(r->flags == atoi(f[5]), "%s: report %d flags %u", name, k, r->flags);
+        CHECK((r->flags | r->lateness << RB_LATENESS_SHIFT) == atoi(f[5]), "%s: report %d flags %u lateness %u", name,
+              k, r->flags, r->lateness);
     }
     uint8_t out[RB_MAX_BYTES];
     size_t m = rb_encode(&b, out, sizeof out);
@@ -90,6 +91,17 @@ static void check_encoder_refusals(void)
     b.reports[0].transmitter_index = 1;
     b.node_index = 2;
     CHECK(rb_encode(&b, out, sizeof out) == 0, "a sender outside the membership is refused");
+    b.node_index = 0;
+    b.reports[0].lateness = 32;
+    CHECK(rb_encode(&b, out, sizeof out) == 0, "a lateness code over 31 is refused");
+    b.reports[0].lateness = 31;
+    b.frame_type = RB_FRAME_JOIN_REQUEST;
+    CHECK(rb_encode(&b, out, sizeof out) == 0, "a join frame with link reports is refused");
+    b.n_reports = 0;
+    b.node_index = 5;
+    CHECK(rb_encode(&b, out, sizeof out) == RB_HEADER_BYTES, "a join request asks for an index outside the membership");
+    b.frame_type = RB_FRAME_JOIN_GRANT;
+    CHECK(rb_encode(&b, out, sizeof out) == 0, "a join grant must give an index in the membership");
 }
 
 int main(int argc, char **argv)

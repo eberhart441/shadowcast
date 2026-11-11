@@ -66,6 +66,7 @@ uint8_t link_table_close_round(link_table_t *table, uint32_t membership, uint8_t
             r->rssi = l->ever_heard ? l->rssi : RB_RSSI_NONE;
             r->heard = popcount15(l->history);
             r->since = rounds_since(l->history);
+            r->lateness = RB_LATENESS_NONE_CODE;
             if (motion_score_get(&l->score, &score)) {
                 r->score = motion_score_encode(score);
                 r->flags = 0;
