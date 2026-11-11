@@ -54,28 +54,31 @@ A miss costs more than a false alarm, so every knob was set towards MOTION as fa
   needs less agreement, not the same.
 - **The floor stays at two, and three only where three exist.** A fixed three everywhere missed people in sparse parts
   of the 8-node room (Evidence).
-- **No new delay.** Links already wait 0.6 s; the room adds none, and keeps the 1 s hold on the way out.
+- **Almost no new delay.** Links already wait 0.6 s; the room re-judges its points at most once a round (50 ms) and
+  keeps the 1 s hold on the way out.
 - **Accepted cost: one node's view alone does not raise the room.** This is what "one noisy node does not raise the
   room" means geometrically. Where only one node's links pass (next to a corner node of a sparse rig, where its links
   fan out and no other node's link comes within about 0.75 m), a person reads exactly like that node's fault. They are
-  reported once they step into another node's link: in the 8-node room 1.0 to 1.15 s after arriving, against 0.65 s
+  reported once they step into another node's link: in the 8-node room 1.0 to 1.15 s after arriving, against 0.7 s
   elsewhere. We take that because the alternative, letting one node raise the room, makes a single bad board hold the
-  whole room at MOTION, which hides real motion as surely as a miss. In the 30-node layout (nodes 0.75 m apart) no such
-  spot was found (Evidence).
-- **Residual false alarms are accepted, not driven to zero:** about 0.5 an hour at the glitch rate below.
+  whole room at MOTION, which hides real motion as surely as a miss. In the 30-node room (nodes 0.47 m apart) no such
+  spot was found: 0.7 s at every point, corners included (Evidence).
+- **Residual false alarms are accepted, not driven to zero:** about 1.5 an hour at the harsh glitch rate below.
 
 ## Alternatives considered
 
 - **Two independent links at a point, never more** (the same zones, no step to three). Measured at the decision
   (random elevated links in the 30-node room): two chance-elevated links raise the room 23 % of the time, against
-  1.3 % with the rule above, and it sees no position the rule above misses. Rejected.
-- **A fixed three everywhere.** As quiet as the rule above in the 30-node room, but in the 8-node room 62 of 108
-  positions were not seen by three independent links, against 20 with the rule above. Rejected (misses).
+  1.7 % with the rule above, and it sees no position the rule above misses. Rejected.
+- **A fixed three everywhere.** Quieter in the 30-node room (three chance links: 4.7 % against 7.3 %), but in the
+  8-node room 62 of 108 positions were not seen by three independent links, against 20 with the rule above. Rejected
+  (misses).
 - **A need from a binomial bound,** smallest k with C(n,k)qᵏ under a budget, for an assumed per-link chance rate q.
   Principled, but q has never been measured; a third of the capacity needs no such number. Revisit with recordings.
-- **Ignore the ends of links** (a link covers only points 0.4 m or more from its two nodes). Two chance links then never
-  raise the 30-node room (0 % against 1.3 %), but positions next to nodes were lost: 26 unseen of 108 in the 8-node
-  room against 20, and 4 in the 30-node room at the lower sensitivity. Not adopted (misses).
+- **Ignore the ends of links** (a link covers only points 0.4 m or more from its two nodes). About three times quieter
+  in the 30-node room (two, three, four chance links: 0.7 %, 3 %, 7.3 % against 1.7 %, 7.3 %, 21 %) with no position
+  lost there, but positions next to nodes were lost in the 8-node room: 26 unseen of 108 against 20. Not adopted
+  (misses); worth another look once real rigs are denser than 8 nodes.
 - **Sum per-link evidence over the zone** (report 08) or threshold the tomographic image (#10). Both need an evidence
   scale tuned on data, and would tie the room state to the heatmap's rework. Possible later; the zone ids stay.
 
@@ -93,17 +96,19 @@ A miss costs more than a false alarm, so every knob was set towards MOTION as fa
 All simulated (`csi/simulate.py`: per-link lognormal noise, Gaussian 0.25 m falloff, plus the new `noisy` and
 `glitch_rate_hz` options); no hardware. Tests in `tests/test_room_state.py` and `tests/test_round_pipeline.py`.
 
+- **The 30-node room** is the frozen fixture `tests/fixtures/room_tr30.json` (shared with #10): the 4 x 3 m room of
+  the 8-node fixture with 30 nodes 0.47 m apart round the walls, 870 links.
 - **Chance agreement, 30 nodes, 4 simulated hours** at the room state's input, every link glitching on its own once an
-  hour (0.4 s elevated each, about 3400 glitches): the two-link rule reads MOTION about 75 times an hour, the room state
-  about 0.5 (2 in each of 4 seeds). Test bound: over 50 against under 1.
+  hour (0.4 s elevated each, about 3400 glitches): the two-link rule reads MOTION about 75 times an hour, the room
+  state about 1.5 (3 to 7 in 4 h over 4 seeds). Test bound: over 50 against under 2.
 - **Empty 30-node room through the pipeline,** 180 s with every link glitching once per 2 h (1.5 s bursts): room EMPTY
-  throughout, while two links were elevated together during the run.
+  throughout, while two links were elevated together during the run. PIPELINE_RESULT
 - **One noisy node** (n07, all 58 links x8): at least 50 of its links MOTION, room EMPTY.
-- **Walker onset,** person appearing at grid points, 0.3 m from the walls at the edge: 8-node room 0.65 to 0.7 s at 11
-  of 15 points, 1.0 to 1.15 s at the 4 corner points; 30-node room ARRIVAL_30.
+- **Walker onset,** a person appearing at 15 grid points, 0.3 m from the walls at the edge: 30-node room 0.7 s at all
+  15; 8-node room 0.7 s at 11, 1.0 to 1.15 s at the 4 corner points.
 - **Decision-level sweep** (g links elevated at random; a person at one of 108 grid positions modelled as raising every
   link within 0.45 m of them, or 0.3 m for the lower sensitivity). 30-node room: g = 2, 3, 4 chance links raise the
-  room 1.3 %, 3.0 % and 7.3 % of the time (the two-link rule: always); no position unseen at either sensitivity.
+  room 1.7 %, 7.3 % and 21 % of the time (the two-link rule: always); no position unseen at either sensitivity.
   8-node room: 14 %, 33 %, 60 %; 20 of 108 positions unseen at 0.45 m (30 at 0.3 m), the same as with a floor of two
   and no step to three: a sparse rig's blind spots come from its geometry, not from this rule. The simulated walker
   (its links respond out to about 0.55 m, and it moves) is seen at every tested point.

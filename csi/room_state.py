@@ -68,6 +68,7 @@ MIN_INDEPENDENT = 2     # the least agreement: two links that share no node ...
 TARGET_INDEPENDENT = 3  # ... three where three independent links cover the point
 HOLD_S = 1.0            # a zone (and so the room) stays MOTION this long after the last firing point
 NO_SIGNAL_S = 2.0       # a link not heard for longer is not warm
+EVAL_S = 0.05           # the points are re-judged at most this often (one round at 20 Hz) when links change
 
 
 @dataclass(frozen=True)
@@ -156,8 +157,11 @@ class RoomState:
 
     def __init__(self, zone_map: ZoneMap, *, fraction: float = FRACTION, min_independent: int = MIN_INDEPENDENT,
                  hold_s: float = HOLD_S, no_signal_s: float = NO_SIGNAL_S,
-                 target_independent: int = TARGET_INDEPENDENT) -> None:
+                 target_independent: int = TARGET_INDEPENDENT, eval_s: float = EVAL_S) -> None:
         self.map = zone_map
+        self.eval_s = eval_s
+        self._dirty = False
+        self._last_eval: Optional[float] = None
         self.target_independent = target_independent
         self.fraction, self.min_independent, self.hold_s, self.no_signal_s = fraction, min_independent, hold_s, no_signal_s
         n = len(zone_map.labels)
@@ -200,7 +204,10 @@ class RoomState:
             self._last_elevated = None
         if self._last_elevated is None or not np.array_equal(elevated, self._last_elevated):
             self._last_elevated = elevated.copy()
-            self._firing = self._fire(elevated)
+            self._dirty = True
+        if self._dirty and (self._last_eval is None or t - self._last_eval >= self.eval_s):
+            self._firing = self._fire(self._last_elevated)
+            self._dirty, self._last_eval = False, t
         self._last_fired = np.where(self._firing, t, self._last_fired)
         if not live.any():
             self.state = WARMUP
@@ -244,7 +251,8 @@ class RoomState:
         if m == 0 or int(elevated.sum()) < m:
             return firing
         counts = self.map.cover[:, elevated].sum(axis=1)
-        for p in np.flatnonzero(counts >= m):
+        candidates = np.flatnonzero(counts >= m)
+        for p in candidates[np.argsort(-counts[candidates], kind="stable")]:   # the best-covered points first
             zone = self.map.zone_of[p]
             if firing[zone]:
                 continue
@@ -256,6 +264,11 @@ class RoomState:
                 continue
             links = self.map.covering[p]
             masks = self._masks[links[elevated[links]]].tolist()
+            nodes = 0
+            for mask in masks:
+                nodes |= mask
+            if bin(nodes).count("1") < 2 * need:    # too few nodes for that many links that share none
+                continue
             if independent_links(masks, need) >= need:
                 firing[zone] = True
         return firing
