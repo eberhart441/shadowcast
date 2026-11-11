@@ -43,7 +43,7 @@ from .broadcast import LinkReport
 from .health import LinkHealth, ReportHealth
 from .parser import CSIPacket
 from .room import Node, Room
-from .room_state import RoomState, ZoneMap
+from .room_state import POSSIBLY_OCCUPIED, RoomState, ZoneMap
 
 NO_SIGNAL = "NO_SIGNAL"
 WARMUP = "WARMUP"
@@ -306,10 +306,14 @@ class LinkMonitor:
     @property
     def room_state(self) -> str:
         """Room-level state, up to date with every report pushed so far: MOTION if the hackathon links' decision or
-        the transceiver room state says so, else EMPTY if either is warm, else WARMUP."""
+        the transceiver room state says so, else POSSIBLY_OCCUPIED if the transceiver room state holds a zone after
+        motion (csi/room_state.py), else EMPTY if either is warm, else WARMUP."""
         self._settle_room()
         states = [self._room_state] if self._zones is None else [self._room_state, self._zones.state]
-        return MOTION if MOTION in states else ("EMPTY" if "EMPTY" in states else WARMUP)
+        for state in (MOTION, POSSIBLY_OCCUPIED, "EMPTY"):
+            if state in states:
+                return state
+        return WARMUP
 
     @property
     def room_elevated(self) -> list[str]:

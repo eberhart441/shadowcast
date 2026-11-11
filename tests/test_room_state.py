@@ -99,7 +99,8 @@ def grid(room, inset=0.3, nx=5, ny=3):
 
 
 def onsets(room, points, seed):
-    """Per point: (seconds from the person's arrival to the first room MOTION, room states in the 0.3 s before)."""
+    """Per point: (seconds from the person's arrival to the first room MOTION, room states in the 0.3 s before). Before
+    an arrival the room is EMPTY, or POSSIBLY_OCCUPIED while it still holds the zones of the previous visit."""
     person = Visits(room, points)
     stream = simulate_rounds(room, person, duration_s=WARM_S + len(points) * person.period, quiet_first_s=WARM_S,
                              seed=seed, t0=T0)
@@ -121,7 +122,7 @@ def test_a_walker_anywhere_in_the_8_node_room_raises_motion_within_one_second_ex
     points = grid(TR8)
     corners = {(0.3, 0.3), (3.7, 0.3), (0.3, 2.7), (3.7, 2.7)}
     for point, (delay, before) in zip(points, onsets(TR8, points, seed=2)):
-        assert before == {"EMPTY"}, point
+        assert before and before <= {"EMPTY", "POSSIBLY_OCCUPIED"}, point
         limit = 1.25 if tuple(round(c, 2) for c in point) in corners else 1.0
         assert delay is not None and delay <= limit, (point, delay)
 
@@ -132,7 +133,7 @@ def test_a_walker_anywhere_in_the_30_node_room_raises_motion_within_one_second()
     corners included: every one within 1 s (measured 0.7 s at all 24)."""
     points = grid(TR30, nx=6, ny=4)
     for point, (delay, before) in zip(points, onsets(TR30, points, seed=3)):
-        assert before == {"EMPTY"}, point
+        assert before and before <= {"EMPTY", "POSSIBLY_OCCUPIED"}, point
         assert delay is not None and delay <= 1.0, (point, delay)
 
 
@@ -182,3 +183,56 @@ def test_chance_agreement_among_870_independently_glitching_links_is_rare():
     assert n > 3000
     assert old_alarms / hours > 50
     assert new_alarms / hours < 3.0
+
+
+# ---------------------------------------------------------------- possibly occupied (#9)
+
+QUIET = Reading(0.0, "EMPTY", 1.0, warm=True)
+HIGH = Reading(0.0, "MOTION", 3.0, elevated=True, warm=True)
+
+
+def held_room(room, **kwargs):
+    """A RoomState of ``room`` with every link heard and quiet at t = 0, and the labels of its links."""
+    links = [(NodeLinkId(rx.name, tx.name).label, rx, tx) for rx, tx in room.transceiver_links()]
+    state = RoomState(ZoneMap(room, links), no_signal_s=float("inf"), **kwargs)
+    for label, _, _ in links:
+        state.observe(label, 0.0, QUIET)
+    state.update(0.0)
+    return state, links
+
+
+def covering(links, point, within=0.3):
+    """Labels of the links passing within ``within`` of ``point``: the links a person there would raise."""
+    from csi.room import point_segment_distance
+    return [label for label, rx, tx in links
+            if point_segment_distance(np.array([point]), (rx.x, rx.y), (tx.x, tx.y))[0] <= within]
+
+
+def drive(state, labels, reading, start_s, stop_s, every_s=0.05):
+    """Observe ``reading`` on ``labels`` and update, every ``every_s`` from ``start_s`` up to ``stop_s``;
+    {time: (room state, zone states)} at each update."""
+    out = {}
+    for t in steps(start_s, stop_s, every_s):
+        for label in labels:
+            state.observe(label, t, reading)
+        out[round(t, 2)] = (state.update(t), state.zone_states)
+    return out
+
+
+def test_a_zone_that_stops_moving_reads_possibly_occupied_for_the_hold_then_empty():
+    """Motion in B2 (the 8-node room's zone around (1.5, 1.5)) for 2 s, then nothing: MOTION for the 1 s hold, then
+    POSSIBLY_OCCUPIED for the 60 s possibly-occupied hold, then EMPTY. Zones never in MOTION stay EMPTY."""
+    state, links = held_room(TR8)
+    person = covering(links, (1.5, 1.5))
+    moving = drive(state, person, HIGH, 1.0, 3.0)
+    assert moving[2.0][0] == "MOTION" and moving[2.0][1]["B2"] == "MOTION"
+    seen = {zone for _, zones in moving.values() for zone, s in zones.items() if s == "MOTION"}
+    after = drive(state, person, QUIET, 3.0, 66.0, every_s=0.1)
+    assert after[3.5][0] == "MOTION"                                   # the 1 s motion hold
+    for t in (4.5, 30.0, 63.5):
+        room, zones = after[t]
+        assert room == "POSSIBLY_OCCUPIED", t
+        assert {z for z, s in zones.items() if s == "POSSIBLY_OCCUPIED"} == seen, t
+        assert {s for z, s in zones.items() if z not in seen} == {"EMPTY"}, t
+    assert after[64.5][0] == "EMPTY"
+    assert set(after[64.5][1].values()) == {"EMPTY"}

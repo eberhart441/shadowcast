@@ -31,8 +31,20 @@ Decision, at each update (host time ``t``)
                     point with capacity below m has no independent view and never fires (its neighbours do); a 2- or
                     3-node rig has no two independent links at all, so there m = 1.
     fires(p)        the elevated links covering p hold at least need(p) independent links.
-    zone            MOTION while one of its probe points fires, and for ``hold_s`` after the last one stopped.
-    room            WARMUP with no warm link, else MOTION while any zone is MOTION, else EMPTY.
+    zone            MOTION while one of its probe points fires, and for ``hold_s`` after the last one stopped;
+                    then POSSIBLY_OCCUPIED for ``possibly_occupied_s`` (the possibly-occupied hold, below); else
+                    EMPTY, or WARMUP when no warm link covers it.
+    room            WARMUP with no warm link, else MOTION while any zone is MOTION, else POSSIBLY_OCCUPIED while any
+                    zone is, else EMPTY.
+
+The possibly-occupied hold (#9, docs/adr/0030-possibly-occupied-hold.md)
+    The score sees change, not presence: a person who stops dead leaves it within one to two seconds (its high-pass),
+    and one who stays in place moving slightly is absorbed by the adaptive baseline in about 30 s (24 to 30 s). Either
+    way the zone falls out of MOTION while they may still be there. So a zone leaving MOTION is not reported EMPTY at
+    once: it reads POSSIBLY_OCCUPIED for ``possibly_occupied_s`` (default 60 s, twice the ~30 s fade: a miss costs
+    more than a false alarm, ADR-0001), and MOTION again the moment one of its points fires. Decision support, not a
+    guarantee: a person still for longer than the hold is not reported at all. The hold outranks WARMUP: a zone whose
+    links went silent after motion still reads POSSIBLY_OCCUPIED.
 
 Which way the trade-off goes (ADR-0001, a miss costs more; docs/adr/0029-adaptive-baseline-only-and-a-room-state-
 from-zones.md): ``fraction`` is low, because a person raises nearly every link that covers the point they stand on
@@ -44,7 +56,7 @@ node (next to a corner node of a sparse rig) is not reported until a link of ano
 Public API:
     ZoneMap(room, links, zone_m, probe_m, cover_m)   links: [(label, receiving Node, transmitting Node)]
     ZoneMap.zones                                    (Zone(id, x0, y0, x1, y1), ...)
-    RoomState(zone_map, ...)
+    RoomState(zone_map, ..., possibly_occupied_s=POSSIBLY_OCCUPIED_S)
     RoomState.observe(label, t, reading)             one link's latest Reading (None: no reading, e.g. NO_SIGNAL)
     RoomState.observe_many(t, [(label, reading)])    the same for one round broadcast's links
     RoomState.update(t) -> state                     the room state at host time t; once per round broadcast
@@ -68,6 +80,8 @@ FRACTION = 1 / 3        # need = this share of the independent links covering a 
 MIN_INDEPENDENT = 2     # the least agreement: two links that share no node ...
 TARGET_INDEPENDENT = 3  # ... three where three independent links cover the point
 HOLD_S = 1.0            # a zone (and so the room) stays MOTION this long after the last firing point
+POSSIBLY_OCCUPIED_S = 60.0   # ... then POSSIBLY_OCCUPIED this long: twice the ~30 s a still person takes to fade
+POSSIBLY_OCCUPIED = "POSSIBLY_OCCUPIED"
 NO_SIGNAL_S = 2.0       # a link not heard for longer is not warm
 EVAL_S = 0.05           # the points are re-judged at most this often (one round at 20 Hz) when links change
 
@@ -159,8 +173,12 @@ class RoomState:
 
     def __init__(self, zone_map: ZoneMap, *, fraction: float = FRACTION, min_independent: int = MIN_INDEPENDENT,
                  hold_s: float = HOLD_S, no_signal_s: float = NO_SIGNAL_S,
-                 target_independent: int = TARGET_INDEPENDENT, eval_s: float = EVAL_S) -> None:
+                 target_independent: int = TARGET_INDEPENDENT, eval_s: float = EVAL_S,
+                 possibly_occupied_s: float = POSSIBLY_OCCUPIED_S) -> None:
+        if not possibly_occupied_s >= 0:
+            raise ValueError(f"possibly_occupied_s must be a number >= 0, got {possibly_occupied_s!r}")
         self.map = zone_map
+        self.possibly_occupied_s = float(possibly_occupied_s)
         self.eval_s = eval_s
         self._dirty = False
         self._last_eval: Optional[float] = None
@@ -238,18 +256,24 @@ class RoomState:
         self._last_fired = np.where(self._firing, t, self._last_fired)
         if not live.any():
             self.state = WARMUP
+        elif self._zone_motion(t).any():
+            self.state = MOTION
         else:
-            self.state = MOTION if self._zone_motion(t).any() else EMPTY
+            self.state = POSSIBLY_OCCUPIED if self._zone_held(t).any() else EMPTY
         return self.state
 
     # ------------------------------------------------------------------ output
 
     @property
     def zone_states(self) -> dict[str, str]:
-        """{zone id: MOTION, EMPTY or WARMUP} at the last update (WARMUP: no warm link covers the zone)."""
-        motion = self._zone_motion(self._t) if self._t is not None else np.zeros(len(self.map.zones), dtype=bool)
+        """{zone id: MOTION, POSSIBLY_OCCUPIED, EMPTY or WARMUP} at the last update (WARMUP: no warm link covers the
+        zone, and it is not held)."""
+        none = np.zeros(len(self.map.zones), dtype=bool)
+        motion = self._zone_motion(self._t) if self._t is not None else none
+        held = self._zone_held(self._t) if self._t is not None else none
         covered = self._covered
-        return {z.id: MOTION if motion[i] else (EMPTY if covered[i] else WARMUP) for i, z in enumerate(self.map.zones)}
+        return {z.id: MOTION if motion[i] else POSSIBLY_OCCUPIED if held[i] else (EMPTY if covered[i] else WARMUP)
+                for i, z in enumerate(self.map.zones)}
 
     @property
     def motion_zones(self) -> list[str]:
@@ -269,6 +293,10 @@ class RoomState:
 
     def _zone_motion(self, t: float) -> np.ndarray:
         return self._firing | (t - self._last_fired < self.hold_s)
+
+    def _zone_held(self, t: float) -> np.ndarray:
+        """Zones in the possibly-occupied hold: out of MOTION, but MOTION less than ``possibly_occupied_s`` ago."""
+        return ~self._zone_motion(t) & (t - self._last_fired < self.hold_s + self.possibly_occupied_s)
 
     def _fire(self, elevated: np.ndarray) -> np.ndarray:
         """Which zones fire for this elevated set. Only zones whose covering elevated links changed since the last
