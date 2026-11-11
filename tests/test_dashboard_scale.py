@@ -128,3 +128,49 @@ def test_link_detail_refuses_an_unknown_or_missing_link_id():
         assert status == 400 and "id" in body["error"]
     finally:
         server.stop()
+
+
+# ---------------------------------------------------------------- frames at 30 nodes
+
+TR30 = load_room(FIXTURES / "room_tr30.json")
+
+
+def read_events(server):
+    """Every payload of a finished run's /api/events, with the size of its JSON text."""
+    events = []
+    with urllib.request.urlopen(server.url + "/api/events", timeout=60) as response:
+        for raw in response:
+            line = raw.decode().rstrip("\n")
+            if line.startswith("data: "):
+                events.append((json.loads(line[len("data: "):]), len(line)))
+                if events[-1][0]["status"]["finished"]:
+                    break
+    return events
+
+
+def test_frames_of_a_30_node_rig_carry_node_health_and_the_matrix_but_not_870_link_rows():
+    server = finished_server(TR30, 1.5)
+    try:
+        events = read_events(server)
+        status, state = get(server, "/api/state")
+    finally:
+        server.stop()
+    assert len(events) >= 5
+    for payload, size in events:
+        assert "links" not in payload                        # per-link rows are fetched on demand
+        assert len(payload["node_health"]) == 30
+        assert len(payload["link_matrix"]["states"]) == 30
+        assert payload["link_health"]["links"] == 870
+        assert size < 40_000
+    assert events[-1][0]["status"]["links_in_frames"] is False
+    assert len(state["links"]) == 870                       # one GET of /api/state still has every row
+
+
+def test_frames_of_an_8_node_rig_still_carry_every_link_row():
+    server = finished_server(TR8, 0.6)
+    try:
+        events = read_events(server)
+    finally:
+        server.stop()
+    assert all(len(payload["links"]) == 56 for payload, _ in events)
+    assert events[-1][0]["status"]["links_in_frames"] is True

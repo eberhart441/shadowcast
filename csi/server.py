@@ -45,7 +45,8 @@ from pathlib import Path
 from typing import BinaryIO, Iterator, Mapping, Optional, Sequence, TextIO, Union
 from urllib.parse import parse_qs, urlsplit
 
-from .dashboard import DashboardState
+from .dashboard import Capture, DashboardState
+
 from .live_calibration import CalibrationJob, RequestError, parse_request
 from .links import calibrate_links, room_link_ids, save_thresholds
 from .multisource import MultiSource
@@ -62,6 +63,7 @@ REORDER_STARTUP_S = 2.0    # wall-clock wait for a connected receiver that has n
 WALL_CLOCK_TOLERANCE_S = 5.0  # packets stamped within this of the wall clock count as live
 MIN_EVENT_GAP_S = 0.2      # wall-clock gap between two SSE events: at most ~5 Hz
 FRAME_LOG_MAX = 1200       # frames kept for replay (4 minutes at 5 Hz)
+FRAME_LINKS_MAX = 64       # a room with more links sends frames without per-link rows (GET /api/link has them)
 CALIBRATION_JOIN_S = 30.0  # how long a run's final frame waits for a calibration still processing
 LIVE_LAG_FRAMES = 5        # a live client further behind than this skips to the newest frame
 KEEPALIVE_S = 15.0         # SSE comment sent when idle, so dead clients are noticed
@@ -494,6 +496,8 @@ class DashboardServer(FrameServer):
         self._last_mono: Optional[float] = None
         self._pump_thread: Optional[threading.Thread] = None
         self._pipeline_errors: dict[str, str] = {}
+        self._links_in_frames = len(self._expected) <= FRAME_LINKS_MAX
+        self._pending: list[tuple[Capture, dict, bool]] = []   # frames captured under the lock, not yet rendered
 
     # ------------------------------------------------------------------ lifecycle
 
@@ -552,6 +556,7 @@ class DashboardServer(FrameServer):
                 self._calib.abort("the sources ended before the calibration recording finished")
             self._run_done = True
             self._emit(self._last_host or 0.0, final=True)
+        self._publish()
 
     def _fail_run(self, receiver: Optional[str], error: BaseException) -> None:
         """The pipeline raised: name the receiver (or 'pipeline'), stop the readers, and end the run with a final frame.
@@ -572,11 +577,21 @@ class DashboardServer(FrameServer):
             self._run_done = True
             try:
                 self._emit(self._last_host or 0.0, final=True)
-            except Exception:  # the state itself is broken: a minimal final frame still ends the run
-                fallback = {"links": [], "heatmap": {}, "status": {
-                    "time_s": self._last_host or 0.0, "finished": True, "errors": self._errors(),
-                    "messages": [f"run ended: the pipeline failed: {message}"]}}
-                self._frames.append(json.dumps(fallback), final=True)
+                captured = True
+            except Exception:
+                captured = False
+            errors = self._errors()
+        try:
+            if not captured:
+                raise RuntimeError("the state cannot be captured")
+            self._publish()
+        except Exception:  # the state itself is broken: a minimal final frame still ends the run
+            with self._lock:
+                self._pending = []
+            fallback = {"links": [], "heatmap": {}, "status": {
+                "time_s": self._last_host or 0.0, "finished": True, "errors": errors,
+                "messages": [f"run ended: the pipeline failed: {message}"]}}
+            self._frames.append(json.dumps(fallback), final=True)
 
     def _connected_receivers(self) -> set[str]:
         return {name for name, s in self._ms.status().items() if _receiver_state(s) == "connected"}
@@ -591,6 +606,7 @@ class DashboardServer(FrameServer):
                 except Exception as e:
                     raise _PipelineError(receiver) from e
             self._last_mono = time.monotonic()
+        self._publish()
 
     def _push_packet(self, receiver: str, pkt: Union[CSIPacket, HeardBroadcast]) -> None:
         """Caller holds the lock."""
@@ -620,6 +636,7 @@ class DashboardServer(FrameServer):
             if now is not None and self._next_frame_at is not None and now >= self._next_frame_at:
                 self._emit(now)
                 self._next_frame_at = now + self._frame_s
+        self._publish()
 
     def _clock(self) -> Optional[float]:
         """Host time now. Live hardware stamps packets with the wall clock, so while those run the clock
@@ -633,25 +650,42 @@ class DashboardServer(FrameServer):
         return self._last_host + (time.monotonic() - (self._last_mono or time.monotonic()))
 
     def _emit(self, now: float, final: bool = False) -> None:
-        """Append a frame at host time ``now``. Caller holds the lock."""
-        text = json.dumps(self._payload(now))
-        self._frames.append(text, final=final)
-        if self._log_file is not None:
-            self._log_file.write(text + "\n")
-            self._log_file.flush()
+        """Capture a frame at host time ``now``; ``_publish`` renders it. Caller holds the lock (the pump thread)."""
+        self._pending.append((self._state.capture(now), self._status_inputs(now), final))
+
+    def _publish(self) -> None:
+        """Render the captured frames and append them to the log, without the lock. Only the pump thread emits, so
+        frames keep their order."""
+        with self._lock:
+            pending, self._pending = self._pending, []
+        for cap, inputs, final in pending:
+            text = json.dumps(self._render(cap, inputs, links=self._links_in_frames))
+            self._frames.append(text, final=final)
+            if self._log_file is not None:
+                self._log_file.write(text + "\n")
+                self._log_file.flush()
 
     # ------------------------------------------------------------------ payload
 
-    def _payload(self, now: float) -> dict:
-        """Caller holds the lock: DashboardState advances its smoothing to ``now``."""
-        payload = self._state.snapshot(now)
-        payload["status"].update(self._status_extension(now, payload["links"]))
+    def _render(self, cap: Capture, inputs: dict, *, links: bool) -> dict:
+        """A payload from a capture and its status inputs: no lock needed."""
+        payload = self._state.render(cap, links=links)
+        payload["status"].update(self._status_extension(inputs, cap.rows))
+        payload["status"]["links_in_frames"] = self._links_in_frames
         return payload
 
-    def _status_extension(self, now: float, links: Sequence[Mapping]) -> dict:
-        receivers = {name: _receiver_state(s) for name, s in self._ms.status().items()}
-        errors = self._errors()
-        calibrated = sorted(self._state.thresholds)
+    def _status_inputs(self, now: float) -> dict:
+        """What the status extension needs from live state, copied. Caller holds the lock."""
+        return {"receivers": {name: _receiver_state(s) for name, s in self._ms.status().items()},
+                "errors": self._errors(), "finished": self._run_done, "calibrated": sorted(self._state.thresholds),
+                "calibration": self._calib_status(now),
+                "skipped": dict(self._calib.skipped) if self._calib is not None else {},
+                "commands": list(self._commands), "commands_status": self._commands_status()}
+
+    def _status_extension(self, inputs: Mapping, links: Sequence[Mapping]) -> dict:
+        """The ``status`` extension from ``_status_inputs`` and the link rows (LinkMonitor.snapshot rows)."""
+        errors = inputs["errors"]
+        calibrated = inputs["calibrated"]
         adaptive = sorted(row["id"] for row in links if row.get("mode") == "auto")  # no threshold needed
         uncalibrated = sorted(self._labels - set(calibrated) - set(adaptive))
         silent = sorted(row["id"] for row in links if row["id"] in uncalibrated and row["age_s"] is None)
@@ -665,20 +699,18 @@ class DashboardServer(FrameServer):
             messages.append(f"{len(silent)} link(s) have no data {where} ({', '.join(silent)}).")
         messages.extend(f"{'pipeline' if name == 'pipeline' else f'receiver {name}'} failed: {msg}"
                         for name, msg in sorted(errors.items()))
-        calibration = self._calib_status(now)
-        if self._calib is not None:
-            messages.extend(f"calibration skipped {label}: {why}" for label, why in self._calib.skipped.items())
-        messages.extend(f"command: {line}" for line in self._commands)
+        messages.extend(f"calibration skipped {label}: {why}" for label, why in inputs["skipped"].items())
+        messages.extend(f"command: {line}" for line in inputs["commands"])
         return {
-            "receivers": receivers,
+            "receivers": inputs["receivers"],
             "errors": errors,
-            "finished": self._run_done,
+            "finished": inputs["finished"],
             "calibrated_links": calibrated,
             "adaptive_links": adaptive,
             "uncalibrated_links": uncalibrated,
             "messages": messages,
-            "calibration": calibration,
-            "commands": self._commands_status(),
+            "calibration": inputs["calibration"],
+            "commands": inputs["commands_status"],
         }
 
     def _commands_status(self) -> dict:
@@ -694,9 +726,12 @@ class DashboardServer(FrameServer):
         return self._calib.status(now, time.monotonic())
 
     def state_json(self) -> str:
+        """GET /api/state: the payload with every link row, captured under the lock and rendered without it."""
         with self._lock:
             now = self._clock()
-            return json.dumps(self._payload(0.0 if now is None else now))
+            now = 0.0 if now is None else now
+            cap, inputs = self._state.capture(now), self._status_inputs(now)
+        return json.dumps(self._render(cap, inputs, links=True))
 
     # ------------------------------------------------------------------ commands
 
