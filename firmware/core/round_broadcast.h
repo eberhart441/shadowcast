@@ -1,8 +1,10 @@
 /*
- * Round broadcast format v1 on the node: encode the bytes a transceiver sends in its slot, decode the ones it hears.
+ * Round broadcast format v2 on the node: encode the bytes a transceiver sends in its slot, decode the ones it hears.
  *
  * The one definition of the format is docs/round-broadcast.md; csi/broadcast.py is the host's copy. Both are pinned
- * to the golden fixtures in tests/fixtures/round_broadcast_v1.json, which tests/test_round_broadcast.c replays.
+ * to the golden fixtures in tests/fixtures/round_broadcast_v2.json, which tests/test_round_broadcast.c replays.
+ * v2 has v1's layout; its authentication tag is real (round_auth.h writes and checks it). This codec carries the
+ * tag bytes as they are.
  * A 26-byte round header, then one 4-byte link report per member other than the sender, in ascending node index.
  * Little-endian throughout. Change the doc, the fixtures, csi/broadcast.py and this module together.
  *
@@ -15,12 +17,13 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define RB_VERSION 1
-#define RB_FRAME_ROUND 1          /* the only frame type in v1: a round broadcast carrying link reports */
+#define RB_VERSION 2               /* v1 had the same layout with an unchecked, zero tag */
+#define RB_FRAME_ROUND 1          /* the only frame type in v2: a round broadcast carrying link reports */
 #define RB_MAX_NODES 32           /* the membership bitmap is 32 bits */
 #define RB_HEADER_BYTES 26
 #define RB_REPORT_BYTES 4
 #define RB_NODE_ID_BYTES 6
+#define RB_TAG_OFFSET 18
 #define RB_TAG_BYTES 8
 #define RB_MAX_REPORTS (RB_MAX_NODES - 1)
 #define RB_MAX_BYTES (RB_HEADER_BYTES + RB_REPORT_BYTES * RB_MAX_REPORTS)   /* 150 */
@@ -35,8 +38,8 @@
 typedef enum {
     RB_OK = 0,
     RB_SHORT,        /* shorter than the round header */
-    RB_BAD_VERSION,  /* not format version 1 */
-    RB_FRAME_TYPE,   /* a frame type v1 does not define */
+    RB_BAD_VERSION,  /* not format version 2 */
+    RB_FRAME_TYPE,   /* a frame type v2 does not define */
     RB_LENGTH,       /* the length does not match the membership */
     RB_MEMBERSHIP,   /* the sender's node index is not in the membership */
 } rb_status_t;
@@ -61,7 +64,7 @@ typedef struct {
     uint8_t node_index;         /* the sender's index, 0..31 */
     uint32_t membership;        /* bit i set when node index i is a member */
     uint8_t node_id[RB_NODE_ID_BYTES];  /* the sender's board serial (base MAC), transmission order */
-    uint8_t tag[RB_TAG_BYTES];          /* zeros in v1 */
+    uint8_t tag[RB_TAG_BYTES];          /* authentication tag (round_auth.h) */
     uint8_t n_reports;
     rb_report_t reports[RB_MAX_REPORTS];
 } rb_broadcast_t;
@@ -69,7 +72,7 @@ typedef struct {
 /* Decode `len` bytes into *out. Anything but RB_OK leaves *out unspecified. */
 rb_status_t rb_decode(const uint8_t *data, size_t len, rb_broadcast_t *out);
 
-/* Encode *b into out[0..cap). Returns the byte count, or 0 when b is not a valid v1 broadcast (the sender is not a
+/* Encode *b into out[0..cap). Returns the byte count, or 0 when b is not a valid v2 broadcast (the sender is not a
  * member, the reports do not follow the membership, a count is over 15) or does not fit in cap. */
 size_t rb_encode(const rb_broadcast_t *b, uint8_t *out, size_t cap);
 
