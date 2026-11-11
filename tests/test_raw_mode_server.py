@@ -136,3 +136,65 @@ def test_without_a_gateway_that_can_send_raw_mode_is_refused(serve):
     wait_for(server, everyone_heard)
     status, body = post(server, {"link": "n1<-n5", "on": True})
     assert (status, body["reason"]) == (409, "no_gateway")
+
+
+def test_the_cli_sends_raw_mode_through_the_node_gateway_and_simulate_through_the_simulated_rig(monkeypatch, tmp_path):
+    import importlib.util
+    from csi.broadcast import FRAME_RAW_REQUEST, decode_broadcast
+    from csi.gateway_records import encode_heard, encode_status
+    from csi.round_auth import tag_ok, write_kit_key
+    from csi.simulate import simulate_rounds
+
+    spec = importlib.util.spec_from_file_location("dashboard_cli", Path(__file__).parents[1] / "scripts" / "dashboard.py")
+    cli = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cli)
+    key_path = tmp_path / "kit.key"
+    key = write_kit_key(key_path)
+    t0 = time.time()
+    gateway = "02:00:00:00:00:99"
+    data = encode_status(gateway, 1_000_000, 1, 1, 6, [0] * 7) + b"".join(
+        encode_heard(int((ts - t0) * 1e6), -50, b) for ts, b in simulate_rounds(ROOM, duration_s=1.0, t0=t0,
+                                                                                kit_key=key))
+    written = []
+
+    class FakeChunks:
+        def __init__(self, port, baud=921600, timeout=1.0):
+            pass
+
+        def __iter__(self):
+            yield time.time(), data
+            while True:
+                time.sleep(0.05)
+                yield time.time(), None
+
+        def write(self, line):
+            written.append(line)
+
+    monkeypatch.setattr("csi.gateway_records.SerialChunks", FakeChunks)
+    room = Path(__file__).parent / "fixtures" / "room_tr8.json"
+    args = cli.build_parser().parse_args(["--node-gateway", "COM7", "--room", str(room), "--http-port", "0",
+                                          "--kit-key", str(key_path)])
+    cli.check_source(args)
+    server = cli.build_server(args)
+    server.start()
+    try:
+        wait_for(server, everyone_heard)
+        status, body = post(server, {"link": "n2<-n3", "on": True})
+    finally:
+        server.stop()
+    assert (status, body["via"]) == (200, "gateway"), body
+    assert len(written) == 3 and all(line.startswith(b"send ") and line.endswith(b"\n") for line in written)
+    frame = bytes.fromhex(written[0][5:-1].decode())
+    assert tag_ok(frame, key) and decode_broadcast(frame).frame_type == FRAME_RAW_REQUEST
+    assert decode_broadcast(frame).node_id == gateway
+
+    args = cli.build_parser().parse_args(["--simulate", "--room", str(room), "--http-port", "0"])
+    cli.check_source(args)
+    server = cli.build_server(args)
+    server.start()
+    try:
+        wait_for(server, everyone_heard)
+        assert post(server, {"link": "n2<-n3", "on": True})[0] == 200
+        wait_for(server, lambda p: raw_row(p, "n2<-n3").get("state") == "on")
+    finally:
+        server.stop()

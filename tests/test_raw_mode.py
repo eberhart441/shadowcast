@@ -224,3 +224,36 @@ def test_a_simulated_node_takes_a_signed_fresh_request_for_itself_only():
         if b.raw:
             raw_from.setdefault(b.node_id, k // 8)
     assert raw_from == {SERIAL["n2"]: 11}
+
+
+class FakePort:
+    """Chunks as a serial port delivers them, plus what the host wrote to it."""
+
+    def __init__(self, chunks):
+        self.chunks, self.written = list(chunks), b""
+
+    def __iter__(self):
+        return iter(self.chunks)
+
+    def write(self, data):
+        self.written += data
+
+
+def test_a_node_gateway_sends_a_frame_as_one_send_command_line_and_names_itself_by_its_status():
+    from csi.gateway_records import GatewaySource, encode_status
+    port = FakePort([(T0, encode_status(GATEWAY, 5_000_000, 1, 1, 6, [0] * 7))])
+    gateway = GatewaySource(port)
+    assert gateway.sender_id is None              # not before its first status record
+    list(gateway)
+    assert gateway.sender_id == GATEWAY
+    gateway.send_frame(bytes.fromhex("0204"))
+    assert port.written == b"send 0204\n"
+
+
+def test_a_transceiver_on_the_port_is_not_a_gateway_that_can_send():
+    from csi.gateway_records import GatewaySource, encode_status
+    gateway = GatewaySource(FakePort([(T0, encode_status(SERIAL["n1"], 5_000_000, 1, 0, 6, [0] * 7))]))
+    list(gateway)
+    assert gateway.sender_id is None
+    with pytest.raises(RuntimeError):
+        GatewaySource([(T0, None)]).send_frame(b"\x02\x04")    # chunks that cannot be written to
