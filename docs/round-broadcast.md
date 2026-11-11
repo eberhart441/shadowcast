@@ -227,7 +227,9 @@ command).
   counted as unplaced.
 - A round broadcast with raw CSI is placed like any round broadcast; each raw CSI block is placed on its link the
   same way (`status.broadcasts.raw_csi {blocks, iq_bytes, unplaced}`, and per link in the payload's `raw_mode`). A
-  raw mode request another gateway sent is counted in `status.broadcasts.raw_requests` and not used.
+  raw mode request another gateway sent is counted in `status.broadcasts.raw_requests` and not used, and an
+  authenticated maintenance command (frame type 8) in `status.broadcasts.maintenance_commands`: neither is a
+  rejection.
 - `heard` 0 makes the link NO_SIGNAL. A warming flag or score 0 makes it WARMUP. Otherwise the score drives
   the link's detector as a packet's score does in the line pipeline.
 - Bytes that fail to decode are counted by reason (`short`, `version`, `frame_type`, `length`, `membership`)

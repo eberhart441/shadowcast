@@ -17,7 +17,8 @@ Raw mode (ticket #17) adds two frame types. A **round broadcast with raw CSI** (
 reports are followed by one or two raw CSI blocks (``RoundBroadcast.raw``): the int8 I/Q of the last round
 broadcast the sender heard from that transmitter. A **raw mode request** (4) is the round header (sent by a
 gateway, signed by the host) followed by the target node, the target's round number and the transmitters whose
-links it is to stream (``RoundBroadcast.request``); it carries no link reports.
+links it is to stream (``RoundBroadcast.request``); it carries no link reports. A **maintenance command** (8, OTA,
+``csi/ota.py``) decodes here to its header alone, so the host can count one a gateway hears.
 
 The score byte is the score code of ``csi/score_code.py`` (ADR-0021; ``firmware/core/motion_score.h`` on the node):
 0 is no score, code c >= 1 is 2 ** ((c - 1) / 10 - 10). ``quantise_score`` and ``dequantise_score`` are its
@@ -37,7 +38,9 @@ FRAME_JOIN_REQUEST = 2           # a node asking to join the round, in the join 
 FRAME_JOIN_GRANT = 3             # the scheduler admitting it, in the join slot (header only)
 FRAME_RAW_REQUEST = 4           # the host asking one node to stream raw CSI for some of its links (sent by a gateway)
 FRAME_ROUND_RAW = 5             # a round broadcast with raw CSI blocks after its link reports
-FRAME_TYPES = frozenset({FRAME_ROUND, FRAME_JOIN_REQUEST, FRAME_JOIN_GRANT, FRAME_RAW_REQUEST, FRAME_ROUND_RAW})
+FRAME_MAINTENANCE = 8           # a maintenance command (OTA, csi/ota.py decodes its body); the host only counts it
+FRAME_TYPES = frozenset({FRAME_ROUND, FRAME_JOIN_REQUEST, FRAME_JOIN_GRANT, FRAME_RAW_REQUEST, FRAME_ROUND_RAW,
+                         FRAME_MAINTENANCE})
 JOIN_FRAMES = frozenset({FRAME_JOIN_REQUEST, FRAME_JOIN_GRANT})
 REPORT_FRAMES = frozenset({FRAME_ROUND, FRAME_ROUND_RAW})   # frames that are a node's round broadcast
 MAX_NODES = 32                   # the membership bitmap is 32 bits
@@ -190,6 +193,9 @@ def decode_broadcast(data: bytes) -> RoundBroadcast:
     if frame_type == FRAME_RAW_REQUEST:
         return RoundBroadcast(version, frame_type, round_no, slot, slots, schedule, node_index, membership,
                               _format_id(node_id), bytes(tag), (), (), _decode_request(data))
+    if frame_type == FRAME_MAINTENANCE:     # the header alone here; csi.ota.decode_command reads the body
+        return RoundBroadcast(version, frame_type, round_no, slot, slots, schedule, node_index, membership,
+                              _format_id(node_id), bytes(tag), ())
     if node_index >= MAX_NODES or not membership >> node_index & 1:
         raise BroadcastError("membership", f"node index {node_index} is not in membership {membership:#010x}")
     indices = report_indices(membership, node_index)
@@ -261,6 +267,8 @@ def _decode_join(data: bytes, *fields) -> RoundBroadcast:
 def encode_broadcast(broadcast: RoundBroadcast) -> bytes:
     """The bytes of ``broadcast``. Its reports must follow the membership (``report_indices``); a join frame has
     none."""
+    if broadcast.frame_type == FRAME_MAINTENANCE:
+        raise ValueError("a maintenance command is built by csi.ota.maintenance_command, not encode_broadcast")
     indices = report_indices(broadcast.membership, broadcast.node_index) if broadcast.carries_reports else []
     if [r.transmitter_index for r in broadcast.reports] != indices:
         raise ValueError(f"reports must be for node indices {indices} in that order, got "

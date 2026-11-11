@@ -29,10 +29,11 @@ the joining node and its index in the new schedule version, so reports about a j
 Join frames (requests and grants) carry no link reports: each copy is counted in ``join_frames`` and never
 placed, de-duplicated or rejected. A round broadcast with raw CSI (frame type 5) is placed like any round
 broadcast, and its raw CSI blocks are placed on their links too (``last_raw``, counted in ``raw_csi``). A raw mode
-request (frame type 4) that a gateway heard from another gateway is counted in ``raw_requests`` and not used.
+request (frame type 4) that a gateway heard from another gateway is counted in ``raw_requests`` and not used, and
+so is an authenticated maintenance command (frame type 8, OTA) in ``maintenance_commands``.
 Nothing is dropped without being counted: every record a source delivered is accepted, rejected for one of
-``REJECT_REASONS``, from an unknown node, a join frame or a raw mode request, so
-``heard == accepted + sum(rejected) + sum(unknown_nodes) + sum(join_frames) + raw_requests``. Memory is bounded: the de-duplication memory by
+``REJECT_REASONS``, from an unknown node, a join frame, a raw mode request or a maintenance command, so
+``heard == accepted + sum(rejected) + sum(unknown_nodes) + sum(join_frames) + raw_requests + maintenance_commands``. Memory is bounded: the de-duplication memory by
 time and ``DEDUP_MAX``, the unknown serials by ``UNKNOWN_NODES_KEPT``.
 """
 from __future__ import annotations
@@ -41,7 +42,7 @@ from collections import Counter, OrderedDict
 from dataclasses import dataclass
 from typing import Iterable, Optional
 
-from .broadcast import (DECODE_REASONS, FRAME_JOIN_GRANT, FRAME_RAW_REQUEST, JOIN_FRAMES, BroadcastError, LinkReport,
+from .broadcast import (DECODE_REASONS, FRAME_JOIN_GRANT, FRAME_MAINTENANCE, FRAME_RAW_REQUEST, JOIN_FRAMES, BroadcastError, LinkReport,
                         RawCsi, decode_broadcast)
 from .links import NodeLinkId
 from .room import Room
@@ -83,6 +84,7 @@ class RoundIngest:
         self._joins: Counter[str] = Counter({kind: 0 for kind in JOIN_FRAME_KINDS})
         self._sources: dict[str, Counter[str]] = {}
         self._raw_requests = 0
+        self._maintenance = 0
         self._last_source: dict[str, str] = {}   # node name -> the source of its latest accepted round broadcast
         self._raw = Counter({"blocks": 0, "iq_bytes": 0, "unplaced": 0})
         self.last_node: Optional[str] = None   # sender of the round broadcast just placed (None: not placed)
@@ -112,6 +114,9 @@ class RoundIngest:
             return []
         if broadcast.frame_type == FRAME_RAW_REQUEST:
             self._raw_requests += 1    # another gateway's request to a node: nothing for the host to use
+            return []
+        if broadcast.frame_type == FRAME_MAINTENANCE:
+            self._maintenance += 1     # an OTA maintenance command a gateway sent: counted, not used
             return []
         serial = broadcast.node_id.upper()
         if self._duplicate((serial, broadcast.schedule_version, broadcast.round), host_ts):
@@ -198,10 +203,12 @@ class RoundIngest:
         """``status.broadcasts``: heard (records delivered, including those dropped on a full queue), accepted
         (placed), rejected {reason: n} for every one of REJECT_REASONS, unknown_nodes {serial: n} (beyond
         UNKNOWN_NODES_KEPT serials, the rest under "other"), unplaced_reports, join_frames {request, grant}
-        (every copy), raw_requests (raw mode requests heard, every copy), raw_csi {blocks, iq_bytes, unplaced}
+        (every copy), raw_requests (raw mode requests heard, every copy), maintenance_commands (OTA maintenance
+        commands heard, every copy), raw_csi {blocks, iq_bytes, unplaced}
         (raw CSI blocks of accepted round broadcasts), and per source {heard, accepted, duplicate,
         queue_overflow}."""
         return {"heard": self._heard, "accepted": self._accepted, "rejected": dict(self._rejected), "unknown_nodes": dict(self._unknown),
                 "unplaced_reports": self._unplaced, "join_frames": dict(self._joins),
-                "raw_requests": self._raw_requests, "raw_csi": dict(self._raw),
+                "raw_requests": self._raw_requests, "maintenance_commands": self._maintenance,
+                "raw_csi": dict(self._raw),
                 "sources": {name: dict(tally) for name, tally in self._sources.items()}}

@@ -290,3 +290,23 @@ def test_every_record_is_accounted_for_including_what_the_gateway_lost():
     assert gw["skipped_bytes"] > 0
     lines = [m for m in payload["status"]["messages"] if "gateway gw1" in m]
     assert lines and all(word in lines[0] for word in ("queue_full 4", "usb_dropped 2", "csi_skipped 1", "crc 1"))
+
+
+def test_a_maintenance_command_heard_on_the_channel_is_counted_on_its_own_not_rejected():
+    from csi import ota
+    from csi.rounds import RoundIngest
+
+    command = ota.maintenance_command(ota.OTA_CMD_REPORT, ["02:00:00:00:01:5C"], TEST_KIT_KEY, port=8070,
+                                      ap_channel=36, issued=7)
+    ingest = RoundIngest(ROOM)
+    for host_ts, _, data in rounds(0.5):
+        ingest.place(data, host_ts, "gw1")
+    assert ingest.place(command, T0 + 1.0, "gw1") == []
+    forged = command[:-1] + bytes([command[-1] ^ 1])
+    ingest.place(forged, T0 + 1.1, "gw1")
+    counts = ingest.counts()
+    assert counts["maintenance_commands"] == 1
+    assert counts["rejected"]["frame_type"] == 0 and counts["rejected"]["auth"] == 1
+    assert counts["heard"] == (counts["accepted"] + sum(counts["rejected"].values()) + sum(counts["unknown_nodes"].values())
+                               + sum(counts["join_frames"].values()) + counts["raw_requests"]
+                               + counts["maintenance_commands"])
