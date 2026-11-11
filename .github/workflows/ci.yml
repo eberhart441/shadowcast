@@ -74,4 +74,5 @@ jobs:
             firmware/node/build/node.bin
             firmware/node/build/bootloader/bootloader.bin
             firmware/node/build/partition_table/partition-table.bin
+            firmware/node/build/ota_data_initial.bin
             firmware/node/build/flash_args

@@ -29,6 +29,10 @@ detail: how the rig is built, how to operate it, how the detection works, and wh
   (ticket #13): building and setting the one node image, and the walk-between test.
 - [rig-checks/authentication.md](rig-checks/authentication.md): Rig check for authenticated round broadcasts
   (ticket #16): the cost per broadcast on the node, matching keys, and a node with another kit key.
+- [ota.md](ota.md): Over-the-air updates (ticket #18): the signing key, the one USB flash per board, and a
+  staged rollout over the maintenance network; what each node does meanwhile.
+- [rig-checks/ota.md](rig-checks/ota.md): Rig check for over-the-air updates (ticket #18): two boards update,
+  a corrupt and an unsigned image are refused, a failed health check rolls back.
 - [round-recording.md](round-recording.md): Round recording format, version 1. The file `--record` writes
   and `--replay-rounds` reads: round broadcasts with host time and source, labels, and the room config.
 - [adr/README.md](adr/README.md): Architecture decision records. The index of the decisions recorded in

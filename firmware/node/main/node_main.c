@@ -50,6 +50,7 @@
 #include "gateway_record.h"
 #include "link_table.h"
 #include "node_auth.h"
+#include "node_ota.h"
 #include "node_settings.h"
 #include "round_broadcast.h"
 #include "round_scheduler.h"
@@ -203,7 +204,7 @@ static void run_command(const char *line)
     char reply[200];
     node_settings_t next = s_settings;
     node_cmd_t action;
-    if (!node_auth_command(line, reply, sizeof reply, &action)) {
+    if (!node_auth_command(line, reply, sizeof reply, &action) && !node_ota_command(line, reply, sizeof reply, &action)) {
         action = node_settings_command(&next, s_serial_text, line, reply, sizeof reply);
     }
     if (action == NODE_CMD_SAVE_AND_RESTART) {
@@ -224,9 +225,11 @@ static void run_command(const char *line)
     }
 }
 
+static bool round_member(void);
+
 static void usb_task(void *arg)
 {
-    char line[128];
+    char line[384];                     /* "ota send <hex>" carries up to 150 bytes */
     size_t len = 0;
     uint8_t buf[64];
     int64_t next_status = esp_timer_get_time() + STATUS_PERIOD_US;
@@ -246,6 +249,7 @@ static void usb_task(void *arg)
             }
         }
         int64_t now = esp_timer_get_time();
+        node_ota_tick(round_member(), s_count[GR_COUNT_HEARD], s_count[GR_COUNT_SENT]);
         if (now >= next_status) {
             send_status();
             next_status = now + STATUS_PERIOD_US;
@@ -352,6 +356,12 @@ static void on_sent(const esp_now_send_info_t *info, esp_now_send_status_t statu
     xQueueSend(s_queue, &item, 0);   /* a lost one only costs one latency sample */
 }
 
+/* For the OTA health check (node_ota_tick, from the USB task): this node is a member of a round. */
+static bool round_member(void)
+{
+    return s_sched_ok && s_sched.state == RS_MEMBER;
+}
+
 /* Links whose node index now names another node start over. */
 static void apply_restarts(void)
 {
@@ -451,6 +461,9 @@ static void on_heard(const node_item_t *item)
     static float amp[CSI_LAYOUT_MAX_RAW / 2];
     const uint8_t *body;
     size_t body_len;
+    if (espnow_body(item->payload, item->payload_len, &body, &body_len) && node_ota_heard(body, body_len, item->t_us)) {
+        return;   /* a maintenance command (node_ota.h) */
+    }
     if (!espnow_body(item->payload, item->payload_len, &body, &body_len) || rb_decode(body, body_len, &b) != RB_OK
             || !node_auth_accept(body, body_len, item->t_us)) {
         count(GR_COUNT_REJECTED);   /* not a v2 round broadcast or join frame, forged or replayed */
@@ -612,6 +625,7 @@ void app_main(void)
     if (!node_auth_start() && s_settings.role != NODE_ROLE_GATEWAY) {
         s_keyed = false;   /* a transceiver without the kit key only listens: it cannot sign or verify */
     }
+    node_ota_boot(s_serial, s_settings.channel, s_settings.role == NODE_ROLE_GATEWAY);   /* maintenance mode: no return */
     wifi_start(s_settings.channel);
     ESP_ERROR_CHECK(esp_now_init());
     if (s_settings.role == NODE_ROLE_GATEWAY) {

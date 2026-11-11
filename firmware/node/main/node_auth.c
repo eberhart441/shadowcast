@@ -153,6 +153,11 @@ bool node_auth_accept(const uint8_t *bytes, size_t len, int64_t t_us)
     return st == RB_AUTH_OK;
 }
 
+bool node_auth_mac(const uint8_t *msg, size_t len, uint8_t mac[32])
+{
+    return s_ready && psa_hmac(&s_key_id, msg, len, mac);
+}
+
 static esp_err_t save_key(const uint8_t key[RB_AUTH_KEY_BYTES])
 {
     nvs_handle_t h;

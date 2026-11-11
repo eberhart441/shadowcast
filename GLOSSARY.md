@@ -93,7 +93,7 @@ How far into its slot a node's round broadcast starts on air, as another node's 
 _See_: `csi/coverage.py` (`SlotLateness`), `node_health[].slot_lateness`
 
 **Gateway**:
-A node of the transceiver rig on the dashboard host's USB that only listens: it sends nothing on the channel and writes every round broadcast it hears to USB as a heard record with its receive time. The same image as a transceiver, with the role setting `gateway`. (The hackathon's wireless receivers had a different gateway board, `CSI_GATEWAY=1`, that wrote text lines.)
+A node of the transceiver rig on the dashboard host's USB that only listens: it sends nothing on the channel except the maintenance commands the host hands it, and writes every round broadcast it hears to USB as a heard record with its receive time. The same image as a transceiver, with the role setting `gateway`. (The hackathon's wireless receivers had a different gateway board, `CSI_GATEWAY=1`, that wrote text lines.)
 _See_: `firmware/node/`, `csi/gateway_records.py` (`GatewaySource`), `dashboard.py --node-gateway`
 
 **Gateway record**:
@@ -104,6 +104,32 @@ _See_: `csi/gateway_records.py`, `firmware/core/gateway_record.h`, [ADR-0026](do
 What differs between boards running the one node image: role (transceiver or gateway), channel, round rate and slot guard. Kept in the node's flash and set over USB with `scripts/node.py`, never by a build flag. A transceiver needs none of them (the defaults join any round on channel 6); the node index is not a setting but given out by the round scheduler.
 _Avoid_: build flags, SENDER_ID (for these nodes)
 _See_: `firmware/core/node_settings.h`, `scripts/node.py`
+
+**Maintenance command**:
+The signed frame (frame type 8) that tells up to 13 named nodes to update their firmware to one image (named by its size and SHA-256) or to report what they run. The host builds it, the gateway sends it on the sensing channel; a node runs each one at most once.
+_Avoid_: OTA packet, update frame
+_See_: [`docs/round-broadcast.md`](docs/round-broadcast.md) (maintenance command), `csi/ota.py`, `firmware/core/ota_core.h`
+
+**Maintenance mode**:
+What a node runs instead of the transceiver for one job after a maintenance command: off the round and off the sensing channel, it joins the maintenance network, fetches and checks an image (or only reports), then restarts. At most 240 s.
+_See_: `firmware/node/main/node_ota.c`, [`docs/ota.md`](docs/ota.md)
+
+**Maintenance network**:
+The WPA2 access point the dashboard host provides during a firmware update, on 5 GHz or a 2.4 GHz channel clear of the sensing channel. Its SSID and passphrase are derived from the kit key. Nodes fetch the image from the host over it and report there.
+_Avoid_: hotspot (that is one way to provide it), backhaul
+
+**Signing key**:
+The RSA-3072 key pair whose private half signs node images (`espsecure sign-data`) and stays on the user's machine; a node takes a new image only if it is signed by the same key as the image it runs. Not the kit key, which every node holds.
+_Avoid_: kit key (a different, symmetric key), secure boot key (hardware secure boot is not enabled)
+_See_: [ADR-0029](docs/adr/0029-ota-maintenance-network-signed-images.md), `csi/ota.py` (`check_image`)
+
+**Health check**:
+The test a newly updated image must pass to stay: within 120 s of its first boot, a member of a round that has heard and sent 20 round broadcasts. Failing it, or crashing before it passes, rolls the node back to its old app slot.
+_See_: `firmware/core/ota_core.h` (`ota_health_step`)
+
+**Staged rollout**:
+Updating the rig a few nodes at a time (2, then 6, then 13 per command), each stage only after every node of the last one reported the new image committed and was heard on the round again; the first failure stops it.
+_See_: `csi/ota.py` (`Rollout`), `scripts/ota.py rollout`
 
 **Sender address**:
 The MAC a sender transmits from, `1a:00:00:00:00:<SENDER_ID>`. A receiver accepts every packet whose address starts `1a:00:00:00:00`, so a forgotten board with such an address shows up as a ghost sender.
