@@ -88,8 +88,9 @@ A miss costs more than a false alarm, so every knob was set towards MOTION as fa
   still unmeasured on hardware. The 8-node labelled walk (#20) is where it gets measured.
 - A transceiver room's state is per zone, which the possibly-occupied hold (#9) latches on.
 - Two tests that raised only the two directions of one node pair now read EMPTY: that is one witness.
-- At 870 links the old room decision rebuilt every link's reading per round broadcast and took most of the host CPU;
-  the room state updates incrementally (about a tenth of the pipeline's time in the profile).
+- Cost at 870 links: the room state is updated per round broadcast from the reports it carries, counts covering links
+  per point incrementally, and re-judges at most once a round only the zones whose links changed. In #11's 30-node
+  CPU budget test it costs about what the once-per-round two-link decision did (within the machine's noise).
 
 ## Evidence
 
