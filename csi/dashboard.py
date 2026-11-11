@@ -21,18 +21,12 @@ pipeline ``push_broadcast(host_ts, data)`` does the same from one round broadcas
     track     {x, y, vx, vy, confidence} or None: the motion track, a Kalman-smoothed dot following the
                 heatmap's hot blob (csi/tracker.py). Where change is, like the heatmap; not a person count.
     status    {time_s, links_by_state, parameters, room}
-<<<<<<< HEAD
                 room: {state, elevated (labels), mode, zones}: room-level MOTION. With transceivers, from zones
                     and links that share no node (csi/room_state.py); zones: {zone id: MOTION, EMPTY or WARMUP}. The
                     hackathon links: from link agreement (csi/adaptive.py), and no zones key
-                broadcasts: {accepted, rejected {reason: n}, unknown_nodes {serial: n}, unplaced_reports}, the
-                round broadcasts ingested (all 0 in the line pipeline)
-=======
-                room: {state, elevated (labels), mode}: room-level MOTION from link agreement (csi/adaptive.py)
                 broadcasts: {heard, accepted, rejected {reason: n}, unknown_nodes {serial: n}, unplaced_reports,
                 sources {name: {heard, accepted, duplicate, queue_overflow}}}, the round broadcasts ingested
                 (all 0 in the line pipeline); reasons are csi.rounds.REJECT_REASONS, each always present
->>>>>>> integrate/30-nodes
 
 Time is host time from the packets. ``snapshot()`` with no argument uses the newest packet time, so the
 payload is deterministic for simulated streams; pass ``now`` to advance the decay while packets stop.
