@@ -1,6 +1,6 @@
 # 0026. One node image: runtime settings over USB, binary gateway records, HT20 MCS0 broadcasts
 
-- **Status:** Accepted
+- **Status:** Accepted; the fixed round and the `index`/`nodes` settings superseded by [0027](0027-round-scheduler.md)
 - **Date:** 2026-11-11
 - **Recorded in:** eberhart441/shadowcast issue #13 (spec #2), branch `ticket/13-two-nodes`
 - **Related:** [0005](0005-vendor-the-firmware.md), [0006](0006-identify-boards-by-usb-serial.md), [0019](0019-wireless-receivers-over-esp-now.md), [0021](0021-on-node-score-streaming-window-and-score-code.md), [0022](0022-host-time-round-broadcast-seam.md)

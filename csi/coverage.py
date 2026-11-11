@@ -3,8 +3,9 @@
 At 30 nodes the operator cannot read 870 link cards; a dead or badly placed node has to show at a glance, and a
 rig that cannot see must never read as a quiet room (ADR-0001: a miss costs more than a false alarm).
 
-    node_health(nodes, rows, heard_at, now)   [{name, state, heard_by, hears, peers, last_heard_s,
+    node_health(nodes, rows, heard_at, now, lateness)   [{name, state, heard_by, hears, peers, last_heard_s,
                                                  link_rate_hz, slot_lateness}]  one per transceiver
+    SlotLateness                              what the receiving nodes report about each node's slot lateness
     coverage(health, rows, unknown_nodes)     {state, reasons, missing_nodes, unknown_nodes, silent_links,
                                                unexplained_silent_links}
     link_health(rows)                         {links, heard, silent, rate_hz {min, median, max}}  all links at once
@@ -19,15 +20,18 @@ unknown, so its links cannot be used), or more than ``SILENT_SHARE`` of the link
 missing are NO_SIGNAL (nodes that are up but cannot hear each other). Otherwise it is ok. It errs towards
 degraded: a few silent links already count.
 
-Slot lateness comes from the nodes' round scheduler (ticket #14), which does not report it yet: it reads
-``"unknown"`` until it does, then a number of microseconds.
+Slot lateness comes from the nodes' round scheduler (ticket #14): every receiving node measures how far into its
+slot each other member's round broadcast started on air, by its own schedule, and sends it in the link report.
+A node's slot lateness is the median of the latest value from each receiving node over the last ``NO_SIGNAL_S``,
+in microseconds; ``"unknown"`` when no receiving node reported one (the simulator does not).
 """
 from __future__ import annotations
 
 import statistics
-from typing import Mapping, Optional, Sequence
+from typing import Iterable, Mapping, Optional, Sequence
 
-from .links import NO_SIGNAL, NO_SIGNAL_S
+from .broadcast import LinkReport
+from .links import NO_SIGNAL, NO_SIGNAL_S, NodeLinkId
 from .room import Node
 
 OK = "ok"
@@ -41,9 +45,33 @@ NO_LINK = "-"                # the matrix diagonal (a node does not hear itself)
 
 
 
+class SlotLateness:
+    """The latest slot lateness each receiving node reported about each transmitting node."""
+
+    def __init__(self) -> None:
+        self._latest: dict[str, dict[str, tuple[float, int]]] = {}   # transmitter -> receiver -> (host_ts, us)
+
+    def observe(self, host_ts: float, placed: Iterable[tuple[NodeLinkId, LinkReport]]) -> None:
+        for link_id, report in placed:
+            late = report.slot_lateness_us
+            if late is not None:
+                self._latest.setdefault(link_id.transmitter, {})[link_id.receiver] = (host_ts, late)
+
+    def by_node(self, now: float) -> dict[str, float]:
+        """{transmitter name: median slot lateness in us} over the reports of the last NO_SIGNAL_S."""
+        out = {}
+        for transmitter, by_receiver in self._latest.items():
+            recent = [late for ts, late in by_receiver.values() if now - ts <= NO_SIGNAL_S]
+            if recent:
+                out[transmitter] = statistics.median(recent)
+        return out
+
+
 def node_health(nodes: Sequence[Node], rows: Sequence[Mapping], heard_at: Mapping[str, float],
-                now: float) -> list[dict]:
-    """Health of each node, from its links' rows and when its round broadcasts last reached the host."""
+                now: float, lateness: Optional[Mapping[str, float]] = None) -> list[dict]:
+    """Health of each node, from its links' rows, when its round broadcasts last reached the host and the slot
+    lateness the others report about it (``SlotLateness.by_node``)."""
+    lateness = lateness or {}
     by_rx: dict[str, list[Mapping]] = {n.name: [] for n in nodes}
     by_tx: dict[str, list[Mapping]] = {n.name: [] for n in nodes}
     for row in rows:
@@ -65,7 +93,7 @@ def node_health(nodes: Sequence[Node], rows: Sequence[Mapping], heard_at: Mappin
             "peers": len(nodes) - 1,
             "last_heard_s": age,
             "link_rate_hz": rate,
-            "slot_lateness": SLOT_LATENESS_UNKNOWN,
+            "slot_lateness": lateness.get(node.name, SLOT_LATENESS_UNKNOWN),
         })
     return out
 

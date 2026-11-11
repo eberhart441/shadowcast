@@ -15,7 +15,8 @@ rejected as `version`. Terms are as in [`GLOSSARY.md`](../GLOSSARY.md) (transcei
 broadcast, link report).
 
 A round broadcast is the payload of one ESP-NOW broadcast: a 26-byte **round header**, then one 4-byte **link
-report** per other member of the round. Every multi-byte field is little-endian. With N members the payload
+report** per other member of the round. The round scheduler's **join frames** (below) use the same header and
+carry no link reports. Every multi-byte field is little-endian. With N members the payload
 is 26 + 4 × (N − 1) bytes: 54 B at 8 nodes, 142 B at 30, inside ESP-NOW v1's 250 B.
 
 ## Round header (26 bytes)
@@ -23,8 +24,8 @@ is 26 + 4 × (N − 1) bytes: 54 B at 8 nodes, 142 B at 30, inside ESP-NOW v1's 
 | Offset | Size | Field | Meaning |
 |---|---|---|---|
 | 0 | 1 | version | Format version, `2`. A receiver rejects any other value (reason `version`). |
-| 1 | 1 | frame type | `1` = round broadcast with link reports. Other values are reserved for later tickets (join, raw mode) and rejected in v2 (reason `frame_type`). |
-| 2 | 2 | round | Round number, u16, wraps at 65535. |
+| 1 | 1 | frame type | `1` = round broadcast with link reports, `2` = join request, `3` = join grant ([join frames](#join-frames)). Other values are reserved for later tickets (raw mode) and rejected (reason `frame_type`). |
+| 2 | 2 | round | Round number, u16, wraps at 65535. Each node counts its own, one up per round, never back (the round scheduler); numbers are not shared between nodes, which keeps them fresh (below). |
 | 4 | 1 | slot | The slot this broadcast was sent in. |
 | 5 | 1 | slots per round | Slots in this round, including the join slot. |
 | 6 | 1 | schedule version | u8. Node indices only mean something within one schedule version. |
@@ -49,13 +50,24 @@ must be exactly 26 + 4 × (members − 1) (reason `length`).
 | 0 | 1 | score | Quantised score, u8. `0` means no score yet. |
 | 1 | 1 | rssi | i8, dBm of the last round broadcast heard from the transmitter. `-128` means none. |
 | 2 | 1 | heard / since | High nibble: round broadcasts heard from the transmitter over the last 15 rounds (0 to 15). Low nibble: rounds since it was last heard (0 = this round; 15 = 15 or more, or never). |
-| 3 | 1 | flags | Bit 0: baseline warming. Bit 1: possible move. Bit 2: raw mode active. Bits 3 to 7 are reserved: sent as 0, ignored on decode. |
+| 3 | 1 | flags, slot lateness | Bit 0: baseline warming. Bit 1: possible move. Bit 2: raw mode active. Bits 3 to 7: the transmitter's [slot lateness](#slot-lateness) code (0 = not measured). |
 
 The link reports describe the previous round: each node sends, in its slot, what it measured on the round
 broadcasts it heard since its own last slot.
 
 The spec says "heard in the last 16 rounds" in a 4-bit field. Version 1 counts over the last **15** rounds, so
 that 15 means "heard every round" exactly instead of saturating.
+
+### Slot lateness
+
+Bits 3 to 7 of byte 3 carry a code *c* (0 to 31) for how far into its slot the transmitter's last round broadcast
+started on air, as the receiving node's schedule places that slot: code 0 means not measured (the transmitter was
+not heard since the last report, or the sender is not a member yet); code *c* from 1 to 30 means (*c* − 1) × 32 to
+*c* × 32 µs; 31 means 960 µs or more. The receiving node takes the start on air as its receive time minus the
+frame's airtime minus its own measured send latency (`firmware/core/round_scheduler.h`). The host shows the median
+over the receiving nodes as the node's slot lateness (`node_health[].slot_lateness`). These bits were reserved
+(sent as 0, ignored) before ticket #14, so a reader that ignores them still decodes v1 correctly; the version
+stays 1.
 
 ### Score quantisation
 
@@ -101,8 +113,28 @@ fresh. On the host, de-duplication runs first, so a second gateway's copy is a `
 What it does not stop: while a node is silent for more than 2 s, a replay of its own old broadcasts can stand in
 for it until it is heard again; and a copy recorded a whole number of round-number wraps ago (55 min at 20 Hz,
 27 min at 40 Hz) can pass if it lands just ahead of the live round. A longer counter would close both and needs a
-new format version. A node whose round number steps back (a renumbered schedule) loses its next 2 s of
-broadcasts at every receiver.
+new format version. A node whose round number steps back loses its next 2 s of broadcasts at every receiver; the
+round scheduler never steps back, so only a power cycle does that.
+
+## Join frames
+
+The round scheduler (`firmware/core/round_scheduler.h`, [ADR-0027](adr/0027-round-scheduler.md)) sends two more
+frame types in the **join slot**, the last slot of every round. Both are the 26-byte round header alone (any other
+length is reason `length`), with these meanings:
+
+| Field | Join request (frame type 2) | Join grant (frame type 3) |
+|---|---|---|
+| sent by | a node that is not a member, in the join slot of a round the scheduler numbers **even** | the schedule's scheduler (the member in slot 0), in the join slot of the next round it numbers **odd** |
+| round | the joiner's own round number | the joiner's round number: the request's plus the rounds since |
+| slot, slots per round | the join slot, and the slots of the schedule it asks to join | the join slot, and the slots of the schedule before the grant |
+| schedule version, membership | of the schedule it asks to join | of the **new** schedule: one version later, with the joiner's index set |
+| node index | the index it asks for (the lowest free one; the scheduler may give another). 0 to 31, else reason `membership` | the index given to the joiner; it must be in the membership (reason `membership`) |
+| node id | the joining node's board serial | the joining node's board serial (not the scheduler's) |
+
+Join frames are signed like round broadcasts and a forged one is rejected as `auth`. The host counts the others
+(`status.broadcasts.join_frames`, every copy) and never places, de-duplicates or checks them for freshness; a
+grant tells it the joiner's index in the new schedule version. A node checks join frames for freshness like any
+frame (both carry the joiner's round numbers, so they count on with its own) and never takes its timing from one.
 
 ## How the host reads it
 
@@ -120,7 +152,8 @@ broadcasts at every receiver.
 - Several gateways may hear one round broadcast. The host places the first copy of (node id, schedule version,
   round number); any other copy within 2 s of host time, from any gateway, is counted as a `duplicate` and not
   placed again. Two gateways therefore never double-count a link report. A node must not send two different
-  round broadcasts with the same round number in one schedule version.
+  round broadcasts with the same round number in one schedule version; the round scheduler plans no round at or
+  before the last one it sent in the same schedule version.
 - A live round broadcast that arrives while the host's queue is full (the host fell behind) is dropped and
   counted as `queue_overflow`; a recorded one waits. Every reason, unknown nodes and per-gateway counts are in
   the dashboard payload at `status.broadcasts` (`csi/rounds.py`), and unknown nodes, rejections and drops also

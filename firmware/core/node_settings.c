@@ -3,7 +3,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "fixed_round.h"
+#include "round_scheduler.h"
 
 #define MAX_TOKEN 32
 
@@ -15,9 +15,8 @@ void node_settings_default(node_settings_t *s)
     s->version = NODE_SETTINGS_VERSION;
     s->role = NODE_ROLE_TRANSCEIVER;
     s->channel = 6;
-    s->index = 0;
-    s->nodes = 2;
     s->round_hz = 40;
+    s->guard_us = RS_GUARD_DEFAULT_US;
 }
 
 /* Why s is not valid, or NULL. */
@@ -29,14 +28,11 @@ static const char *invalid(const node_settings_t *s)
     if (s->channel < 1 || s->channel > 13) {
         return "channel must be a 2.4 GHz channel, 1 to 13";
     }
-    if (s->nodes < 2 || s->nodes > 32) {
-        return "nodes must be 2 to 32";
+    if (s->guard_us < NODE_GUARD_MIN_US || s->guard_us > NODE_GUARD_MAX_US) {
+        return "guard_us must be 50 to 5000";
     }
-    if (s->index >= s->nodes) {
-        return "index must be below nodes (0 to nodes - 1)";
-    }
-    if (s->round_hz < 1 || 1000000L / ((long)s->round_hz * s->nodes) < FIXED_ROUND_MIN_SLOT_US) {
-        return "round_hz too high: each slot must be at least 1 ms (round_hz x nodes <= 1000)";
+    if (s->round_hz < 1 || rs_max_members(s->round_hz, s->guard_us) < 2) {
+        return "round_hz too high: the round must hold two slots of at least 1 ms (and the guard) and the join slot";
     }
     return NULL;
 }
@@ -46,10 +42,33 @@ bool node_settings_valid(const node_settings_t *s)
     return s->version == NODE_SETTINGS_VERSION && invalid(s) == NULL;
 }
 
+bool node_settings_load(const void *blob, size_t n, node_settings_t *s)
+{
+    const uint8_t *b = blob;
+    node_settings_t got;
+    node_settings_default(&got);
+    if (n == sizeof got && b[0] == NODE_SETTINGS_VERSION) {
+        memcpy(&got, blob, sizeof got);
+    } else if (n == 6 && b[0] == 1) {   /* version 1: version, role, channel, index, nodes, round_hz */
+        got.role = b[1];
+        got.channel = b[2];
+        got.round_hz = b[5];
+    } else {
+        node_settings_default(s);
+        return false;
+    }
+    if (!node_settings_valid(&got)) {
+        node_settings_default(s);
+        return false;
+    }
+    *s = got;
+    return true;
+}
+
 void node_settings_format(const node_settings_t *s, char *out, size_t n)
 {
-    snprintf(out, n, "role=%s channel=%u index=%u nodes=%u round_hz=%u",
-             s->role <= NODE_ROLE_GATEWAY ? ROLE_NAMES[s->role] : "?", s->channel, s->index, s->nodes, s->round_hz);
+    snprintf(out, n, "role=%s channel=%u round_hz=%u guard_us=%u",
+             s->role <= NODE_ROLE_GATEWAY ? ROLE_NAMES[s->role] : "?", s->channel, s->round_hz, s->guard_us);
 }
 
 /* Copy the next space-separated token of *p into tok (at most MAX_TOKEN - 1 chars). Returns false at the end. */
@@ -72,22 +91,22 @@ static bool next_token(const char **p, char *tok)
     return true;
 }
 
-static bool parse_u8(const char *text, uint8_t *out)
+static bool parse_number(const char *text, unsigned max, unsigned *out)
 {
-    unsigned v = 0;
+    unsigned long v = 0;
     if (!*text) {
         return false;
     }
     for (; *text; text++) {
-        if (*text < '0' || *text > '9' || v > 255) {
+        if (*text < '0' || *text > '9' || v > max) {
             return false;
         }
-        v = v * 10 + (unsigned)(*text - '0');
+        v = v * 10 + (unsigned long)(*text - '0');
     }
-    if (v > 255) {
+    if (v > max) {
         return false;
     }
-    *out = (uint8_t)v;
+    *out = (unsigned)v;
     return true;
 }
 
@@ -102,6 +121,7 @@ static const char *apply(node_settings_t *s, const char *tok, char *why, size_t 
     size_t klen = (size_t)(eq - tok);
     const char *value = eq + 1;
     uint8_t *field = NULL;
+    unsigned v;
     if (klen == 4 && strncmp(tok, "role", 4) == 0) {
         for (uint8_t r = 0; r <= NODE_ROLE_GATEWAY; r++) {
             if (strcmp(value, ROLE_NAMES[r]) == 0) {
@@ -114,20 +134,28 @@ static const char *apply(node_settings_t *s, const char *tok, char *why, size_t 
     }
     if (klen == 7 && strncmp(tok, "channel", 7) == 0) {
         field = &s->channel;
-    } else if (klen == 5 && strncmp(tok, "index", 5) == 0) {
-        field = &s->index;
-    } else if (klen == 5 && strncmp(tok, "nodes", 5) == 0) {
-        field = &s->nodes;
     } else if (klen == 8 && strncmp(tok, "round_hz", 8) == 0) {
         field = &s->round_hz;
+    } else if (klen == 8 && strncmp(tok, "guard_us", 8) == 0) {
+        if (!parse_number(value, 65535, &v)) {
+            snprintf(why, n, "guard_us must be a number 0 to 65535, got '%s'", value);
+            return why;
+        }
+        s->guard_us = (uint16_t)v;
+        return NULL;
+    } else if ((klen == 5 && strncmp(tok, "index", 5) == 0) || (klen == 5 && strncmp(tok, "nodes", 5) == 0)) {
+        snprintf(why, n, "'%.*s' is not a setting any more: the round scheduler gives out node indices", (int)klen,
+                 tok);
+        return why;
     } else {
-        snprintf(why, n, "unknown setting '%.*s' (role, channel, index, nodes, round_hz)", (int)klen, tok);
+        snprintf(why, n, "unknown setting '%.*s' (role, channel, round_hz, guard_us)", (int)klen, tok);
         return why;
     }
-    if (!parse_u8(value, field)) {
+    if (!parse_number(value, 255, &v)) {
         snprintf(why, n, "%.*s must be a number 0 to 255, got '%s'", (int)klen, tok, value);
         return why;
     }
+    *field = (uint8_t)v;
     return NULL;
 }
 
@@ -164,7 +192,7 @@ node_cmd_t node_settings_command(node_settings_t *s, const char *serial, const c
         count++;
     }
     if (!count) {
-        snprintf(reply, n, "error set needs key=value (role, channel, index, nodes, round_hz)");
+        snprintf(reply, n, "error set needs key=value (role, channel, round_hz, guard_us)");
         return NODE_CMD_ERROR;
     }
     const char *err = invalid(&next);

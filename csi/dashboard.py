@@ -21,11 +21,12 @@ pipeline ``push_broadcast(host_ts, data)`` does the same from one round broadcas
     status    {time_s, links_by_state, parameters, room}
                 room: {state, elevated (labels), mode}: room-level MOTION from link agreement (csi/adaptive.py)
                 broadcasts: {heard, accepted, rejected {reason: n}, unknown_nodes {serial: n}, unplaced_reports,
-                sources {name: {heard, accepted, duplicate, queue_overflow}}}, the round broadcasts ingested
+                join_frames {request, grant}, sources {name: {heard, accepted, duplicate, queue_overflow}}}, the
+                round broadcasts ingested
                 (all 0 in the line pipeline); reasons are csi.rounds.REJECT_REASONS, each always present
     node_health [{name, state, heard_by, hears, peers, last_heard_s, link_rate_hz, slot_lateness}] per transceiver
-                state "ok" or "missing" (no round broadcast reached the host for > 2 s); slot_lateness is the
-                string "unknown" until the nodes report it (ticket #14), then microseconds
+                state "ok" or "missing" (no round broadcast reached the host for > 2 s); slot_lateness: median
+                us into its slot that its round broadcasts start, as the others report it, or "unknown"
     coverage    {state "ok" | "degraded", reasons [text], missing_nodes, unknown_nodes, silent_links,
                 unexplained_silent_links}
     link_health {links, heard, silent, rate_hz {min, median, max}}: every link at once
@@ -48,7 +49,7 @@ from typing import Any, Mapping, Optional
 
 import numpy as np
 
-from .coverage import coverage, link_health, link_matrix, node_health
+from .coverage import SlotLateness, coverage, link_health, link_matrix, node_health
 from .heatmap import RTI, Heatmap
 from .links import LinkMonitor, NO_SIGNAL, UNCALIBRATED, WARMUP, room_link_ids
 from .parser import CSIPacket
@@ -74,6 +75,7 @@ class DashboardState:
         self._receivers = {rx.name for rx in room.receivers}
         self._last_host: Optional[float] = None
         self._heard_at: dict[str, float] = {}   # transceiver name -> host time its last round broadcast arrived
+        self._lateness = SlotLateness()
 
     def push(self, receiver: str, pkt: CSIPacket) -> None:
         self._monitor.push(receiver, pkt)
@@ -83,7 +85,9 @@ class DashboardState:
         """One round broadcast heard at ``host_ts`` by ``source`` (a gateway): its link reports drive their links.
         Bytes that cannot be used, and copies another gateway already delivered, are counted in
         ``status.broadcasts``, never raised."""
-        self._monitor.push_reports(host_ts, self._ingest.place(data, host_ts, source))
+        placed = self._ingest.place(data, host_ts, source)
+        self._monitor.push_reports(host_ts, placed)
+        self._lateness.observe(host_ts, placed)
         if self._ingest.last_node is not None:
             self._heard_at[self._ingest.last_node] = max(host_ts, self._heard_at.get(self._ingest.last_node, host_ts))
         self._advance(host_ts)
@@ -159,12 +163,12 @@ class DashboardState:
                        evidence=heat.evidence, baselines=heat.baselines, track=self._track.state(now),
                        room_state=self._monitor.room_state, room_elevated=tuple(self._monitor.room_elevated),
                        mode=self._monitor.mode, broadcasts=self._ingest.counts(), parameters=self.parameters(),
-                       heard_at=dict(self._heard_at))
+                       heard_at=dict(self._heard_at), lateness=self._lateness.by_node(now))
 
     def render(self, cap: "Capture", *, links: bool = True) -> dict:
         """The payload from a capture. Reads nothing that the pipeline changes, so it is safe off the lock."""
         rows = cap.rows
-        health = node_health(self._room.transceivers, rows, cap.heard_at, cap.now)
+        health = node_health(self._room.transceivers, rows, cap.heard_at, cap.now, cap.lateness)
         payload = {
             "room": {"width_m": self._room.width_m, "depth_m": self._room.depth_m},
             "nodes": self._nodes(),
@@ -193,7 +197,7 @@ class DashboardState:
         heat = self._heat
         cap = Capture(now=now, rows=[row], heat_values=heat.values, contributing=tuple(heat.contributing),
                       evidence=heat.evidence, baselines=heat.baselines, track=None, room_state="", room_elevated=(),
-                      mode=self._monitor.mode, broadcasts={}, parameters={}, heard_at={})
+                      mode=self._monitor.mode, broadcasts={}, parameters={}, heard_at={}, lateness={})
         return self._link_payload(row, cap)
 
     def _link_payload(self, row: Mapping, cap: "Capture") -> dict:
@@ -271,6 +275,7 @@ class Capture:
     broadcasts: dict
     parameters: dict
     heard_at: dict
+    lateness: dict
 
 
 def _round(value: Optional[float]) -> Optional[float]:

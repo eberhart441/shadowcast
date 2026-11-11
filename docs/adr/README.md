@@ -31,7 +31,8 @@ All of these decisions were made during the CodeMetalForge hackathon and recorde
 | [0023](0023-round-recordings.md) | Round recordings: the undecoded bytes, host time and source, in one versioned binary file | Accepted | 2026-11-11 |
 | [0024](0024-link-detail-on-demand-frames-off-the-lock.md) | Per-link detail on demand, and frames rendered off the server lock | Accepted | 2026-11-11 |
 | [0025](0025-radio-tomography-heatmap.md) | The transceiver heatmap is regularised radio tomography over every link | Accepted | 2026-11-11 |
-| [0026](0026-one-node-image-runtime-settings-gateway-records.md) | One node image: runtime settings over USB, binary gateway records, HT20 MCS0 broadcasts | Accepted | 2026-11-11 |
+| [0026](0026-one-node-image-runtime-settings-gateway-records.md) | One node image: runtime settings over USB, binary gateway records, HT20 MCS0 broadcasts | Accepted (fixed round and per-board index superseded by 0027) | 2026-11-11 |
+| [0027](0027-round-scheduler.md) | The round scheduler: slot 0 schedules, anyone keeps time, lowest scheduler ID wins | Accepted | 2026-11-11 |
 | [0028](0028-hmac-sha256-tag-and-round-number-freshness.md) | Round broadcasts carry a truncated HMAC-SHA256 tag under a kit key, and the round number guards replay | Accepted | 2026-11-11 |
 
 Reading order: 0001 is the principle the detection records (0007 to 0011) argue from. 0002 to 0006 are the hardware and radio. 0012 to 0018 are the software architecture and how it is tested.

@@ -43,5 +43,5 @@ build_and_run test_gateway_record gateway_record.c tests/test_gateway_record.c -
 build_and_run test_espnow_frame espnow_frame.c tests/test_espnow_frame.c --
 build_and_run test_csi_layout csi_layout.c tests/test_csi_layout.c --
 build_and_run test_link_table link_table.c motion_score.c round_broadcast.c tests/test_link_table.c --
-build_and_run test_fixed_round fixed_round.c tests/test_fixed_round.c --
-build_and_run test_node_settings node_settings.c tests/test_node_settings.c --
+build_and_run test_node_settings node_settings.c round_scheduler.c round_broadcast.c tests/test_node_settings.c --
+build_and_run test_round_scheduler round_scheduler.c round_broadcast.c round_auth.c link_table.c motion_score.c tests/test_round_scheduler.c --
