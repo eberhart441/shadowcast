@@ -34,7 +34,7 @@ Decision, at each update (host time ``t``)
     zone            MOTION while one of its probe points fires, and for ``hold_s`` after the last one stopped.
     room            WARMUP with no warm link, else MOTION while any zone is MOTION, else EMPTY.
 
-Which way the trade-off goes (ADR-0001, a miss costs more; docs/adr/0024-adaptive-baseline-only-and-a-room-state-
+Which way the trade-off goes (ADR-0001, a miss costs more; docs/adr/0025-adaptive-baseline-only-and-a-room-state-
 from-zones.md): ``fraction`` is low, because a person raises nearly every link that covers the point they stand on
 (the falloff is 0.25 m, the cover radius 0.3 m), so asking for a third of them costs little sensitivity and removes
 most chance agreement; dead or warming links lower the capacity and with it the need; and a rig with no independent
