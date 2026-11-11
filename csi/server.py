@@ -63,6 +63,7 @@ from .multisource import MultiSource
 from .parser import CSIPacket, Stream
 from .raw_mode import RawModeRefused, Transmitter, raw_messages
 from .room import Room, Walk
+from .room_state import POSSIBLY_OCCUPIED_S
 from .round_auth import TEST_KIT_KEY
 from .rounds import AUTH, DUPLICATE, QUEUE_OVERFLOW, HeardBroadcast
 from .simulate import SimulatedRig, simulate_room, simulate_room_links
@@ -476,6 +477,7 @@ class DashboardServer(FrameServer):
     ``kit_key`` (csi/round_auth.py; by default the published test key the simulator signs with).
     ``transmitters`` maps a source name to the object that can send for it (a node gateway, the simulated rig):
     raw mode requests go out through the one that last delivered the target node's round broadcast.
+    ``possibly_occupied_s`` is the transceiver room state's possibly-occupied hold (csi/room_state.py).
     """
 
     def __init__(self, room: Room, sources: Mapping[str, Stream], thresholds: Optional[Mapping[str, float]] = None,
@@ -485,12 +487,13 @@ class DashboardServer(FrameServer):
                  notes: Sequence[str] = (), allow_control: bool = False,
                  thresholds_path: Optional[Union[str, Path]] = None, replay: bool = False,
                  mode: str = "fixed", kit_key: bytes = TEST_KIT_KEY,
+                 possibly_occupied_s: float = POSSIBLY_OCCUPIED_S,
                  transmitters: Optional[Mapping[str, Transmitter]] = None, **heatmap_params) -> None:
         network_control = allow_control and not is_loopback(host)
         super().__init__(host, port, web_index, trusted_host=host if network_control else None)
         self._room = room
         self._state = DashboardState(room, dict(thresholds or {}), mode=mode, kit_key=kit_key,
-                                     **heatmap_params)
+                                     possibly_occupied_s=possibly_occupied_s, **heatmap_params)
         self._expected = [link_id for link_id, _, _ in room_link_ids(room)]
         self._labels = {link.label for link in self._expected}
         self._controls_on = controls_allowed(host, allow_control)
@@ -854,7 +857,10 @@ class DashboardServer(FrameServer):
         value = body.get("value")
         if not _finite_positive(value):
             raise RequestError(f"value must be a positive number, or null for auto, got {value!r}")
-        self._state.set_threshold(link, float(value))
+        try:
+            self._state.set_threshold(link, float(value))
+        except ValueError as e:   # a transceiver link takes no threshold: adaptive baseline only (ADR-0029)
+            raise RequestError(str(e)) from None
         self._commands.append(f"threshold {link} = {float(value):.4g}")
         return 200, {"link": link, "threshold": float(value)}
 

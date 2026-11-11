@@ -28,6 +28,8 @@ and every link is judged by its own adaptive baseline (WARMUP for its first 10 s
 pipeline on real transceivers (firmware/node), from the binary records of a gateway node (docs/gateway-record.md).
 --record writes every round broadcast and the labels to a round recording (docs/round-recording.md); while it
 runs, type a label (and optional key=value extras, e.g. "walking mark=A3") and Enter to switch label.
+In the transceiver pipeline a zone that stops moving reads POSSIBLY_OCCUPIED for --possibly-occupied-s (default 60 s)
+before EMPTY: a person who stands still fades from the score (csi/room_state.py).
 """
 from __future__ import annotations
 
@@ -53,6 +55,7 @@ from csi.ports import PortResolutionError, resolve_receiver_ports  # noqa: E402
 from csi.parser import Stream, serial_stream  # noqa: E402
 from csi.recording import LABELS, validate_label  # noqa: E402
 from csi.replay import ReplayError, ReplayServer, load_log, rounds_dashboard, session_dashboard  # noqa: E402
+from csi.room_state import POSSIBLY_OCCUPIED_S  # noqa: E402
 from csi.room import DEFAULT_ROOM_PATH, Room, load_room  # noqa: E402
 from csi.round_auth import TEST_KIT_KEY, KitKeyError, kit_key_check, load_kit_key  # noqa: E402
 from csi.round_recording import RoundRecorder  # noqa: E402
@@ -78,7 +81,7 @@ def speed_arg(text: str) -> float:
 
 
 def quiet_seconds(text: str) -> float:
-    """--sim-quiet-first: a non-negative number of seconds."""
+    """--sim-quiet-first, --possibly-occupied-s: a non-negative number of seconds."""
     try:
         value = float(text)
     except ValueError:
@@ -152,6 +155,10 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--kit-key", type=Path, default=None, metavar="PATH",
                     help="the kit key file the round broadcasts are verified with (scripts/node.py keygen); "
                          "--node-gateway defaults to data/kit.key, --replay-rounds to the simulator's test key")
+    ap.add_argument("--possibly-occupied-s", type=quiet_seconds, default=None, metavar="SECONDS",
+                    help="transceiver pipeline (--simulate, --node-gateway, --replay-rounds): how long a zone that "
+                         f"stops moving reads POSSIBLY_OCCUPIED before EMPTY (default {POSSIBLY_OCCUPIED_S:g}; 0 "
+                         "turns the hold off)")
     ap.add_argument("--room", type=Path, default=DEFAULT_ROOM_PATH, help="room configuration (default config/room.json)")
     ap.add_argument("--thresholds", metavar="links.json",
                     help="per-link fixed thresholds from links_live.py --calibrate. With --simulate-room the default is "
@@ -207,6 +214,9 @@ def check_source(args: argparse.Namespace) -> None:
     if args.kit_key is not None and not (rounds == "--node-gateway" or args.replay_rounds is not None):
         raise SystemExit("error: --kit-key applies to --node-gateway and --replay-rounds only (--simulate signs with "
                          "the published test key)")
+    if args.possibly_occupied_s is not None and not (rounds or args.replay_rounds is not None):
+        raise SystemExit("error: --possibly-occupied-s applies to --simulate, --node-gateway and --replay-rounds only "
+                         "(the room state of transceiver links)")
     if args.replay_rounds is not None and args.thresholds is not None:
         raise SystemExit("error: --thresholds does not apply to --replay-rounds: every transceiver link is judged by "
                          "its own adaptive baseline")
@@ -268,6 +278,11 @@ def server_mode(args: argparse.Namespace) -> str:
     if args.replay is not None or args.replay_session is not None:
         return "fixed"
     return "auto" if args.auto_threshold or args.simulate or args.node_gateway is not None else "fixed"
+
+
+def hold_s(args: argparse.Namespace) -> float:
+    """The possibly-occupied hold: --possibly-occupied-s, else the default."""
+    return POSSIBLY_OCCUPIED_S if args.possibly_occupied_s is None else args.possibly_occupied_s
 
 
 def kit_key(args: argparse.Namespace) -> bytes:
@@ -340,7 +355,7 @@ def build_server(args: argparse.Namespace) -> FrameServer:
         return ReplayServer(load_log(args.replay), speed=speed, host=args.host, port=args.http_port, web_index=page)
     if args.replay_rounds is not None:
         return rounds_dashboard(args.replay_rounds, speed=speed, host=args.host, port=args.http_port, log=args.log,
-                                web_index=page, kit_key=kit_key(args))
+                                web_index=page, kit_key=kit_key(args), possibly_occupied_s=hold_s(args))
     room = load_room(args.room)
     if args.replay_session is not None:
         thresholds = load_link_thresholds(args.thresholds)
@@ -379,7 +394,7 @@ def build_server(args: argparse.Namespace) -> FrameServer:
     return DashboardServer(room, sources, thresholds, host=args.host, port=args.http_port, log=args.log,
                            allow_control=args.allow_control, thresholds_path=save_to, mode=mode, kit_key=args.key,
                            notes=notes, log_meta={"source": source, "thresholds_source": thresholds_source},
-                           web_index=page, transmitters=args.transmitters)
+                           web_index=page, possibly_occupied_s=hold_s(args), transmitters=args.transmitters)
 
 
 def read_labels(lines, recorder: RoundRecorder) -> None:

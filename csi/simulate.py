@@ -30,7 +30,7 @@ from .broadcast import (FLAG_RAW_MODE, FLAG_WARMING, FORMAT_VERSION, FRAME_RAW_R
 from .round_auth import REPLAY, TEST_KIT_KEY, Freshness, sign_broadcast, tag_ok
 from .links import LinkId
 from .parser import DEFAULT_HEADER, CSIPacket, CSIParser, parse_stream
-from .room import FALLOFF_SIGMA_M, Person, Room, link_responses, load_room
+from .room import FALLOFF_SIGMA_M, Person, Room, link_responses, load_room, movement
 
 N_SUBCARRIERS = 64
 NULL_SUBCARRIERS = tuple(range(0, 6)) + (32,) + tuple(range(59, 64))  # 12 nulls (LLTF-like)
@@ -342,6 +342,9 @@ ROUND_MOTION_GAIN = 20.0   # a person on the link multiplies its score by 1 + th
 GATEWAY_LATENCY_S = 0.0005  # up to this much is added to a broadcast's host time
 SIM_GATEWAY_ID = "02:00:00:00:00:80"   # the simulated gateway's board serial (raw mode requests carry it)
 SIM_RAW_SUBCARRIERS = 64    # synthetic raw CSI: one HT20 long training field, 128 I/Q bytes
+NOISY_NODE_GAIN = 8.0      # a noisy node multiplies the score of every link it is on (both directions) by this
+GLITCH_S = 1.5             # one glitch raises one link's score for this long (about a 1 s window plus its onset)
+GLITCH_GAIN = 6.0          # ... by this factor: enough to elevate the link above its enter level
 
 
 def simulate_rounds(
@@ -353,6 +356,8 @@ def simulate_rounds(
     round_hz: float = ROUND_HZ,
     dead_after: Optional[Mapping[str, float]] = None,
     drop_prob: float = 0.0,
+    noisy: Optional[Mapping[str, tuple[float, float]]] = None,
+    glitch_rate_hz: float = 0.0,
     seed: int = 0,
     realtime: bool = False,
     t0: float = 1_700_000_000.0,
@@ -367,9 +372,13 @@ def simulate_rounds(
     (its time 0 is then); a sequence of people are all there; ``None`` is an empty room. ``duration_s=None`` runs forever. ``dead_after`` maps a node
     name to the seconds after which it stops broadcasting; it stays in the membership (no scheduler is
     simulated), so the others' heard counters for it fall to 0. ``drop_prob`` is the chance that a node misses
-    one round broadcast from another. Seeded: the same arguments give the same bytes. ``realtime`` paces the
-    stream to the wall clock and stamps it with ``time.time()``. Every broadcast is signed with ``kit_key``
-    (default the published test key, which the host also defaults to).
+    one round broadcast from another. ``noisy`` maps a node name to (from_s, to_s): in that time every link the
+    node is on, as receiver or transmitter, has its score multiplied by ``NOISY_NODE_GAIN`` (a front-end fault or a
+    gain step on that one board). ``glitch_rate_hz`` is the rate, per link, of independent glitches: each raises one
+    link's score by ``GLITCH_GAIN`` for ``GLITCH_S`` (onsets are a Poisson process; the room is otherwise unchanged).
+    Seeded: the same arguments give the same bytes, and noise or glitches do not change the rest of the stream.
+    ``realtime`` paces the stream to the wall clock and stamps it with ``time.time()``. Every broadcast is signed with
+    ``kit_key`` (default the published test key, which the host also defaults to).
 
     Raw mode: ``raw`` maps a receiving node's name to the transmitters whose links it streams from the start
     (at most 2). ``commands`` is a deque of frames a gateway sent (``SimulatedRig.send_frame``); before each round
@@ -382,11 +391,13 @@ def simulate_rounds(
     n = len(nodes)
     if not 2 <= n <= MAX_NODES:
         raise ValueError(f"the simulated rig needs 2 to {MAX_NODES} transceivers, the room has {n}")
-    dead_after = dict(dead_after or {})
-    unknown = sorted(set(dead_after) - {node.name for node in nodes})
-    if unknown:
-        raise ValueError(f"dead_after names no transceiver: {', '.join(unknown)}")
+    dead_after, noisy = dict(dead_after or {}), dict(noisy or {})
+    for arg, names in (("dead_after", dead_after), ("noisy", noisy)):
+        unknown = sorted(set(names) - {node.name for node in nodes})
+        if unknown:
+            raise ValueError(f"{arg} names no transceiver: {', '.join(unknown)}")
     rng = np.random.default_rng(seed)
+    glitch_rng = np.random.default_rng([seed, 1])   # its own stream: glitches leave the other draws unchanged
     dead_round = [int(round(dead_after[node.name] * round_hz)) if node.name in dead_after else None
                   for node in nodes]
     pairs = [(r, t) for r in range(n) for t in range(n) if r != t]          # (receiving, transmitting) indices
@@ -398,6 +409,9 @@ def simulate_rounds(
     since = np.full(len(pairs), SINCE_MAX)
     period, slot_s = 1.0 / round_hz, 1.0 / (round_hz * (n + 1))
     warming_rounds = int(round(SIM_WARMING_S * round_hz))
+    index = {node.name: i for i, node in enumerate(nodes)}
+    on_node = {name: np.array([index[name] in pair for pair in pairs]) for name in noisy}
+    glitch_until = np.full(len(pairs), -1.0)
     membership = (1 << n) - 1
     last_round = None if duration_s is None else int(round(duration_s * round_hz))
     index_of = {node.name: i for i, node in enumerate(nodes)}
@@ -421,6 +435,13 @@ def simulate_rounds(
         since = np.where(got, 0, np.minimum(since + 1, SINCE_MAX))
         response = _round_response(person, t - quiet_first_s, a, b)
         scores = quiet * rng.lognormal(0.0, ROUND_NOISE_SIGMA, len(pairs)) * (1.0 + ROUND_MOTION_GAIN * response)
+        for name, (start_s, stop_s) in noisy.items():
+            if start_s <= t < stop_s:
+                scores = np.where(on_node[name], scores * NOISY_NODE_GAIN, scores)
+        if glitch_rate_hz > 0:
+            onset = glitch_rng.random(len(pairs)) < glitch_rate_hz * period
+            glitch_until = np.where(onset, t + GLITCH_S, glitch_until)
+            scores = np.where(t < glitch_until, scores * GLITCH_GAIN, scores)
         counts = heard.sum(axis=1)
         for slot, node in enumerate(nodes):
             if not alive[slot]:
@@ -514,7 +535,7 @@ def _round_response(person: Union[Person, Sequence[Person], None], t: float, a: 
     ab = b - a
     u = np.clip(np.einsum("ij,ij->i", p - a, ab) / np.maximum(np.einsum("ij,ij->i", ab, ab), 1e-12), 0.0, 1.0)
     d = np.linalg.norm(p - (a + u[:, None] * ab), axis=1)
-    return np.exp(-d ** 2 / (2 * FALLOFF_SIGMA_M ** 2))
+    return movement(person, np.array([t]))[0] * np.exp(-d ** 2 / (2 * FALLOFF_SIGMA_M ** 2))
 
 
 def simulate_gateways(

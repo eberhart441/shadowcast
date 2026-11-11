@@ -24,7 +24,7 @@ is 26 + 4 × (N − 1) bytes: 54 B at 8 nodes, 142 B at 30, inside ESP-NOW v1's 
 | Offset | Size | Field | Meaning |
 |---|---|---|---|
 | 0 | 1 | version | Format version, `2`. A receiver rejects any other value (reason `version`). |
-| 1 | 1 | frame type | `1` = round broadcast with link reports, `2` = join request, `3` = join grant ([join frames](#join-frames)), `4` = raw mode request, `5` = round broadcast with raw CSI ([raw mode](#raw-mode)). Other values are rejected (reason `frame_type`). |
+| 1 | 1 | frame type | `1` = round broadcast with link reports, `2` = join request, `3` = join grant ([join frames](#join-frames)), `4` = raw mode request, `5` = round broadcast with raw CSI ([raw mode](#raw-mode)), `8` = maintenance command ([below](#maintenance-command), decoded by its own codec). Other values are rejected (reason `frame_type`). |
 | 2 | 2 | round | Round number, u16, wraps at 65535. Each node counts its own, one up per round, never back (the round scheduler); numbers are not shared between nodes, which keeps them fresh (below). |
 | 4 | 1 | slot | The slot this broadcast was sent in. |
 | 5 | 1 | slots per round | Slots in this round, including the join slot. |
@@ -191,6 +191,32 @@ CSI per round in the whole rig (three links) and two links per node, and refuses
 airtime model of report 03 (HT20 MCS0, ESP-NOW framing), one raw link adds 172 µs to its node's round broadcast at
 30 nodes (142 to 275 bytes: 274 to 446 µs); the whole budget adds 516 µs per round, 1.0 % of the channel at 20 Hz (the
 30-node rig goes from 16.4 % to 17.5 %) and 2.0 % at 16 nodes and 40 Hz (13.2 % to 15.2 %).
+## Maintenance command
+
+Frame type 8 tells chosen nodes to update their firmware or to report it ([ADR-0031](adr/0031-ota-maintenance-network-signed-images.md),
+[`docs/ota.md`](ota.md)). The host builds and signs it (`csi/ota.py` `maintenance_command`) and the gateway sends it
+(`ota send <hex>` on its USB port), three copies 0.2 s apart; nodes decode it with `firmware/core/ota_core.h`, not
+with the round broadcast decoder. The golden cases are
+[`tests/fixtures/ota_command.json`](../tests/fixtures/ota_command.json). The round header's slot, slots per round,
+schedule version, node index and membership are zero (else reason `field`); the node id is the host's, all zero;
+the round is the host's (the low 16 bits of `issued`); the tag is the kit key's like every frame's, and a node
+checks it and the round number for freshness before it acts. Then:
+
+| Offset | Size | Field | Meaning |
+|---|---|---|---|
+| 26 | 1 | command | `1` = update to the image named here, `2` = report only. Else reason `command`. |
+| 27 | 1 | targets | Number of target serials, 1 to 13 (else reason `targets`). The length must be 72 + 6 × targets (reason `length`): at most 150 bytes. |
+| 28 | 2 | port | HTTP port of the host's image server; 0 is reason `field`. |
+| 30 | 1 | network channel | Channel of the maintenance network; 0 = the node scans for it passively. A node ignores a command whose channel overlaps its sensing channel. |
+| 31 | 1 | reserved | 0, else reason `field`. |
+| 32 | 4 | issued | u32 host time (Unix seconds). A node runs a command only if `issued` is later than the last one it ran. |
+| 36 | 4 | image size | Bytes of the signed image file; 0 in an update is reason `field`. |
+| 40 | 32 | image SHA-256 | Of the signed image file. A node refuses a download whose SHA-256 differs. Zero in a report command. |
+| 72 | 6 × targets | target serials | Board serials, transmission order. A node not named ignores the command. |
+
+A gateway never acts on a maintenance command; a transceiver ignores one while a new image runs its health check.
+A second gateway that hears the command passes it to the host, which counts it as rejected `frame_type` (three per
+command).
 
 ## How the host reads it
 

@@ -261,3 +261,83 @@ def test_rx3_is_outside_the_room_with_a_leader_to_the_top_wall_and_labels_point_
         assert by_name[name]["outside"] is False, name
     assert by_name["tx1"]["side"]["dy"] < 0 and by_name["tx1"]["side"]["dx"] > 0   # bottom-left: up and right
     assert by_name["rx2"]["side"]["dx"] > 0 and by_name["rx2"]["side"]["dy"] > 0   # top-left: right and down
+
+
+# ---------------------------------------------------------------- zones and the room state (#8, #9)
+
+ZONES_BEGIN = "// ---- zones: pure (tested with node) begin"
+ZONES_END = "// ---- zones: pure (tested with node) end"
+ZONES_HARNESS = """
+%(zones)s
+var input = JSON.parse(require("fs").readFileSync(0, "utf8"));
+console.log(JSON.stringify({
+  styles: input.states.map(zoneStyle),
+  rooms: input.rooms.map(roomSummary)
+}));
+"""
+
+
+def run_zones(tmp_path, states=(), rooms=()):
+    """Evaluate the page's pure zone code under node: zoneStyle of each state, roomSummary of each status.room."""
+    html = PAGE.read_text(encoding="utf-8")
+    start = html.index(ZONES_BEGIN)
+    script = tmp_path / "zones_harness.js"
+    script.write_text(ZONES_HARNESS % {"zones": html[start:html.index(ZONES_END, start)]}, encoding="utf-8")
+    proc = subprocess.run(["node", str(script)], input=json.dumps({"states": list(states), "rooms": list(rooms)}),
+                          capture_output=True, text=True, timeout=30)
+    assert proc.returncode == 0, proc.stderr
+    return json.loads(proc.stdout)
+
+
+@needs_node
+def test_possibly_occupied_zones_are_drawn_unlike_motion_and_empty_ones(tmp_path):
+    motion, held, empty = run_zones(tmp_path, states=["MOTION", "POSSIBLY_OCCUPIED", "EMPTY"])["styles"]
+    for a, b in ((motion, held), (held, empty), (motion, empty)):
+        assert (a["fill"], a["stroke"], a["dash"], a["hatch"]) != (b["fill"], b["stroke"], b["dash"], b["hatch"])
+    assert held["hatch"] and not motion["hatch"]           # told apart by pattern too, not by colour alone
+    assert held["dash"] and not motion["dash"]
+
+
+@needs_node
+def test_the_room_line_says_possibly_occupied_where_and_for_how_long_and_that_it_is_no_guarantee(tmp_path):
+    zones = {"A1": "EMPTY", "B2": "POSSIBLY_OCCUPIED", "C2": "POSSIBLY_OCCUPIED", "D3": "WARMUP"}
+    held, moving, empty, line_rig = run_zones(tmp_path, rooms=[
+        {"state": "POSSIBLY_OCCUPIED", "zones": zones, "possibly_occupied_s": 60.0},
+        {"state": "MOTION", "zones": dict(zones, A1="MOTION"), "possibly_occupied_s": 60.0},
+        {"state": "EMPTY", "zones": {"A1": "EMPTY"}, "possibly_occupied_s": 60.0},
+        {"state": "MOTION", "elevated": []},
+    ])["rooms"]
+    assert held["key"] == "POSSIBLY_OCCUPIED" and held["label"] == "POSSIBLY OCCUPIED"
+    assert "B2, C2" in held["text"] and "60 s" in held["text"] and "not a guarantee" in held["text"]
+    assert moving["key"] == "MOTION" and "A1" in moving["text"] and "B2, C2" in moving["text"]
+    assert empty["key"] == "EMPTY" and "60 s" in empty["text"] and "not a guarantee" in empty["text"]
+    assert line_rig is None                                  # the hackathon line pipeline has no zones: no line
+
+
+def held_payload():
+    """/api/state-like payload of the 8-node room while B2 is held: a person walked in and stood still."""
+    from csi.dashboard import DashboardState
+    from csi.room import WalkAndStop
+    from csi.simulate import simulate_rounds
+    room = load_room(Path(__file__).resolve().parent / "fixtures" / "room_tr8.json")
+    state = DashboardState(room, mode="auto")
+    t0 = 1_700_000_000.0
+    person = WalkAndStop(((0.5, 1.5), (1.5, 1.5)), speed_mps=0.5)
+    for host_ts, data in simulate_rounds(room, person, duration_s=20.0, quiet_first_s=12.0, seed=4, t0=t0):
+        state.push_broadcast(host_ts, data)
+    return state.snapshot()
+
+
+@pytest.mark.slow
+@needs_node
+def test_page_draws_a_held_zone_hatched_and_dashed_without_errors(tmp_path):
+    payload = held_payload()
+    assert payload["status"]["room"]["state"] == "POSSIBLY_OCCUPIED"
+    calls = draw_page_with_stub(tmp_path, payload)
+    assert any(c[0] == "fillText" and c[1] == "B2" for c in calls)                     # zone ids on the map
+
+
+def test_page_legend_names_the_possibly_occupied_state():
+    html = PAGE.read_text(encoding="utf-8")
+    assert ZONES_BEGIN in html and ZONES_END in html
+    assert "POSSIBLY OCCUPIED" in html and "Decision support, not a guarantee" in html

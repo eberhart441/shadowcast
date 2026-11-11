@@ -33,6 +33,10 @@ bool node_auth_sign(uint8_t *bytes, size_t len);
  * round number for its sender. Forged and replayed broadcasts are counted (see the key command) and give false. */
 bool node_auth_accept(const uint8_t *bytes, size_t len, int64_t t_us);
 
+/* HMAC-SHA256(kit key, msg) for values derived from the kit key (the OTA maintenance network passphrase and report
+ * tags, node_ota.c). False without a key. Never the round broadcast tag: that is node_auth_sign. */
+bool node_auth_mac(const uint8_t *msg, size_t len, uint8_t mac[32]);
+
 /* Handle a "key ..." command line. Returns false (and touches nothing) for any other line; else fills reply and
  * sets *action to NODE_CMD_NONE, NODE_CMD_RESTART (the key was saved) or NODE_CMD_ERROR. */
 bool node_auth_command(const char *line, char *reply, size_t n, node_cmd_t *action);

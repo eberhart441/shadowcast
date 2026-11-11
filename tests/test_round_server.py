@@ -5,6 +5,7 @@ HTTP interface (/api/state) and on the CLI contract.
 """
 import json
 import sys
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -103,6 +104,21 @@ def test_cli_simulate_needs_a_room_with_transceivers():
     with pytest.raises(SystemExit) as err:
         cli.build_server(args)
     assert "transceiver" in str(err.value)
+
+
+def test_setting_a_threshold_on_a_transceiver_link_is_a_bad_request():
+    server = DashboardServer(ROOM, {"gateway": simulate_rounds(ROOM, duration_s=1.0, t0=T0)}, mode="auto", port=0)
+    server.start()
+    try:
+        request = urllib.request.Request(server.url + "/api/threshold", method="POST",
+                                         data=json.dumps({"link": "n1<-n2", "value": 2.0}).encode(),
+                                         headers={"Content-Type": "application/json"})
+        with pytest.raises(urllib.error.HTTPError) as err:
+            urllib.request.urlopen(request, timeout=10)
+        assert err.value.code == 400
+        assert "adaptive baseline" in json.loads(err.value.read())["error"]
+    finally:
+        server.stop()
 
 
 def test_the_footprint_falloff_is_refused_on_a_transceiver_room_and_nothing_changes():
@@ -259,3 +275,30 @@ def test_cli_node_gateway_records_the_real_rigs_round_broadcasts(monkeypatch, tm
     recording = load_rounds(out)
     assert [b.data for b in recording.broadcasts] == [data for _, data in broadcasts]
     assert {b.source for b in recording.broadcasts} == {"gateway"}
+
+
+def served_room(argv):
+    """status.room of the first payload served by dashboard.py with ``argv``."""
+    args = cli.build_parser().parse_args([*argv, "--http-port", "0"])
+    cli.check_source(args)
+    server = cli.build_server(args)
+    server.start()
+    try:
+        return get_state(server)["status"]["room"]
+    finally:
+        server.stop()
+
+
+def test_cli_possibly_occupied_s_sets_the_hold_and_the_payload_reports_it():
+    assert served_room(["--simulate", "--room", str(TR8)])["possibly_occupied_s"] == 60.0
+    assert served_room(["--simulate", "--room", str(TR8), "--possibly-occupied-s", "20"])["possibly_occupied_s"] == 20.0
+
+
+@pytest.mark.parametrize("argv, message", [
+    (["--simulate-room", "--possibly-occupied-s", "20"], "--possibly-occupied-s applies to"),
+    (["--simulate", "--room", str(TR8), "--possibly-occupied-s", "-1"], "seconds"),
+])
+def test_cli_possibly_occupied_s_is_refused_where_it_does_not_apply(argv, message, capsys):
+    with pytest.raises(SystemExit) as err:
+        cli.check_source(cli.build_parser().parse_args(argv))
+    assert message in str(err.value) + capsys.readouterr().err

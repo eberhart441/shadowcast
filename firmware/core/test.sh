@@ -47,3 +47,4 @@ build_and_run test_node_settings node_settings.c round_scheduler.c round_broadca
 build_and_run test_raw_mode raw_mode.c round_broadcast.c tests/test_raw_mode.c --
 build_and_run test_gateway_tx gateway_tx.c round_scheduler.c round_broadcast.c tests/test_gateway_tx.c --
 build_and_run test_round_scheduler round_scheduler.c round_broadcast.c round_auth.c link_table.c motion_score.c tests/test_round_scheduler.c --
+build_and_run test_ota_core ota_core.c round_auth.c tests/hmac_sha256.c tests/test_ota_core.c -- tests/vectors/ota_command.txt

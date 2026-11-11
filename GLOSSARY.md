@@ -106,7 +106,7 @@ How far into its slot a node's round broadcast starts on air, as another node's 
 _See_: `csi/coverage.py` (`SlotLateness`), `node_health[].slot_lateness`
 
 **Gateway**:
-A node of the transceiver rig on the dashboard host's USB that listens: it writes every round broadcast it hears to USB as a heard record with its receive time, and sends nothing on the channel but the frames the host hands it (`send <hex>`: raw mode requests), in the join slot. The same image as a transceiver, with the role setting `gateway`. (The hackathon's wireless receivers had a different gateway board, `CSI_GATEWAY=1`, that wrote text lines.)
+A node of the transceiver rig on the dashboard host's USB that listens: it writes every round broadcast it hears to USB as a heard record with its receive time, and sends nothing on the channel but the frames the host hands it: raw mode requests (`send <hex>`, in the join slot) and maintenance commands (`ota send <hex>`). The same image as a transceiver, with the role setting `gateway`. (The hackathon's wireless receivers had a different gateway board, `CSI_GATEWAY=1`, that wrote text lines.)
 _See_: `firmware/node/`, `csi/gateway_records.py` (`GatewaySource`), `dashboard.py --node-gateway`
 
 **Gateway record**:
@@ -117,6 +117,32 @@ _See_: `csi/gateway_records.py`, `firmware/core/gateway_record.h`, [ADR-0026](do
 What differs between boards running the one node image: role (transceiver or gateway), channel, round rate and slot guard. Kept in the node's flash and set over USB with `scripts/node.py`, never by a build flag. A transceiver needs none of them (the defaults join any round on channel 6); the node index is not a setting but given out by the round scheduler.
 _Avoid_: build flags, SENDER_ID (for these nodes)
 _See_: `firmware/core/node_settings.h`, `scripts/node.py`
+
+**Maintenance command**:
+The signed frame (frame type 8) that tells up to 13 named nodes to update their firmware to one image (named by its size and SHA-256) or to report what they run. The host builds it, the gateway sends it on the sensing channel; a node runs each one at most once.
+_Avoid_: OTA packet, update frame
+_See_: [`docs/round-broadcast.md`](docs/round-broadcast.md) (maintenance command), `csi/ota.py`, `firmware/core/ota_core.h`
+
+**Maintenance mode**:
+What a node runs instead of the transceiver for one job after a maintenance command: off the round and off the sensing channel, it joins the maintenance network, fetches and checks an image (or only reports), then restarts. At most 240 s.
+_See_: `firmware/node/main/node_ota.c`, [`docs/ota.md`](docs/ota.md)
+
+**Maintenance network**:
+The WPA2 access point the dashboard host provides during a firmware update, on 5 GHz or a 2.4 GHz channel clear of the sensing channel. Its SSID and passphrase are derived from the kit key. Nodes fetch the image from the host over it and report there.
+_Avoid_: hotspot (that is one way to provide it), backhaul
+
+**Signing key**:
+The RSA-3072 key pair whose private half signs node images (`espsecure sign-data`) and stays on the user's machine; a node takes a new image only if it is signed by the same key as the image it runs. Not the kit key, which every node holds.
+_Avoid_: kit key (a different, symmetric key), secure boot key (hardware secure boot is not enabled)
+_See_: [ADR-0031](docs/adr/0031-ota-maintenance-network-signed-images.md), `csi/ota.py` (`check_image`)
+
+**Health check**:
+The test a newly updated image must pass to stay: within 120 s of its first boot, a member of a round that has heard and sent 20 round broadcasts. Failing it, or crashing before it passes, rolls the node back to its old app slot.
+_See_: `firmware/core/ota_core.h` (`ota_health_step`)
+
+**Staged rollout**:
+Updating the rig a few nodes at a time (2, then 6, then 13 per command), each stage only after every node of the last one reported the new image committed and was heard on the round again; the first failure stops it.
+_See_: `csi/ota.py` (`Rollout`), `scripts/ota.py rollout`
 
 **Sender address**:
 The MAC a sender transmits from, `1a:00:00:00:00:<SENDER_ID>`. A receiver accepts every packet whose address starts `1a:00:00:00:00`, so a forgotten board with such an address shows up as a ghost sender.
@@ -233,8 +259,22 @@ Experimental and opt-in (`--breathing`): no motion, but a breathing rate of 6 to
 _See_: `csi/breathing.py`, `csi/detect.py`, [ADR-0008](docs/adr/0008-motion-only-by-default.md)
 
 **Room state**:
-The room-level decision in the payload's `status.room`: MOTION when at least two links are elevated together, or one link is strongly elevated (auto mode only), held for 1 s. It is not any one link's state.
-_See_: `csi/adaptive.py` (`RoomDecision`)
+The room-level decision in the payload's `status.room`. It is not any one link's state. With transceivers: MOTION while any zone is MOTION, else POSSIBLY_OCCUPIED while any zone is, else EMPTY; a zone is MOTION while, at one of its probe points, the elevated links covering the point hold enough independent links, and for 1 s after. Enough is a third of the independent links that could cover the point, and at least two (three where three exist). For the hackathon links: MOTION when at least two links are elevated together, or one link is strongly elevated (auto mode only), held for 1 s.
+_See_: `csi/room_state.py` (`RoomState`), `csi/adaptive.py` (`RoomDecision`), [ADR-0029](docs/adr/0029-adaptive-baseline-only-and-a-room-state-from-zones.md)
+
+**Zone**:
+A square of the room, about 1 m on a side, that the room state reports on: `A1` is the top-left zone, letters run along x and numbers down y. Each zone holds a grid of probe points 0.25 m apart; a link covers a probe point when its segment passes within 0.3 m of it.
+_See_: `csi/room_state.py` (`ZoneMap`)
+
+**POSSIBLY_OCCUPIED**:
+A zone (or the room) that was MOTION recently but is not now: after a zone leaves MOTION it reads possibly occupied for the possibly-occupied hold (60 s by default, `--possibly-occupied-s`), then EMPTY. It is there because a person who stops moving fades from the score; once the hold ends, a person still standing there is not reported. Transceiver rooms only.
+_Avoid_: present, occupied (the system does not sense presence)
+_See_: `csi/room_state.py` (`POSSIBLY_OCCUPIED_S`), [ADR-0030](docs/adr/0030-possibly-occupied-hold.md)
+
+**Independent links**:
+Links that share no node. One node's fault (a front-end glitch, a gain step) raises all of its links at once, so links that share a node count as one witness, and both directions of a node pair are one link here. Counted as the largest set of links in which no two share a node.
+_Avoid_: independent witnesses (in code and docs)
+_See_: `csi/room_state.py` (`independent_links`)
 
 ## Detection and thresholds
 
@@ -264,7 +304,7 @@ The default: each link is judged against its threshold.
 _See_: `csi/links.py` (`LinkMonitor`)
 
 **Auto mode**:
-Experimental (`--auto-threshold`): each link is judged against its own adaptive baseline and needs no calibration.
+Experimental (`--auto-threshold`): each link is judged against its own adaptive baseline and needs no calibration. A transceiver link is always judged this way, in either mode, and takes no threshold.
 _See_: `csi/adaptive.py`, [ADR-0009](docs/adr/0009-fixed-thresholds-by-default.md)
 
 **Adaptive baseline**:

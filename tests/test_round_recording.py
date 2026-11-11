@@ -354,3 +354,15 @@ def test_cli_refuses_record_and_replay_flags_that_do_not_apply(argv, message):
 def test_cli_refuses_an_invalid_starting_label():
     with pytest.raises(SystemExit):
         cli.build_parser().parse_args(["--simulate", "--record", "x.rounds", "--label", "dancing"])
+
+
+def test_cli_replays_a_recording_with_the_possibly_occupied_hold_it_is_given(tmp_path):
+    small_recording(tmp_path / "run.rounds")
+    for argv, hold_s in (((), 60.0), (("--possibly-occupied-s", "15"), 15.0)):
+        replay = cli.build_server(cli_args("--replay-rounds", str(tmp_path / "run.rounds"), "--speed", "max", *argv))
+        replay.start()
+        try:
+            assert replay.wait_finished(timeout=30)
+            assert run_until(replay, 0)["status"]["room"]["possibly_occupied_s"] == hold_s
+        finally:
+            replay.stop()

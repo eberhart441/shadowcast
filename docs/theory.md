@@ -424,6 +424,12 @@ elevated exactly when it is in MOTION and is never strong, so the room rule redu
 vote**. The result is in the payload as `status.room` and is used by the redesigned page
 (`web/ui-overhaul/`). The offline evaluator fuses differently: it uses a 1-of-N OR (Section 10).
 
+The transceiver pipeline does not use this rule: at 870 links a 2-of-N vote fires by chance, and the links of one
+node fail together. Its room state (`csi/room_state.py`) asks for agreement at one place among links that share no
+node, scaled to the links that cross there; [ADR-0029](adr/0029-adaptive-baseline-only-and-a-room-state-from-zones.md)
+gives the rule and its numbers. Because a still person leaves $S$ (Section 11), a zone that leaves MOTION reads
+POSSIBLY_OCCUPIED for 60 s before EMPTY ([ADR-0030](adr/0030-possibly-occupied-hold.md)).
+
 ---
 
 ## 5. Calibration as robust statistics

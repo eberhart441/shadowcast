@@ -335,6 +335,11 @@ The page is `web/index.html`, one static file with no network assets.
 - **Room.** The nodes at their configured positions (receivers and senders drawn differently; a node
   outside the room is drawn with a dashed leader), the links coloured by state, and the heatmap. A caption
   says it is a rough motion-likelihood estimate, not a position track.
+- **Room state and zones** (transceiver rigs). A line above the map gives the room state, and the map draws
+  each zone: MOTION filled red, POSSIBLY OCCUPIED dashed and hatched orange, EMPTY a faint outline. A zone
+  reads possibly occupied for 60 s (`--possibly-occupied-s`) after its motion stops, because a person who
+  stands still fades from the score ([ADR-0030](adr/0030-possibly-occupied-hold.md)). After that a still
+  person is not shown: decision support, not a guarantee.
 - **Links.** One card per link: state, score against threshold, packet rate, drops, RSSI, whether it
   contributes heat, and a 30 s score sparkline.
 - **Status bar.** Receivers (connected, finished or failed), link counts by state, calibration state,
@@ -443,6 +448,7 @@ Other options:
 | `--baud N` | 921600 | Serial baud rate. |
 | `--seed N` | 0 | Simulator seed. |
 | `--sim-quiet-first SECONDS` | 0 | With `--simulate-room` or `--simulate`: the simulated room stays empty this long before the walk starts, so Calibrate can be tried. 60 is a good value; a default calibration takes about 45 s. |
+| `--possibly-occupied-s SECONDS` | 60 | With `--simulate`, `--node-gateway` or `--replay-rounds`: how long a zone that stops moving reads POSSIBLY_OCCUPIED before EMPTY ([ADR-0030](adr/0030-possibly-occupied-hold.md)); 0 turns the hold off. |
 | `--kit-key PATH` | see right | The kit key round broadcasts are verified with ([`round-broadcast.md`](round-broadcast.md) "Kit key"). `--node-gateway` reads `data/kit.key` by default and will not start without it; `--replay-rounds` defaults to the simulator's published test key, so pass the recorded kit's key to replay a real rig. |
 | `--log run.jsonl` | none | Append the state stream to a file. |
 | `--speed 1\|N\|max` | 1 | Replay speed. |
@@ -457,6 +463,7 @@ The server checks the combination at start and exits with an error when:
 - more than one source, or none, is given;
 - `--speed` is given without `--replay` or `--replay-session`;
 - `--sim-quiet-first` is given without `--simulate-room` or `--simulate`;
+- `--possibly-occupied-s` is given without `--simulate`, `--node-gateway` or `--replay-rounds`;
 - `--thresholds` or `--raw-log` is combined with `--simulate` or `--node-gateway`;
 - `--simulate` or `--node-gateway` is given a room with fewer than two transceivers;
 - `--kit-key` is given without `--node-gateway` or `--replay-rounds`, or the kit key file is missing, malformed or
