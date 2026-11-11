@@ -436,7 +436,7 @@ def _round_response(person: Union[Person, Sequence[Person], None], t: float, a: 
 
 def simulate_gateways(
     room: Room,
-    person: Optional[Person] = None,
+    person: Union[Person, Sequence[Person], None] = None,
     *,
     hears: Mapping[str, Iterable[str]],
     loss: Optional[Mapping[str, float]] = None,
