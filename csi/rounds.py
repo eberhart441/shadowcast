@@ -19,7 +19,7 @@ from collections import Counter, OrderedDict
 from dataclasses import dataclass
 from typing import Iterable, Optional
 
-from .broadcast import BroadcastError, LinkReport, decode_broadcast
+from .broadcast import DECODE_REASONS, BroadcastError, LinkReport, decode_broadcast
 from .links import NodeLinkId
 from .room import Room
 
@@ -30,6 +30,7 @@ DEDUP_WINDOW_S = 2.0  # host time within which a second copy of (node, schedule 
 DEDUP_MAX = 8192      # round broadcasts remembered for de-duplication (32 nodes x 40 Hz x 2 s = 2560)
 DUPLICATE = "duplicate"
 QUEUE_OVERFLOW = "queue_overflow"
+REJECT_REASONS = DECODE_REASONS + (DUPLICATE, QUEUE_OVERFLOW)   # each has a counter in status.broadcasts.rejected
 
 
 @dataclass(frozen=True)
@@ -44,8 +45,9 @@ class RoundIngest:
         self._names = {node.serial.upper(): node.name for node in room.transceivers if node.serial}
         self._index: dict[int, dict[int, str]] = {}   # schedule version -> {node index: node name}
         self._seen: OrderedDict[tuple[str, int, int], float] = OrderedDict()  # (serial, schedule, round) -> host_ts
+        self._heard = 0
         self._accepted = 0
-        self._rejected: Counter[str] = Counter()
+        self._rejected: Counter[str] = Counter({reason: 0 for reason in REJECT_REASONS})
         self._unknown: Counter[str] = Counter()
         self._unplaced = 0
         self._sources: dict[str, Counter[str]] = {}
@@ -56,6 +58,7 @@ class RoundIngest:
         Rejected bytes, a copy of a round broadcast already placed (another gateway heard it too) and unknown
         senders give [] and are counted."""
         tally = self._source(source)
+        self._heard += 1
         tally["heard"] += 1
         try:
             broadcast = decode_broadcast(data)
@@ -105,6 +108,6 @@ class RoundIngest:
         return tally
 
     def counts(self) -> dict:
-        return {"accepted": self._accepted, "rejected": dict(self._rejected), "unknown_nodes": dict(self._unknown),
+        return {"heard": self._heard, "accepted": self._accepted, "rejected": dict(self._rejected), "unknown_nodes": dict(self._unknown),
                 "unplaced_reports": self._unplaced,
                 "sources": {name: dict(tally) for name, tally in self._sources.items()}}

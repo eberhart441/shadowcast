@@ -72,3 +72,24 @@ def test_a_copy_is_a_duplicate_only_for_the_same_node_schedule_and_round_within_
     counts = state.snapshot(T0 + 3300.0)["status"]["broadcasts"]
     assert counts["accepted"] == 4
     assert counts["rejected"]["duplicate"] == 1
+
+
+def test_every_rejection_reason_has_a_counter_from_the_start():
+    counts = DashboardState(ROOM, mode="auto").snapshot(T0)["status"]["broadcasts"]
+    assert counts["rejected"] == {"short": 0, "version": 0, "frame_type": 0, "length": 0, "membership": 0,
+                                  "duplicate": 0, "queue_overflow": 0}
+
+
+def test_each_malformed_or_wrong_version_record_is_counted_by_its_reason():
+    good = broadcast("n1", 0)
+    state = DashboardState(ROOM, mode="auto")
+    for data in (good[:10],                              # short
+                 b"\x02" + good[1:],                     # version
+                 good[:1] + b"\x07" + good[2:],          # frame_type
+                 good + b"\x00",                         # length
+                 good[:7] + b"\x09" + good[8:]):         # membership: node index 9 is not a member
+        state.push_broadcast(T0, data, "gw1")
+    counts = state.snapshot(T0)["status"]["broadcasts"]
+    assert counts["rejected"] == {"short": 1, "version": 1, "frame_type": 1, "length": 1, "membership": 1,
+                                  "duplicate": 0, "queue_overflow": 0}
+    assert counts["accepted"] == 0 and counts["heard"] == 5
