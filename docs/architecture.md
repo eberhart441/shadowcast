@@ -367,6 +367,7 @@ server.
 | `POST /api/threshold` | `{link, value}` sets one link's threshold. `value: null` returns the link to auto mode, or to UNCALIBRATED in fixed mode | Command checks. 400 for an unknown link or a value that is not positive |
 | `POST /api/thresholds/save` | Writes `{label: threshold}` to `--save-thresholds`, else to the `--thresholds` file, else to `links_thresholds.json` in the working directory | Command checks. 409 if there is nothing to save |
 | `POST /api/params` | Changes the live heatmap settings: `sensitivity` 0.01–10, `decay` 0.05–60 s, `rise` 0.01–10 s, `falloff` 0.05–2 m (not on a transceiver room: its heatmap is radio tomography) | Command checks. 400 for an unknown key, a value out of range, or `falloff` on a transceiver room |
+| `POST /api/raw-mode` | `{link, on}`: raw mode for one transceiver link, sent through a gateway in the join slot (`csi/raw_mode.py`, ADR-0032) | Command checks. 400 for a bad body or unknown link; 409 `{error, reason}` beyond the byte budget, a node's limit, a node not heard yet, no gateway that can send |
 
 Command checks, in the order the server applies them:
 

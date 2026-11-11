@@ -56,9 +56,9 @@ one place, and counts what it rejects (ADR-0022).
 | 0 | heard | ESP-NOW frames received | round broadcasts heard from other members of the round |
 | 1 | queue full | frames dropped because the queue to the USB writer was full | CSI frames dropped because the queue to the node task was full |
 | 2 | USB dropped | records not written because the USB buffer was full (no host reading) | same |
-| 3 | sent | 0 | round broadcasts sent |
-| 4 | send errors | 0 | `esp_now_send` errors, failed send callbacks and missed slots |
-| 5 | rejected | frames longer than 250 bytes (not ours) | ESP-NOW frames that are not a v1 round broadcast, or come from a node outside the round |
+| 3 | sent | frames it sent for the host (`send`, raw mode requests) | round broadcasts sent |
+| 4 | send errors | failed sends of those | `esp_now_send` errors, failed send callbacks and missed slots |
+| 5 | rejected | frames longer than 416 bytes (not ours) | ESP-NOW frames that are not a v2 frame of ours, forged or replayed, or come from a node outside the round |
 | 6 | CSI skipped | 0 | CSI frames not scored: layout warm-up, a layout other than the locked one, or too many subcarriers |
 
 A body shorter than 18 bytes is reason `short_body`.
@@ -67,3 +67,15 @@ A body shorter than 18 bytes is reason `short_body`.
 
 The body is UTF-8 text, one line without its line end: a reply to a settings command (`ok ...` or `error ...`) or
 a log line.
+
+## Commands to a gateway
+
+Command lines go the other way, as text ending in a line end (`scripts/node.py` sends the settings commands). One is
+for a gateway only (ticket #17):
+
+    send <hex>        reply "ok send <n> bytes queued" or "error ..."
+
+The gateway sends that frame (1 to 47 bytes: a raw mode request the host built and signed, see
+[`round-broadcast.md`](round-broadcast.md#raw-mode)) once, in the join slot of the next round its scheduler numbers
+even, and counts it in `sent`. It holds at most 4 frames and drops one it could not send within 2 s. The host
+writes it from `csi/gateway_records.py` (`GatewaySource.send_frame`); the dashboard does so for `POST /api/raw-mode`.

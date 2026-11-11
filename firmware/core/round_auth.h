@@ -54,7 +54,7 @@ typedef struct {
 
 void rb_auth_init(rb_auth_t *a, rb_auth_mac_fn mac, void *ctx);
 
-/* Write the tag of bytes[0..len) (a whole round broadcast, at most RB_MAX_BYTES) into its tag field. */
+/* Write the tag of bytes[0..len) (a whole frame, at most RB_MAX_FRAME_BYTES) into its tag field. */
 bool rb_auth_sign(const rb_auth_t *a, uint8_t *bytes, size_t len);
 
 /* True if bytes[0..len) carries its tag. Constant time in the tag. False for fewer than RB_HEADER_BYTES. */

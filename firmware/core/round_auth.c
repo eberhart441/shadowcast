@@ -14,8 +14,8 @@ void rb_auth_init(rb_auth_t *a, rb_auth_mac_fn mac, void *ctx)
 /* The tag of bytes[0..len): the MAC of a copy with the tag field zeroed. */
 static bool tag_of(const rb_auth_t *a, const uint8_t *bytes, size_t len, uint8_t tag[RB_TAG_BYTES])
 {
-    uint8_t msg[RB_MAX_BYTES], mac[RB_AUTH_MAC_BYTES];
-    if (len < RB_HEADER_BYTES || len > RB_MAX_BYTES || !a->mac) {
+    uint8_t msg[RB_MAX_FRAME_BYTES], mac[RB_AUTH_MAC_BYTES];
+    if (len < RB_HEADER_BYTES || len > RB_MAX_FRAME_BYTES || !a->mac) {
         return false;
     }
     memcpy(msg, bytes, len);

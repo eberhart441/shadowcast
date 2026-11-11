@@ -31,6 +31,10 @@
  *               members than that allows, and a node whose slot came more than the guard late skips it.
  *   Lateness    for each round broadcast heard from a member: how far into its slot it started on air, by this
  *               node's schedule. Sent to the host in the link report (docs/round-broadcast.md).
+ *   Raw mode    a round broadcast with raw CSI (frame type 5) is a round broadcast like any other, only longer:
+ *               timing takes the airtime of the frame as heard (rb_broadcast_t.len), and rs_frame_cap says how
+ *               long this node's own may be to fit its slot. Raw mode requests (frame type 4) are not for the
+ *               scheduler; a gateway sends them in the join slot of rounds the scheduler numbers even (#17).
  *
  * Never two different round broadcasts with one round number in one schedule version (the host drops the second
  * as a duplicate, docs/round-broadcast.md): rs_next never plans a frame at or before the last round number this
@@ -179,8 +183,15 @@ uint8_t rs_slot_of(uint32_t membership, uint8_t index);
 /* Members allowed in a round at round_hz with guard_us (0 if not even 2 fit). */
 uint8_t rs_max_members(uint32_t round_hz, uint32_t guard_us);
 
-/* Time on air of an ESP-NOW broadcast with `bytes` of payload at HT20 MCS0. */
+/* Time on air of an ESP-NOW broadcast with `bytes` of payload at HT20 MCS0 (a 7-byte ESP-NOW element per 250
+ * bytes of payload; ESP-NOW v2 above 250). */
 int64_t rs_airtime_us(size_t bytes);
+
+/* The longest payload (at most RB_MAX_FRAME_BYTES) whose airtime plus guard_us fits a slot of slot_us; 0 if none. */
+size_t rs_frame_cap_for(int64_t slot_us, int64_t guard_us);
+
+/* The longest round broadcast this node may send in its slot now (raw CSI included); 0 unless it is a member. */
+size_t rs_frame_cap(const rs_t *s);
 
 /* The lateness code of a broadcast that started late_us into its slot. */
 uint8_t rs_lateness_code(int64_t late_us);

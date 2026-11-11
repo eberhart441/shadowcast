@@ -23,6 +23,38 @@ static size_t frame(uint8_t *out, const uint8_t *body, uint8_t body_len, uint8_t
     return sizeof head + body_len;
 }
 
+/* ESP-NOW v2 (ESP-IDF docs, "Frame Format"): a payload over 250 bytes is split over several vendor elements, each
+ * ID 221, length, OUI, type 4 and a version byte whose bit 4 ("more data") is set on every element but the last. */
+static void check_v2_elements(void)
+{
+    static uint8_t buf[600], body[300], out[416];
+    const uint8_t head[] = {127, 0x18, 0xfe, 0x34, 0xa1, 0xb2, 0xc3, 0xd4};
+    for (int i = 0; i < 300; i++) {
+        body[i] = (uint8_t)(i * 13 + 1);
+    }
+    size_t n = 0, got = 0;
+    memcpy(buf, head, sizeof head);
+    n = sizeof head;
+    const uint8_t e1[] = {221, 255, 0x18, 0xfe, 0x34, 4, 0x12};   /* 250 bytes of body, more data, version 2 */
+    memcpy(buf + n, e1, sizeof e1);
+    memcpy(buf + n + sizeof e1, body, 250);
+    n += sizeof e1 + 250;
+    const uint8_t e2[] = {221, 55, 0x18, 0xfe, 0x34, 4, 0x02};    /* the last 50, no more data */
+    memcpy(buf + n, e2, sizeof e2);
+    memcpy(buf + n + sizeof e2, body + 250, 50);
+    n += sizeof e2 + 50;
+    CHECK(espnow_gather(buf, n + 4, out, sizeof out, &got) && got == 300 && memcmp(out, body, 300) == 0,
+          "a 300-byte v2 payload over two elements is put back together (%zu bytes)", got);
+    CHECK(!espnow_gather(buf, n + 4, out, 299, &got), "a payload longer than the buffer is refused");
+    CHECK(!espnow_gather(buf, sizeof head + sizeof e1 + 250, out, sizeof out, &got),
+          "an element that says more data follows, with none after it, is refused");
+    size_t m = frame(buf, body, 30, 2);
+    CHECK(espnow_gather(buf, m, out, sizeof out, &got) && got == 30 && memcmp(out, body, 30) == 0,
+          "a single element is just its body");
+    buf[0] = 4;
+    CHECK(!espnow_gather(buf, m, out, sizeof out, &got), "not ESP-NOW: refused");
+}
+
 int main(void)
 {
     uint8_t buf[300], body[250];
@@ -56,6 +88,7 @@ int main(void)
     buf[2] = 0x00;
     CHECK(!espnow_body(buf, n, &got, &got_len), "an action frame from another vendor");
 
+    check_v2_elements();
     printf("espnow_frame: %d failures\n", failures);
     return failures ? 1 : 0;
 }

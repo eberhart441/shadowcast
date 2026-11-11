@@ -89,6 +89,13 @@ def test_page_talks_to_the_command_endpoints_and_shows_the_countdown_text():
     assert "unreliable" in html or "warning" in html     # warnings are highlighted
 
 
+def test_the_link_detail_has_a_raw_mode_switch_that_posts_to_the_raw_mode_command():
+    html = PAGE.read_text(encoding="utf-8")
+    assert '"/api/raw-mode"' in html
+    assert 'id="raw-toggle"' in html and 'id="raw-links"' in html and 'id="raw-error"' in html
+    assert "raw_mode" in html and "budget_bytes" in html     # shows the per-round byte budget in use
+
+
 # ---------------------------------------------------------------- the map draws nodes outside the room
 
 STAR = Path(__file__).resolve().parent / "fixtures" / "room_star.json"

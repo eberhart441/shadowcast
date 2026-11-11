@@ -34,6 +34,62 @@ static unsigned members(uint32_t membership)
     return n;
 }
 
+bool rb_carries_reports(uint8_t frame_type)
+{
+    return frame_type == RB_FRAME_ROUND || frame_type == RB_FRAME_ROUND_RAW;
+}
+
+static bool reporter(uint32_t membership, uint8_t sender, uint8_t index)
+{
+    return index < RB_MAX_NODES && index != sender && (membership >> index & 1u);
+}
+
+/* The raw CSI blocks filling data[off..len) exactly. */
+static rb_status_t decode_raw(const uint8_t *data, size_t len, size_t off, rb_broadcast_t *out)
+{
+    uint8_t k = 0;
+    while (off < len) {
+        if (k == RB_RAW_MAX_LINKS || off + RB_RAW_HEAD_BYTES > len) {
+            return RB_LENGTH;
+        }
+        uint8_t n = data[off + 4];
+        if (n < 2 || n > RB_RAW_IQ_MAX || (n & 1u) || off + RB_RAW_HEAD_BYTES + n > len) {
+            return RB_LENGTH;
+        }
+        if (!reporter(out->membership, out->node_index, data[off])) {
+            return RB_MEMBERSHIP;
+        }
+        rb_raw_t *r = &out->raw[k++];
+        r->transmitter_index = data[off];
+        r->round = get_u16(data + off + 1);
+        r->rssi = (int8_t)data[off + 3];
+        r->n_iq = n;
+        r->iq = (const int8_t *)(data + off + RB_RAW_HEAD_BYTES);
+        off += RB_RAW_HEAD_BYTES + n;
+    }
+    out->n_raw = k;
+    return k ? RB_OK : RB_LENGTH;
+}
+
+static rb_status_t decode_request(const uint8_t *data, size_t len, rb_request_t *q)
+{
+    if (len < RB_HEADER_BYTES + RB_REQUEST_HEAD_BYTES) {
+        return RB_LENGTH;
+    }
+    const uint8_t *p = data + RB_HEADER_BYTES;
+    uint8_t n = p[8];
+    if (n > RB_RAW_MAX_LINKS || len != RB_HEADER_BYTES + RB_REQUEST_HEAD_BYTES + (size_t)n * RB_NODE_ID_BYTES) {
+        return RB_LENGTH;
+    }
+    memcpy(q->target, p, RB_NODE_ID_BYTES);
+    q->target_round = get_u16(p + 6);
+    q->n = n;
+    for (uint8_t k = 0; k < n; k++) {
+        memcpy(q->transmitters[k], p + RB_REQUEST_HEAD_BYTES + (size_t)k * RB_NODE_ID_BYTES, RB_NODE_ID_BYTES);
+    }
+    return RB_OK;
+}
+
 size_t rb_size(uint32_t membership)
 {
     unsigned n = members(membership);
@@ -49,15 +105,18 @@ rb_status_t rb_decode(const uint8_t *data, size_t len, rb_broadcast_t *out)
         return RB_BAD_VERSION;
     }
     uint8_t frame = data[1];
-    if (frame != RB_FRAME_ROUND && frame != RB_FRAME_JOIN_REQUEST && frame != RB_FRAME_JOIN_GRANT) {
+    if (frame < RB_FRAME_ROUND || frame > RB_FRAME_ROUND_RAW) {
         return RB_FRAME_TYPE;
     }
+    bool round = rb_carries_reports(frame);
     uint8_t index = data[7];
     uint32_t membership = get_u32(data + 8);
-    if (index >= RB_MAX_NODES || (frame != RB_FRAME_JOIN_REQUEST && !(membership >> index & 1u))) {
+    if (frame != RB_FRAME_RAW_REQUEST
+            && (index >= RB_MAX_NODES || (frame != RB_FRAME_JOIN_REQUEST && !(membership >> index & 1u)))) {
         return RB_MEMBERSHIP;
     }
-    if (len != (frame == RB_FRAME_ROUND ? rb_size(membership) : RB_HEADER_BYTES)) {
+    size_t base = round ? rb_size(membership) : RB_HEADER_BYTES;
+    if (frame == RB_FRAME_ROUND_RAW ? len < base : (frame != RB_FRAME_RAW_REQUEST && len != base)) {
         return RB_LENGTH;
     }
     out->version = data[0];
@@ -70,9 +129,15 @@ rb_status_t rb_decode(const uint8_t *data, size_t len, rb_broadcast_t *out)
     out->membership = membership;
     memcpy(out->node_id, data + 12, RB_NODE_ID_BYTES);
     memcpy(out->tag, data + RB_TAG_OFFSET, RB_TAG_BYTES);
+    out->len = (uint16_t)len;
+    out->n_raw = 0;
+    if (frame == RB_FRAME_RAW_REQUEST) {
+        out->n_reports = 0;
+        return decode_request(data, len, &out->request);
+    }
     const uint8_t *p = data + RB_HEADER_BYTES;
     uint8_t k = 0;
-    for (uint8_t i = 0; i < RB_MAX_NODES && frame == RB_FRAME_ROUND; i++) {
+    for (uint8_t i = 0; i < RB_MAX_NODES && round; i++) {
         if (!(membership >> i & 1u) || i == index) {
             continue;
         }
@@ -87,21 +152,40 @@ rb_status_t rb_decode(const uint8_t *data, size_t len, rb_broadcast_t *out)
         p += RB_REPORT_BYTES;
     }
     out->n_reports = k;
-    return RB_OK;
+    return frame == RB_FRAME_ROUND_RAW ? decode_raw(data, len, base, out) : RB_OK;
 }
 
 size_t rb_encode(const rb_broadcast_t *b, uint8_t *out, size_t cap)
 {
-    bool round = b->frame_type == RB_FRAME_ROUND;
-    if (!round && b->frame_type != RB_FRAME_JOIN_REQUEST && b->frame_type != RB_FRAME_JOIN_GRANT) {
+    uint8_t frame = b->frame_type;
+    bool round = rb_carries_reports(frame);
+    if (frame < RB_FRAME_ROUND || frame > RB_FRAME_ROUND_RAW) {
         return 0;
     }
-    if (b->node_index >= RB_MAX_NODES
-            || (b->frame_type != RB_FRAME_JOIN_REQUEST && !(b->membership >> b->node_index & 1u))) {
+    if (frame != RB_FRAME_RAW_REQUEST && (b->node_index >= RB_MAX_NODES
+            || (frame != RB_FRAME_JOIN_REQUEST && !(b->membership >> b->node_index & 1u)))) {
         return 0;
     }
     size_t n = round ? rb_size(b->membership) : RB_HEADER_BYTES;
-    if (n > cap || b->n_reports != (round ? members(b->membership) - 1 : 0)) {
+    if (b->n_reports != (round ? members(b->membership) - 1 : 0)
+            || (frame == RB_FRAME_ROUND_RAW ? (b->n_raw < 1 || b->n_raw > RB_RAW_MAX_LINKS) : b->n_raw != 0)) {
+        return 0;
+    }
+    for (uint8_t k = 0; k < b->n_raw; k++) {
+        const rb_raw_t *r = &b->raw[k];
+        if (r->n_iq < 2 || r->n_iq > RB_RAW_IQ_MAX || (r->n_iq & 1u) || !r->iq
+                || !reporter(b->membership, b->node_index, r->transmitter_index)) {
+            return 0;
+        }
+        n += RB_RAW_HEAD_BYTES + r->n_iq;
+    }
+    if (frame == RB_FRAME_RAW_REQUEST) {
+        if (b->request.n > RB_RAW_MAX_LINKS) {
+            return 0;
+        }
+        n += RB_REQUEST_HEAD_BYTES + (size_t)b->request.n * RB_NODE_ID_BYTES;
+    }
+    if (n > cap) {
         return 0;
     }
     uint8_t k = 0;
@@ -133,6 +217,24 @@ size_t rb_encode(const rb_broadcast_t *b, uint8_t *out, size_t cap)
         p[2] = (uint8_t)(r->heard << 4 | r->since);
         p[3] = (uint8_t)(r->flags | r->lateness << RB_LATENESS_SHIFT);
         p += RB_REPORT_BYTES;
+    }
+    for (k = 0; k < b->n_raw; k++) {
+        const rb_raw_t *r = &b->raw[k];
+        p[0] = r->transmitter_index;
+        put_u16(p + 1, r->round);
+        p[3] = (uint8_t)r->rssi;
+        p[4] = r->n_iq;
+        memcpy(p + RB_RAW_HEAD_BYTES, r->iq, r->n_iq);
+        p += RB_RAW_HEAD_BYTES + r->n_iq;
+    }
+    if (frame == RB_FRAME_RAW_REQUEST) {
+        memcpy(p, b->request.target, RB_NODE_ID_BYTES);
+        put_u16(p + 6, b->request.target_round);
+        p[8] = b->request.n;
+        for (k = 0; k < b->request.n; k++) {
+            memcpy(p + RB_REQUEST_HEAD_BYTES + (size_t)k * RB_NODE_ID_BYTES, b->request.transmitters[k],
+                   RB_NODE_ID_BYTES);
+        }
     }
     return n;
 }

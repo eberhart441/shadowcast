@@ -37,6 +37,7 @@ All of these decisions were made during the CodeMetalForge hackathon and recorde
 | [0029](0029-adaptive-baseline-only-and-a-room-state-from-zones.md) | Transceiver links: adaptive baseline only, and a room state from zones and independent links | Accepted | 2026-11-11 |
 | [0030](0030-possibly-occupied-hold.md) | A zone that stops moving reads POSSIBLY_OCCUPIED for 60 s before EMPTY | Accepted | 2026-11-11 |
 | [0031](0031-ota-maintenance-network-signed-images.md) | Over-the-air updates: a signed maintenance command on the round, the image from a maintenance network off the sensing channel, A/B slots with a health check | Accepted | 2026-11-11 |
+| [0032](0032-raw-mode-in-the-join-slot-within-a-byte-budget.md) | Raw mode: a host-signed request sent in the join slot, raw CSI appended to round broadcasts within a byte budget | Accepted | 2026-11-11 |
 
 Reading order: 0001 is the principle the detection records (0007 to 0011) argue from. 0002 to 0006 are the hardware and radio. 0012 to 0018 are the software architecture and how it is tested.
 

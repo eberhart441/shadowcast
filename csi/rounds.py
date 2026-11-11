@@ -10,6 +10,8 @@ report on its link, ``NodeLinkId(receiving node, transmitting node)``:
     for link_id, report in ingest.place(data, host_ts, source="gw1"): ...
     ingest.count_dropped("gw1", n)   # records the source's queue dropped before they got here
     ingest.last_node    # the sender of the round broadcast just placed, None if it was not placed
+    ingest.last_raw     # its raw CSI blocks, each on its link (raw mode, ticket #17)
+    ingest.last_rounds  # {board serial: round number of its latest accepted round broadcast}
     ingest.counts()     # see counts()
 
 A broadcast whose tag does not verify (forged, or another kit's key) is counted as ``auth`` before anything else
@@ -25,9 +27,12 @@ round broadcasts, per schedule version, so a report about a node the host has no
 version) cannot be placed: it is counted as unplaced. A join grant from the round scheduler (ticket #14) names
 the joining node and its index in the new schedule version, so reports about a joiner place from the start.
 Join frames (requests and grants) carry no link reports: each copy is counted in ``join_frames`` and never
-placed, de-duplicated or rejected. Nothing is dropped without being counted: every record a source delivered is
-accepted, rejected for one of ``REJECT_REASONS``, from an unknown node, or a join frame, so
-``heard == accepted + sum(rejected) + sum(unknown_nodes) + sum(join_frames)``. Memory is bounded: the de-duplication memory by
+placed, de-duplicated or rejected. A round broadcast with raw CSI (frame type 5) is placed like any round
+broadcast, and its raw CSI blocks are placed on their links too (``last_raw``, counted in ``raw_csi``). A raw mode
+request (frame type 4) that a gateway heard from another gateway is counted in ``raw_requests`` and not used.
+Nothing is dropped without being counted: every record a source delivered is accepted, rejected for one of
+``REJECT_REASONS``, from an unknown node, a join frame or a raw mode request, so
+``heard == accepted + sum(rejected) + sum(unknown_nodes) + sum(join_frames) + raw_requests``. Memory is bounded: the de-duplication memory by
 time and ``DEDUP_MAX``, the unknown serials by ``UNKNOWN_NODES_KEPT``.
 """
 from __future__ import annotations
@@ -36,7 +41,8 @@ from collections import Counter, OrderedDict
 from dataclasses import dataclass
 from typing import Iterable, Optional
 
-from .broadcast import DECODE_REASONS, FRAME_JOIN_GRANT, JOIN_FRAMES, BroadcastError, LinkReport, decode_broadcast
+from .broadcast import (DECODE_REASONS, FRAME_JOIN_GRANT, FRAME_RAW_REQUEST, JOIN_FRAMES, BroadcastError, LinkReport,
+                        RawCsi, decode_broadcast)
 from .links import NodeLinkId
 from .room import Room
 from .round_auth import REPLAY, TEST_KIT_KEY, Freshness, tag_ok
@@ -76,7 +82,12 @@ class RoundIngest:
         self._unplaced = 0
         self._joins: Counter[str] = Counter({kind: 0 for kind in JOIN_FRAME_KINDS})
         self._sources: dict[str, Counter[str]] = {}
+        self._raw_requests = 0
+        self._last_source: dict[str, str] = {}   # node name -> the source of its latest accepted round broadcast
+        self._raw = Counter({"blocks": 0, "iq_bytes": 0, "unplaced": 0})
         self.last_node: Optional[str] = None   # sender of the round broadcast just placed (None: not placed)
+        self.last_raw: list[tuple[NodeLinkId, RawCsi]] = []   # its raw CSI blocks, each on its link
+        self.last_rounds: dict[str, int] = {}  # board serial (upper case) -> round of its latest accepted broadcast
 
     def place(self, data: bytes, host_ts: float = 0.0, source: str = "") -> list[tuple[NodeLinkId, LinkReport]]:
         """The link reports of one round broadcast heard by ``source`` at ``host_ts``, each on its link.
@@ -84,6 +95,7 @@ class RoundIngest:
         Rejected bytes, a copy of a round broadcast already placed (another gateway heard it too) and unknown
         senders give [] and are counted."""
         self.last_node = None
+        self.last_raw = []
         tally = self._source(source)
         self._heard += 1
         tally["heard"] += 1
@@ -97,6 +109,9 @@ class RoundIngest:
             return []
         if broadcast.frame_type in JOIN_FRAMES:
             self._join(broadcast)
+            return []
+        if broadcast.frame_type == FRAME_RAW_REQUEST:
+            self._raw_requests += 1    # another gateway's request to a node: nothing for the host to use
             return []
         serial = broadcast.node_id.upper()
         if self._duplicate((serial, broadcast.schedule_version, broadcast.round), host_ts):
@@ -114,6 +129,8 @@ class RoundIngest:
         self._accepted += 1
         tally["accepted"] += 1
         self.last_node = receiver
+        self.last_rounds[serial] = broadcast.round
+        self._last_source[receiver] = source
         indices = self._indices(broadcast.schedule_version)
         indices[broadcast.node_index] = receiver
         placed = []
@@ -123,7 +140,19 @@ class RoundIngest:
                 self._unplaced += 1
                 continue
             placed.append((NodeLinkId(receiver, transmitter), report))
+        for block in broadcast.raw:
+            transmitter = indices.get(block.transmitter_index)
+            if transmitter is None or transmitter == receiver:
+                self._raw["unplaced"] += 1
+                continue
+            self._raw["blocks"] += 1
+            self._raw["iq_bytes"] += len(block.iq)
+            self.last_raw.append((NodeLinkId(receiver, transmitter), block))
         return placed
+
+    def last_source(self, name: str) -> Optional[str]:
+        """The source that delivered node ``name``'s latest accepted round broadcast (None: never heard)."""
+        return self._last_source.get(name)
 
     def _join(self, frame) -> None:
         """A join request or grant: counted; a grant for a known node teaches its index in the new schedule."""
@@ -169,7 +198,10 @@ class RoundIngest:
         """``status.broadcasts``: heard (records delivered, including those dropped on a full queue), accepted
         (placed), rejected {reason: n} for every one of REJECT_REASONS, unknown_nodes {serial: n} (beyond
         UNKNOWN_NODES_KEPT serials, the rest under "other"), unplaced_reports, join_frames {request, grant}
-        (every copy), and per source {heard, accepted, duplicate, queue_overflow}."""
+        (every copy), raw_requests (raw mode requests heard, every copy), raw_csi {blocks, iq_bytes, unplaced}
+        (raw CSI blocks of accepted round broadcasts), and per source {heard, accepted, duplicate,
+        queue_overflow}."""
         return {"heard": self._heard, "accepted": self._accepted, "rejected": dict(self._rejected), "unknown_nodes": dict(self._unknown),
                 "unplaced_reports": self._unplaced, "join_frames": dict(self._joins),
+                "raw_requests": self._raw_requests, "raw_csi": dict(self._raw),
                 "sources": {name: dict(tally) for name, tally in self._sources.items()}}

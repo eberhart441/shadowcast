@@ -9,8 +9,8 @@ from pathlib import Path
 
 import pytest
 
-from csi.broadcast import (FORMAT_VERSION, FRAME_JOIN_GRANT, FRAME_JOIN_REQUEST, BroadcastError, LinkReport,
-                           RoundBroadcast, decode_broadcast,
+from csi.broadcast import (FORMAT_VERSION, FRAME_JOIN_GRANT, FRAME_JOIN_REQUEST, FRAME_RAW_REQUEST, FRAME_ROUND_RAW,
+                           BroadcastError, LinkReport, RawCsi, RawModeRequest, RoundBroadcast, decode_broadcast,
                            dequantise_score, encode_broadcast, quantise_score)
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -31,12 +31,17 @@ def as_fields(broadcast: RoundBroadcast) -> dict:
         "reports": [{"transmitter_index": r.transmitter_index, "score": r.score_q, "rssi": r.rssi,
                      "heard": r.heard, "since": r.since, "flags": r.flags, "lateness": r.lateness}
                     for r in broadcast.reports],
+        "raw": [{"transmitter_index": c.transmitter_index, "round": c.round, "rssi": c.rssi, "iq": c.iq.hex()}
+                for c in broadcast.raw],
+        "request": None if broadcast.request is None else {
+            "target": broadcast.request.target, "target_round": broadcast.request.target_round,
+            "transmitters": list(broadcast.request.transmitters)},
     }
 
 
 def with_defaults(fields: dict) -> dict:
-    """A fixture's broadcast with the optional report keys filled in: lateness 0 (none measured)."""
-    return {**fields, "reports": [{"lateness": 0, **r} for r in fields["reports"]]}
+    """A fixture's broadcast with the optional keys filled in: lateness 0 (none measured), no raw CSI, no request."""
+    return {"raw": [], "request": None, **fields, "reports": [{"lateness": 0, **r} for r in fields["reports"]]}
 
 
 def from_fields(fields: dict) -> RoundBroadcast:
@@ -44,11 +49,21 @@ def from_fields(fields: dict) -> RoundBroadcast:
                                r.get("lateness", 0)) for r in fields["reports"])
     return RoundBroadcast(fields["version"], fields["frame_type"], fields["round"], fields["slot"],
                           fields["slots_per_round"], fields["schedule_version"], fields["node_index"],
-                          fields["membership"], fields["node_id"], bytes.fromhex(fields["tag"]), reports)
+                          fields["membership"], fields["node_id"], bytes.fromhex(fields["tag"]), reports,
+                          tuple(RawCsi(c["transmitter_index"], c["round"], c["rssi"], bytes.fromhex(c["iq"]))
+                                for c in fields.get("raw", ())),
+                          None if "request" not in fields else RawModeRequest(
+                              fields["request"]["target"], fields["request"]["target_round"],
+                              tuple(fields["request"]["transmitters"])))
 
 
 def test_the_format_version_is_2():
     assert FORMAT_VERSION == 2
+
+
+def test_every_v2_case_but_the_raw_mode_frames_has_a_v1_case():
+    assert sorted(set(VALID) - set(VALID_V1)) == ["raw_csi_one_link", "raw_csi_two_links", "raw_mode_request_off",
+                                                   "raw_mode_request_one_link"]
 
 
 @pytest.mark.parametrize("name", sorted(VALID_V1))
@@ -150,3 +165,32 @@ def test_the_encoder_refuses_a_lateness_code_over_31():
     report = broadcast.reports[0]._replace(lateness=32)
     with pytest.raises(ValueError):
         encode_broadcast(broadcast._replace(reports=(report,) + broadcast.reports[1:]))
+
+
+def test_raw_csi_rides_after_the_link_reports():
+    broadcast = decode_broadcast(bytes.fromhex(VALID["raw_csi_two_links"]["hex"]))
+    assert broadcast.frame_type == FRAME_ROUND_RAW and broadcast.carries_reports
+    assert [r.raw_mode for r in broadcast.reports] == [True, True]
+    first, second = broadcast.raw
+    assert (first.transmitter_index, first.round, first.rssi) == (0, 1111, -50)
+    assert first.iq == bytes([0x0a, 0x0b, 0xf6, 0xf5])
+    assert first.values == [10, 11, -10, -11]          # int8, in the driver's order
+    assert second.values == [127, -127]
+
+
+def test_a_raw_mode_request_names_the_target_and_its_transmitters():
+    request = decode_broadcast(bytes.fromhex(VALID["raw_mode_request_one_link"]["hex"]))
+    assert request.frame_type == FRAME_RAW_REQUEST and not request.carries_reports
+    assert request.request == RawModeRequest("02:00:00:00:00:02", 4660, ("02:00:00:00:00:01",))
+    off = decode_broadcast(bytes.fromhex(VALID["raw_mode_request_off"]["hex"]))
+    assert off.request.transmitters == ()
+
+
+def test_the_encoder_refuses_raw_csi_it_could_not_decode():
+    broadcast = from_fields(VALID["raw_csi_one_link"]["broadcast"])
+    block = broadcast.raw[0]
+    for bad in (block._replace(iq=b""), block._replace(iq=bytes(130)), block._replace(transmitter_index=1)):
+        with pytest.raises(ValueError):
+            encode_broadcast(broadcast._replace(raw=(bad,)))
+    with pytest.raises(ValueError):
+        encode_broadcast(broadcast._replace(raw=(block, block, block)))

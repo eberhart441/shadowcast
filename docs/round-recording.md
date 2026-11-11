@@ -10,8 +10,9 @@ A round recording keeps every round broadcast the run's sources delivered, exact
 rejected bytes included), with its host time and the name of its source, plus labels and the room config the
 run used. Replaying it feeds the same bytes at the same host times through the input seam
 ([ADR-0022](adr/0022-host-time-round-broadcast-seam.md)), so the pipeline reaches the same link states and
-room state as the live run. Raw-mode CSI rides inside round broadcasts, so a recording keeps it too once the
-firmware sends it.
+room state as the live run. Raw mode CSI rides inside round broadcasts (frame type 5,
+[`round-broadcast.md`](round-broadcast.md#raw-mode)), so a recording keeps it with no change to this format, and a
+replay shows it again (`status.broadcasts.raw_csi`, the payload's `raw_mode`). `recording.raw_csi(kit_key)` lists it.
 
 Every multi-byte field is little-endian. The suggested file suffix is `.rounds`.
 
@@ -83,4 +84,9 @@ recording = load_rounds("run.rounds")         # RecordingFormatError if unusable
 recording.broadcasts, recording.labels, recording.label_at(t), recording.room
 recording.streams(speed=8)                    # {source: (host time, bytes)} paced; math.inf = no waiting
 server = rounds_dashboard("run.rounds", speed=math.inf)   # a read-only DashboardServer in auto mode
+for s in recording.raw_csi(kit_key):          # raw mode CSI, in host-time order, through the live ingest
+    s.host_ts, s.source, s.link, s.csi.round, s.csi.rssi, s.csi.values   # "n1<-n5", int8 I/Q (imaginary, real)
 ```
+
+To record raw CSI: start the dashboard with `--record`, click a link in the matrix and press "Stream raw CSI" (or
+`POST /api/raw-mode {"link": "n1<-n5", "on": true}` on loopback), and turn it off the same way.

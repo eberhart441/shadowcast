@@ -133,16 +133,23 @@ def test_the_footprint_falloff_is_refused_on_a_transceiver_room_and_nothing_chan
 
 
 def fake_gateway_port(monkeypatch, data: bytes):
-    """Replace the serial reader: the node gateway's port sends ``data`` once, then stays quiet."""
+    """Replace the serial port: the node gateway's port sends ``data`` once, then stays quiet."""
     opened = []
 
-    def serial_chunks(port, baud=921600, timeout=1.0):
-        opened.append(port)
-        yield T0, data
-        while True:
-            yield T0, None
+    class FakeChunks:
+        def __init__(self, port, baud=921600, timeout=1.0):
+            self.port = port
 
-    monkeypatch.setattr("csi.parser.serial_chunks", serial_chunks)
+        def __iter__(self):
+            opened.append(self.port)
+            yield T0, data
+            while True:
+                yield T0, None
+
+        def write(self, data):
+            pass
+
+    monkeypatch.setattr("csi.gateway_records.SerialChunks", FakeChunks)
     return opened
 
 

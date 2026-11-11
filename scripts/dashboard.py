@@ -315,6 +315,7 @@ def build_sources(args: argparse.Namespace, room: Room) -> tuple[dict[str, Strea
             raise SystemExit(f"error: --simulate needs a room with at least two transceivers; {args.room} has "
                              f"{len(room.transceivers)} (try --room config/room_tr8.json)")
         streams = simulated_rig_streams(room, seed=args.seed, quiet_first_s=args.sim_quiet_first)
+        args.transmitters = dict(streams)   # the simulated rig takes raw mode requests too
         return record_rounds(args, room, streams, "dashboard.py --simulate"), None
     if args.node_gateway is not None:
         if len(room.transceivers) < 2:
@@ -322,6 +323,7 @@ def build_sources(args: argparse.Namespace, room: Room) -> tuple[dict[str, Strea
                              f"{len(room.transceivers)} (try --room config/room_tr2.json)")
         args.key = kit_key(args)
         streams = {"gateway": gateway_source(args.node_gateway, args.baud)}
+        args.transmitters = dict(streams)   # raw mode requests go out through the gateway
         return record_rounds(args, room, streams, f"dashboard.py --node-gateway {args.node_gateway}"), None
     if args.simulate_room:
         thresholds = None
@@ -367,6 +369,7 @@ def build_server(args: argparse.Namespace) -> FrameServer:
         return server
     args.recorder = None
     args.key = TEST_KIT_KEY
+    args.transmitters = {}
     sources, thresholds = build_sources(args, room)
     if args.simulate:
         source = "simulate (transceiver rig)"
@@ -391,7 +394,7 @@ def build_server(args: argparse.Namespace) -> FrameServer:
     return DashboardServer(room, sources, thresholds, host=args.host, port=args.http_port, log=args.log,
                            allow_control=args.allow_control, thresholds_path=save_to, mode=mode, kit_key=args.key,
                            notes=notes, log_meta={"source": source, "thresholds_source": thresholds_source},
-                           web_index=page, possibly_occupied_s=hold_s(args))
+                           web_index=page, possibly_occupied_s=hold_s(args), transmitters=args.transmitters)
 
 
 def read_labels(lines, recorder: RoundRecorder) -> None:

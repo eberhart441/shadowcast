@@ -53,7 +53,7 @@ static void check_rfc4231(void)
 
 static void check_signed(rb_auth_t *a, const char *name, const char *hex)
 {
-    uint8_t bytes[RB_MAX_BYTES + 8], copy[RB_MAX_BYTES + 8];
+    uint8_t bytes[RB_MAX_FRAME_BYTES + 8], copy[RB_MAX_FRAME_BYTES + 8];
     size_t n = vec_hex(hex, bytes, sizeof bytes);
     CHECK(rb_auth_tag_ok(a, bytes, n), "%s: a golden broadcast does not verify", name);
     memcpy(copy, bytes, n);
@@ -63,7 +63,7 @@ static void check_signed(rb_auth_t *a, const char *name, const char *hex)
 
 static void check_forged(rb_auth_t *a, const char *name, const char *hex)
 {
-    uint8_t bytes[RB_MAX_BYTES + 8];
+    uint8_t bytes[RB_MAX_FRAME_BYTES + 8];
     size_t n = vec_hex(hex, bytes, sizeof bytes);
     CHECK(!rb_auth_tag_ok(a, bytes, n), "%s: a forged broadcast verifies", name);
     CHECK(rb_auth_check(a, bytes, n, 0) == RB_AUTH_FORGED, "%s: check does not call it forged", name);
@@ -111,6 +111,21 @@ static void check_table_is_bounded(void)
     id[5] = (uint8_t)(RB_AUTH_FRESH_NODES + 7);
     CHECK(rb_auth_fresh(&a, id, 10, 1000 * (RB_AUTH_FRESH_NODES + 8)) == RB_AUTH_REPLAY,
           "the newest node is still remembered");
+}
+
+/* The longest frame of ours (a 32-member round broadcast with two full raw CSI blocks) signs and verifies; one byte
+ * more is refused. */
+static void check_longest_frame(void)
+{
+    rb_auth_t a;
+    rb_auth_init(&a, reference_mac, s_key);
+    static uint8_t frame[RB_MAX_FRAME_BYTES + 1];
+    for (size_t i = 0; i < sizeof frame; i++) {
+        frame[i] = (uint8_t)i;
+    }
+    CHECK(rb_auth_sign(&a, frame, RB_MAX_FRAME_BYTES) && rb_auth_tag_ok(&a, frame, RB_MAX_FRAME_BYTES),
+          "a %d-byte frame signs and verifies", RB_MAX_FRAME_BYTES);
+    CHECK(!rb_auth_sign(&a, frame, RB_MAX_FRAME_BYTES + 1), "a longer frame is refused");
 }
 
 /* The kit key as scripts/node.py sends it: 32 hex digits, either case; anything else is refused. */
@@ -175,6 +190,7 @@ int main(int argc, char **argv)
     CHECK(signed_n > 0 && forged_n > 0 && fresh_n > 0, "no vectors read");
     check_whole_broadcasts();
     check_table_is_bounded();
+    check_longest_frame();
     check_key_text();
     printf("round_auth: %d signed, %d forged and %d freshness cases, %d failures\n", signed_n, forged_n, fresh_n,
            failures);

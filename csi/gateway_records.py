@@ -14,11 +14,18 @@ reader resynchronises on the next sync bytes. Nothing is dropped without a count
 
 Host time: the records completed by one USB read share its arrival time, so each is placed by the gateway's own
 receive time relative to the newest of them. The order and spacing of the round broadcasts survive USB batching.
+
+Sending (raw mode, ticket #17): ``send_frame(frame)`` writes the text command ``send <hex>`` to the gateway, which
+sends that frame (a raw mode request the host signed) in the join slot of the next round its scheduler numbers
+even. ``sender_id`` is the gateway's board serial from its status record (None before the first one, or when the
+board on the port is not a gateway), the node id the host puts in the frames it sends this way.
 """
 from __future__ import annotations
 
 import binascii
 import struct
+import threading
+import time
 from collections import Counter, deque
 from typing import Iterable, Iterator, NamedTuple, Optional, Union
 
@@ -213,6 +220,20 @@ class GatewaySource:
         """{"records": {type: n}, "rejected": {reason: n}, "skipped_bytes": n}."""
         return self._reader.counts()
 
+    @property
+    def sender_id(self) -> Optional[str]:
+        """The gateway's board serial once its status record has arrived; None before, or for a transceiver."""
+        status = self.status
+        return status.serial if status is not None and status.role == "gateway" else None
+
+    def send_frame(self, frame: bytes) -> None:
+        """Have the gateway send ``frame`` on the sensing channel (``send <hex>``). RuntimeError if these chunks
+        cannot be written to; OSError from the port."""
+        write = getattr(self._chunks, "write", None)
+        if write is None:
+            raise RuntimeError("this gateway source cannot send (its chunks are read-only)")
+        write(f"send {bytes(frame).hex()}\n".encode())
+
     def close(self) -> None:
         """Close the chunk source (a serial port's reader releases the port). MultiSource calls this on stop."""
         close = getattr(self._chunks, "close", None)
@@ -220,8 +241,43 @@ class GatewaySource:
             close()
 
 
-def gateway_source(port: str, baud: int = 921600) -> GatewaySource:
-    """The gateway on serial ``port`` as a transceiver source. The port opens on first read."""
-    from .parser import serial_chunks
+class SerialChunks:
+    """A serial port's reads as ``(time.time(), bytes or None)`` chunks, as ``csi.parser.serial_chunks`` gives them,
+    that can also be written to (a command line to the gateway). The port opens on the first read and closes when
+    the reading ends or ``close`` is called."""
 
-    return GatewaySource(serial_chunks(port, baud))
+    def __init__(self, port: str, baud: int = 921600, timeout: float = 1.0) -> None:
+        self._port, self._baud, self._timeout = port, baud, timeout
+        self._ser = None
+        self._lock = threading.Lock()
+
+    def __iter__(self) -> Iterator[tuple[float, Optional[bytes]]]:
+        from .parser import open_serial
+
+        with self._lock:
+            if self._ser is None:
+                self._ser = open_serial(self._port, self._baud, self._timeout)
+            ser = self._ser
+        try:
+            while True:
+                chunk = ser.read(ser.in_waiting or 1)
+                yield time.time(), (chunk or None)
+        finally:
+            self.close()
+
+    def write(self, data: bytes) -> None:
+        with self._lock:
+            if self._ser is None:
+                raise OSError(f"{self._port} is not open")
+            self._ser.write(data)
+
+    def close(self) -> None:
+        with self._lock:
+            if self._ser is not None:
+                self._ser.close()
+                self._ser = None
+
+
+def gateway_source(port: str, baud: int = 921600) -> GatewaySource:
+    """The gateway on serial ``port`` as a transceiver source that can also send. The port opens on first read."""
+    return GatewaySource(SerialChunks(port, baud))

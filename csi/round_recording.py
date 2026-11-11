@@ -6,6 +6,7 @@
         ...
     recording = load_rounds("run.rounds")                   # RecordingFormatError if the file cannot be used
     recording.streams(speed=8)                              # {source: (host time, round broadcast bytes)}, paced
+    recording.raw_csi(kit_key)                              # [RawSample]: raw mode CSI, each on its link
 
 A recording keeps the round broadcast bytes exactly as a source delivered them (undecoded, rejects included) with
 their host time and source name, so a replay feeds the same input seam (docs/adr/0022-host-time-round-broadcast-
@@ -29,9 +30,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import BinaryIO, Callable, Iterable, Iterator, Mapping, Optional, Sequence, Union
 
+from .broadcast import RawCsi
 from .recording import validate_label
 from .room import Room, room_config, room_from_config
-from .rounds import BroadcastStream
+from .round_auth import TEST_KIT_KEY
+from .rounds import BroadcastStream, RoundIngest
 
 Pathlike = Union[str, Path]
 
@@ -58,6 +61,15 @@ class RecordedBroadcast:
     host_ts: float
     source: str
     data: bytes
+
+
+@dataclass(frozen=True)
+class RawSample:
+    """One raw CSI block of a recording (raw mode, ticket #17): on link ``link`` ("n1<-n5"), heard at ``host_ts``."""
+    host_ts: float
+    source: str
+    link: str
+    csi: RawCsi          # transmitter index, the transmitter's round number, rssi, int8 I/Q bytes
 
 
 @dataclass(frozen=True)
@@ -206,6 +218,17 @@ class RoundRecording:
         """The label in force at ``host_ts``: the last one at or before it, None before the first."""
         k = bisect_right([lab.host_ts for lab in self.labels], host_ts)
         return self.labels[k - 1] if k else None
+
+    def raw_csi(self, kit_key: bytes = TEST_KIT_KEY) -> list[RawSample]:
+        """Every raw CSI block in the recording, in host-time order, each on its link: the round broadcasts go
+        through the live ingest (``RoundIngest``, so forged, replayed and duplicate copies count for nothing), with
+        ``kit_key``, the recorded kit's key (the default fits a simulated run)."""
+        ingest = RoundIngest(self.room, kit_key)
+        out = []
+        for b in sorted(self.broadcasts, key=lambda b: b.host_ts):
+            ingest.place(b.data, b.host_ts, b.source)
+            out.extend(RawSample(b.host_ts, b.source, link.label, block) for link, block in ingest.last_raw)
+        return out
 
     def streams(self, speed: float = 1.0, *, clock: Callable[[], float] = time.monotonic,
                 sleep: Callable[[float], None] = time.sleep) -> dict[str, Iterator[tuple[float, bytes]]]:

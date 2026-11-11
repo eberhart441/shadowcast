@@ -24,7 +24,7 @@ is 26 + 4 × (N − 1) bytes: 54 B at 8 nodes, 142 B at 30, inside ESP-NOW v1's 
 | Offset | Size | Field | Meaning |
 |---|---|---|---|
 | 0 | 1 | version | Format version, `2`. A receiver rejects any other value (reason `version`). |
-| 1 | 1 | frame type | `1` = round broadcast with link reports, `2` = join request, `3` = join grant ([join frames](#join-frames)), `8` = maintenance command ([below](#maintenance-command), decoded by its own codec). Other values are reserved for later tickets (raw mode) and rejected (reason `frame_type`). |
+| 1 | 1 | frame type | `1` = round broadcast with link reports, `2` = join request, `3` = join grant ([join frames](#join-frames)), `4` = raw mode request, `5` = round broadcast with raw CSI ([raw mode](#raw-mode)), `8` = maintenance command ([below](#maintenance-command), decoded by its own codec). Other values are rejected (reason `frame_type`). |
 | 2 | 2 | round | Round number, u16, wraps at 65535. Each node counts its own, one up per round, never back (the round scheduler); numbers are not shared between nodes, which keeps them fresh (below). |
 | 4 | 1 | slot | The slot this broadcast was sent in. |
 | 5 | 1 | slots per round | Slots in this round, including the join slot. |
@@ -136,6 +136,61 @@ Join frames are signed like round broadcasts and a forged one is rejected as `au
 grant tells it the joiner's index in the new schedule version. A node checks join frames for freshness like any
 frame (both carry the joiner's round numbers, so they count on with its own) and never takes its timing from one.
 
+## Raw mode
+
+Raw mode streams one link's full CSI for recording and algorithm work (ticket #17,
+[ADR-0032](adr/0032-raw-mode-in-the-join-slot-within-a-byte-budget.md)). The host asks the receiving node of the link
+with a **raw mode request**; that node then sends **round broadcasts with raw CSI**. Both are signed and checked
+like every other frame ([Authentication](#authentication)).
+
+### Round broadcast with raw CSI (frame type 5)
+
+A round broadcast (header with frame type 5, then the link reports, exactly as frame type 1) followed by one or two
+**raw CSI blocks**, which fill the rest of the frame exactly (else reason `length`):
+
+| Offset | Size | Field | Meaning |
+|---|---|---|---|
+| 0 | 1 | transmitter index | The node index of the link's transmitter: a member other than the sender (else reason `membership`). |
+| 1 | 2 | round | The transmitter's round number of the round broadcast the CSI was measured on. |
+| 3 | 1 | rssi | i8, dBm of that round broadcast; `-128` means none. |
+| 4 | 1 | count *n* | I/Q bytes that follow: even, 2 to 128 (else reason `length`). |
+| 5 | *n* | I/Q | int8 pairs per subcarrier, imaginary then real, exactly as the ESP-IDF CSI callback gave them (`wifi_csi_info_t.buf`), cut to the first 128 bytes: one HT20 long training field, 64 subcarriers, nulls included. No gain compensation is applied. |
+
+The link reports of those links carry the raw mode flag (byte 3, bit 0x04); it is the host's acknowledgement. A node
+sends the CSI of the last round broadcast it heard from each raw transmitter since its own last slot, once, and only
+what fits its slot (`rs_frame_cap`: the frame's airtime plus the guard within the slot); the rest is dropped and
+counted, never sent late. Everything else about the frame (de-duplication, freshness, slot, scheduler) is that of a
+round broadcast. The longest such frame is 416 bytes (32 members, two blocks of 128): longer than ESP-NOW v1's 250, so
+the node image sends ESP-NOW v2, which splits it over several vendor elements.
+
+### Raw mode request (frame type 4)
+
+The round header, then:
+
+| Offset | Size | Field | Meaning |
+|---|---|---|---|
+| 26 | 6 | target | The board serial of the node that is to stream (the receiving node of the links). |
+| 32 | 2 | target round | The target's own round number, as the host last heard it. |
+| 34 | 1 | count *k* | Transmitters named, 0 to 2. `0` turns raw mode off. |
+| 35 | 6 × *k* | transmitters | The board serials of the transmitters whose links the target is to stream. |
+
+The length must be exactly 35 + 6 × *k* with *k* ≤ 2 (reason `length`). In the header, the node id is the serial of
+the gateway that sends the request and the round number is the host's own count for that gateway (one up per frame,
+so every copy is fresh); slot, slots per round, schedule version, node index and membership are 0 and not checked.
+Each request carries the target's whole raw set, so copies and repeats change nothing. A node takes a request whose
+tag and freshness check out, that names it, and whose target round is its own latest round number or up to 64 rounds
+before it (a recorded request replayed later is stale). Raw mode lives in the node's RAM: a restart turns it off.
+
+**Where it is sent.** The gateway sends the request in the **join slot of a round the scheduler numbers even**, the
+slot joiners already use: never in a member's slot, never in the odd rounds whose join slot carries grants. It takes
+the round's start from slot 0's round broadcast as it hears it, so it is never early, and sends at most one frame per
+round. A request is 47 bytes on air (158 µs at HT20 MCS0). The host sends three copies.
+
+**Budget.** A raw link costs at most 133 bytes per round (block head 5 + 128). The host allows at most 400 bytes of raw
+CSI per round in the whole rig (three links) and two links per node, and refuses anything beyond with a reason. By the
+airtime model of report 03 (HT20 MCS0, ESP-NOW framing), one raw link adds 172 µs to its node's round broadcast at
+30 nodes (142 to 275 bytes: 274 to 446 µs); the whole budget adds 516 µs per round, 1.0 % of the channel at 20 Hz (the
+30-node rig goes from 16.4 % to 17.5 %) and 2.0 % at 16 nodes and 40 Hz (13.2 % to 15.2 %).
 ## Maintenance command
 
 Frame type 8 tells chosen nodes to update their firmware or to report it ([ADR-0031](adr/0031-ota-maintenance-network-signed-images.md),
@@ -170,6 +225,9 @@ command).
   transmitting node is the node whose own round broadcasts, in the same schedule version, carry that node
   index. Until the host has heard a node's own round broadcast, reports about it cannot be placed and are
   counted as unplaced.
+- A round broadcast with raw CSI is placed like any round broadcast; each raw CSI block is placed on its link the
+  same way (`status.broadcasts.raw_csi {blocks, iq_bytes, unplaced}`, and per link in the payload's `raw_mode`). A
+  raw mode request another gateway sent is counted in `status.broadcasts.raw_requests` and not used.
 - `heard` 0 makes the link NO_SIGNAL. A warming flag or score 0 makes it WARMUP. Otherwise the score drives
   the link's detector as a packet's score does in the line pipeline.
 - Bytes that fail to decode are counted by reason (`short`, `version`, `frame_type`, `length`, `membership`)
