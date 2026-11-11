@@ -220,8 +220,17 @@ Experimental and opt-in (`--breathing`): no motion, but a breathing rate of 6 to
 _See_: `csi/breathing.py`, `csi/detect.py`, [ADR-0008](docs/adr/0008-motion-only-by-default.md)
 
 **Room state**:
-The room-level decision in the payload's `status.room`: MOTION when at least two links are elevated together, or one link is strongly elevated (auto mode only), held for 1 s. It is not any one link's state.
-_See_: `csi/adaptive.py` (`RoomDecision`)
+The room-level decision in the payload's `status.room`. It is not any one link's state. With transceivers: MOTION while any zone is MOTION; a zone is MOTION while, at one of its probe points, the elevated links covering the point hold enough independent links, and for 1 s after. Enough is a third of the independent links that could cover the point, and at least two (three where three exist). For the hackathon links: MOTION when at least two links are elevated together, or one link is strongly elevated (auto mode only), held for 1 s.
+_See_: `csi/room_state.py` (`RoomState`), `csi/adaptive.py` (`RoomDecision`), [ADR-0029](docs/adr/0029-adaptive-baseline-only-and-a-room-state-from-zones.md)
+
+**Zone**:
+A square of the room, about 1 m on a side, that the room state reports on: `A1` is the top-left zone, letters run along x and numbers down y. Each zone holds a grid of probe points 0.25 m apart; a link covers a probe point when its segment passes within 0.3 m of it.
+_See_: `csi/room_state.py` (`ZoneMap`)
+
+**Independent links**:
+Links that share no node. One node's fault (a front-end glitch, a gain step) raises all of its links at once, so links that share a node count as one witness, and both directions of a node pair are one link here. Counted as the largest set of links in which no two share a node.
+_Avoid_: independent witnesses (in code and docs)
+_See_: `csi/room_state.py` (`independent_links`)
 
 ## Detection and thresholds
 
@@ -251,7 +260,7 @@ The default: each link is judged against its threshold.
 _See_: `csi/links.py` (`LinkMonitor`)
 
 **Auto mode**:
-Experimental (`--auto-threshold`): each link is judged against its own adaptive baseline and needs no calibration.
+Experimental (`--auto-threshold`): each link is judged against its own adaptive baseline and needs no calibration. A transceiver link is always judged this way, in either mode, and takes no threshold.
 _See_: `csi/adaptive.py`, [ADR-0009](docs/adr/0009-fixed-thresholds-by-default.md)
 
 **Adaptive baseline**:

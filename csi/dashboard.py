@@ -4,7 +4,9 @@
 pipeline ``push_broadcast(host_ts, data)`` does the same from one round broadcast's link reports (csi/rounds.py).
 ``snapshot(now)`` returns one JSON-serialisable dict:
 
-    room      {width_m, depth_m}
+    room      {width_m, depth_m, zones}
+                zones: [{id, x0, y0, x1, y1}], the room state's zones (csi/room_state.py), "A1" top-left; only
+                for a room with transceivers
     nodes     [{name, role, chip, x, y}]              receivers, senders, then transceivers
     links     [{id, receiver, sender, mac, state, mode, elevated, level, score, threshold, normalised, baseline,
                 evidence, pkt_rate, drops, rssi, age_s, weight, contributes}]
@@ -19,7 +21,9 @@ pipeline ``push_broadcast(host_ts, data)`` does the same from one round broadcas
     track     {x, y, vx, vy, confidence} or None: the motion track, a Kalman-smoothed dot following the
                 heatmap's hot blob (csi/tracker.py). Where change is, like the heatmap; not a person count.
     status    {time_s, links_by_state, parameters, room}
-                room: {state, elevated (labels), mode}: room-level MOTION from link agreement (csi/adaptive.py)
+                room: {state, elevated (labels), mode, zones}: room-level MOTION. With transceivers, from zones
+                    and links that share no node (csi/room_state.py); zones: {zone id: MOTION, EMPTY or WARMUP}. The
+                    hackathon links: from link agreement (csi/adaptive.py), and no zones key
                 broadcasts: {heard, accepted, rejected {reason: n}, unknown_nodes {serial: n}, unplaced_reports,
                 join_frames {request, grant}, sources {name: {heard, accepted, duplicate, queue_overflow}}}, the
                 round broadcasts ingested
@@ -67,7 +71,7 @@ class DashboardState:
                  kit_key: bytes = TEST_KIT_KEY, **heatmap_params) -> None:
         self._room = room
         expected = [link_id for link_id, _, _ in room_link_ids(room)]
-        self._monitor = LinkMonitor(thresholds or {}, mode=mode, expected=expected)
+        self._monitor = LinkMonitor(thresholds or {}, mode=mode, expected=expected, room=room)
         self._ingest = RoundIngest(room, kit_key)
         self._heat = Heatmap(room, **heatmap_params)
         self._track = Tracker(room.width_m, room.depth_m, self._heat.centres)
@@ -163,14 +167,15 @@ class DashboardState:
                        evidence=heat.evidence, baselines=heat.baselines, track=self._track.state(now),
                        room_state=self._monitor.room_state, room_elevated=tuple(self._monitor.room_elevated),
                        mode=self._monitor.mode, broadcasts=self._ingest.counts(), parameters=self.parameters(),
-                       heard_at=dict(self._heard_at), lateness=self._lateness.by_node(now))
+                       heard_at=dict(self._heard_at), lateness=self._lateness.by_node(now),
+                       room_zones=None if self._monitor.room_zones is None else self._monitor.room_zones.zone_states)
 
     def render(self, cap: "Capture", *, links: bool = True) -> dict:
         """The payload from a capture. Reads nothing that the pipeline changes, so it is safe off the lock."""
         rows = cap.rows
         health = node_health(self._room.transceivers, rows, cap.heard_at, cap.now, cap.lateness)
         payload = {
-            "room": {"width_m": self._room.width_m, "depth_m": self._room.depth_m},
+            "room": self._room_payload(),
             "nodes": self._nodes(),
             "links": [self._link_payload(row, cap) for row in rows] if links else None,
             "heatmap": self._heatmap_payload(cap),
@@ -225,6 +230,15 @@ class DashboardState:
             "contributes": row["id"] in cap.contributing,
         }
 
+    def _room_payload(self) -> dict:
+        """Room size, and the zones of a transceiver room (fixed per layout, so safe to read off the lock)."""
+        out = {"width_m": self._room.width_m, "depth_m": self._room.depth_m}
+        zones = self._monitor.room_zones
+        if zones is not None:
+            out["zones"] = [{"id": z.id, "x0": _round(z.x0), "y0": _round(z.y0), "x1": _round(z.x1), "y1": _round(z.y1)}
+                            for z in zones.map.zones]
+        return out
+
     def _nodes(self) -> list[dict]:
         nodes = list(self._room.receivers) + list(self._room.senders) + list(self._room.transceivers)
         return [{"name": n.name, "role": n.role, "chip": n.chip, "x": n.x, "y": n.y} for n in nodes]
@@ -250,11 +264,14 @@ class DashboardState:
         by_state = {state: 0 for state in STATES}
         for row in cap.rows:
             by_state[row["state"]] = by_state.get(row["state"], 0) + 1
+        room = {"state": cap.room_state, "elevated": list(cap.room_elevated), "mode": cap.mode}
+        if cap.room_zones is not None:
+            room["zones"] = dict(cap.room_zones)
         return {
             "time_s": cap.now,
             "links_by_state": by_state,
             "parameters": cap.parameters,
-            "room": {"state": cap.room_state, "elevated": list(cap.room_elevated), "mode": cap.mode},
+            "room": room,
             "broadcasts": cap.broadcasts,
         }
 
@@ -276,6 +293,7 @@ class Capture:
     parameters: dict
     heard_at: dict
     lateness: dict
+    room_zones: Optional[dict] = None   # {zone id: state} of a transceiver room (a new dict per capture), else None
 
 
 def _round(value: Optional[float]) -> Optional[float]:
