@@ -66,6 +66,10 @@ class DashboardState:
         self._monitor.push_reports(host_ts, self._ingest.place(data, host_ts, source))
         self._advance(host_ts)
 
+    def count_dropped(self, source: str, n: int) -> None:
+        """``n`` round broadcasts from ``source`` were dropped before ingest (a full queue): counted, not used."""
+        self._ingest.count_dropped(source, n)
+
     def _advance(self, host_ts: float) -> None:
         self._last_host = host_ts
         if self._heat.due(host_ts):

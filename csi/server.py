@@ -524,11 +524,13 @@ class DashboardServer(FrameServer):
             while not self._stop.is_set():
                 for receiver, pkt in self._ms.drain(timeout=0.05):
                     reorder.add(receiver, pkt)
+                self._count_dropped()
                 self._feed(reorder.pop_ready(self._connected_receivers()))
                 self._idle_frame()
                 if self._ms.finished():
                     break
             if not self._stop.is_set():
+                self._count_dropped()
                 self._feed(reorder.pop_ready(self._connected_receivers(), flush=True))
                 self._finish_run()
         except _PipelineError as e:
@@ -574,6 +576,14 @@ class DashboardServer(FrameServer):
     def _connected_receivers(self) -> set[str]:
         return {name for name, s in self._ms.status().items() if _receiver_state(s) == "connected"}
 
+    def _count_dropped(self) -> None:
+        """Round broadcasts the sources' queue dropped (the pump fell behind) go into the ingest's counters."""
+        dropped = self._ms.take_dropped()
+        if dropped:
+            with self._lock:
+                for source, n in dropped.items():
+                    self._state.count_dropped(source, n)
+
     def _feed(self, batch: list[tuple[str, CSIPacket]]) -> None:
         if not batch:
             return
@@ -588,7 +598,7 @@ class DashboardServer(FrameServer):
     def _push_packet(self, receiver: str, pkt: Union[CSIPacket, HeardBroadcast]) -> None:
         """Caller holds the lock."""
         if isinstance(pkt, HeardBroadcast):
-            self._state.push_broadcast(pkt.host_ts, pkt.data)
+            self._state.push_broadcast(pkt.host_ts, pkt.data, receiver)
         else:
             self._state.push(receiver, pkt)
             if self._calib is not None and self._calib.active:

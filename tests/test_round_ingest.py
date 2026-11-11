@@ -4,6 +4,7 @@ Round broadcasts go in through DashboardState.push_broadcast (tagged with the ga
 assertion is on the payload's ``status.broadcasts`` and ``status.messages``.
 """
 import json
+import time
 import urllib.request
 from pathlib import Path
 
@@ -132,3 +133,23 @@ def test_unknown_serials_are_counted_in_bounded_memory():
     unknown = state.snapshot(T0 + 200)["status"]["broadcasts"]["unknown_nodes"]
     assert len(unknown) <= 33
     assert sum(unknown.values()) == 200
+
+
+def test_an_overloaded_consumer_drops_live_records_with_a_count_and_bounded_memory(monkeypatch):
+    monkeypatch.setattr("csi.multisource.MAX_QUEUED_BROADCASTS", 16)
+    slow = DashboardState.push_broadcast
+
+    def overloaded(self, *args, **kwargs):          # the consumer takes 2 ms a record; the gateway sends faster
+        time.sleep(0.002)
+        slow(self, *args, **kwargs)
+
+    monkeypatch.setattr(DashboardState, "push_broadcast", overloaded)
+    now = time.time()
+    live = [(now + host_ts - T0, data) for host_ts, _, data in rounds(2.0)]   # 320 records, stamped live
+    payload = serve({"gw1": iter(live)})
+    counts = payload["status"]["broadcasts"]
+    dropped = counts["rejected"]["queue_overflow"]
+    assert dropped > 0
+    assert counts["sources"]["gw1"]["queue_overflow"] == dropped
+    assert counts["heard"] == len(live) == counts["accepted"] + dropped     # every record accounted for
+    assert any("dropped" in m and "fell behind" in m for m in payload["status"]["messages"])

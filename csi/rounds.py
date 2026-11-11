@@ -92,6 +92,14 @@ class RoundIngest:
             placed.append((NodeLinkId(receiver, transmitter), report))
         return placed
 
+    def count_dropped(self, source: str, n: int) -> None:
+        """``n`` round broadcasts heard by ``source`` were dropped before they reached the ingest (queue full)."""
+        tally = self._source(source)
+        tally["heard"] += n
+        tally[QUEUE_OVERFLOW] += n
+        self._heard += n
+        self._rejected[QUEUE_OVERFLOW] += n
+
     def _duplicate(self, key: tuple[str, int, int], host_ts: float) -> bool:
         """True if ``key`` was seen within DEDUP_WINDOW_S of ``host_ts``; else remember it. Bounded in time and size."""
         seen = self._seen
