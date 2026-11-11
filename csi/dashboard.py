@@ -120,6 +120,11 @@ class DashboardState:
         """The payload's ``raw_mode`` at host time ``now``, without advancing anything else."""
         return self._raw.status(now)
 
+    @property
+    def last_node(self) -> Optional[str]:
+        """The sender of the round broadcast just pushed, if it was accepted (None otherwise)."""
+        return self._ingest.last_node
+
     def last_source(self, label: str) -> Optional[str]:
         """The source that delivered the latest round broadcast of link ``label``'s receiving node, if any."""
         return self._ingest.last_source(label.partition("<-")[0])

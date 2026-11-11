@@ -43,21 +43,14 @@ POLL_S = 0.05
 
 
 def load_signer(path: Path) -> bytes:
-    """The trusted signing key digest: 32 raw bytes (espsecure digest-sbv2-public-key) or 64 hex digits."""
+    """The trusted signing key digest (csi.ota.load_signer); SystemExit with what to do when it is missing or bad."""
     try:
-        raw = Path(path).read_bytes()
+        return ota.load_signer(path)
     except FileNotFoundError:
         raise SystemExit(f"ota.py: no signing key digest at {path}: make it with `espsecure digest-sbv2-public-key "
                          f"--keyfile data/ota-signing.pem --output {path}` (docs/ota.md)") from None
-    if len(raw) == 32:
-        return raw
-    try:
-        digest = bytes.fromhex(raw.decode().strip())
-    except (UnicodeDecodeError, ValueError):
-        digest = b""
-    if len(digest) != 32:
-        raise SystemExit(f"ota.py: {path} holds neither 32 bytes nor 64 hex digits")
-    return digest
+    except ValueError as e:
+        raise SystemExit(f"ota.py: {e}") from None
 
 
 def heard_serials(records, kit_key: bytes) -> list[str]:
@@ -83,21 +76,10 @@ def send_line(frame: bytes) -> bytes:
 def target_serials(room_path: Path, names: str | None) -> list[str]:
     from csi.room import load_room
 
-    room = load_room(room_path)
-    nodes = [n for n in room.transceivers if n.serial]
-    if not names:
-        return [n.serial.upper() for n in nodes]
-    by_name = {n.name: n.serial.upper() for n in nodes}
-    serials = []
-    for name in names.split(","):
-        name = name.strip()
-        if name in by_name:
-            serials.append(by_name[name])
-        elif len(name.replace(":", "")) == 12:
-            serials.append(name.upper())
-        else:
-            raise SystemExit(f"ota.py: {name!r} is neither a transceiver in {room_path} nor a board serial")
-    return serials
+    try:
+        return ota.target_serials(load_room(room_path), names.split(",") if names else ())
+    except ValueError as e:
+        raise SystemExit(f"ota.py: {e} ({room_path})") from None
 
 
 def drive(rollout: ota.Rollout, server: ota.ImageServer, port, kit_key: bytes, clock=time.monotonic,

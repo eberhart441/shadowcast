@@ -244,13 +244,26 @@ class GatewaySource:
         status = self.status
         return status.serial if status is not None and status.role == "gateway" else None
 
+    @property
+    def channel(self) -> Optional[int]:
+        """The sensing channel from the gateway's status record, None before the first one."""
+        status = self.status
+        return status.channel if status is not None else None
+
     def send_frame(self, frame: bytes) -> None:
         """Have the gateway send ``frame`` on the sensing channel (``send <hex>``). RuntimeError if these chunks
         cannot be written to; OSError from the port."""
+        self._write(f"send {bytes(frame).hex()}\n".encode())
+
+    def send_maintenance(self, frame: bytes) -> None:
+        """Have the gateway send a signed maintenance command (OTA, ``ota send <hex>``) on the sensing channel."""
+        self._write(f"ota send {bytes(frame).hex()}\n".encode())
+
+    def _write(self, line: bytes) -> None:
         write = getattr(self._chunks, "write", None)
         if write is None:
             raise RuntimeError("this gateway source cannot send (its chunks are read-only)")
-        write(f"send {bytes(frame).hex()}\n".encode())
+        write(line)
 
     def close(self) -> None:
         """Close the chunk source (a serial port's reader releases the port). MultiSource calls this on stop."""

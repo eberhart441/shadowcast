@@ -70,6 +70,14 @@ The board must have at least 4 MB of flash (`esptool -p <PORT> flash-id` shows i
 4. Restart the dashboard. `python scripts/ota.py checkin --gateway <PORT>` asks every node to report its running
    image without changing anything.
 
+**From the running dashboard instead** (no stop): a dashboard on `--node-gateway` holds the gateway, so it can run
+the same staged rollout itself. `POST /api/ota` with `{"image": "build/node-signed.bin", "ap_channel": 36}` (and
+optionally `"nodes"`, `"port"`, `"channel"`, `"bind"`, or `{"checkin": true}` for a check-in) checks the image
+against `data/ota-signing.digest`, serves it, and hands each maintenance command to the gateway (`ota send`); the
+round broadcasts the dashboard ingests tell the rollout who is back on the round. Progress is in the payload's
+`status.ota`; a stopped rollout raises a `status.messages` line. Like every command it runs only on a loopback
+dashboard (or with `--allow-control`) and answers 409 in a replay or while a rollout runs.
+
 ## What a node does
 
 | Step | Where | Ends with |

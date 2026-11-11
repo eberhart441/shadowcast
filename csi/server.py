@@ -22,6 +22,13 @@ HTTP:
                        or unknown link, 409 {error, reason} when refused (byte budget, a node's limit, the node not
                        heard yet, no gateway that can send, a replayed run). A command like the others: loopback only
                        unless --allow-control (ADR-0015)
+    POST /api/ota {"image": path, "nodes": [names or serials], "ap_channel": n, "port": n, "channel": n,
+                       "bind": address, "checkin": bool}: start a staged rollout of a signed node image (csi/ota.py)
+                       through the gateway this dashboard holds, without stopping it; every field but image is
+                       optional (nodes: every transceiver; port 8070; channel: the gateway's own). 202 {ota}, 400 for
+                       a bad body, unknown node or unreadable image, 409 {error, reason} when refused (running,
+                       no_gateway, no_channel, no_signer, channel, or the image check's reason). A command
+                       like the others (ADR-0015); progress is in status.ota
     anything else      404
 
 ``status`` extension (added to DashboardState's status block):
@@ -33,6 +40,7 @@ HTTP:
     messages           human-readable notes (uncalibrated links, failed receivers, unknown nodes, rejected or
                        dropped round broadcasts)
     links_in_frames    False when event-stream frames leave out the per-link rows
+    ota                the rollout started by POST /api/ota (csi.ota.RolloutJob.status), None before one
 
 Frames are captured under the lock (``DashboardState.capture``) and rendered to JSON after the pump releases it.
 The pump emits a frame every ``frame_interval_s`` of packet time, so a fast finite stream still
@@ -66,6 +74,8 @@ from .raw_mode import RawModeRefused, SendingGateway, raw_messages
 from .room import Room, Walk
 from .room_state import POSSIBLY_OCCUPIED_S
 from .round_auth import TEST_KIT_KEY
+from . import ota
+from .ota import RolloutJob
 from .rounds import AUTH, DUPLICATE, QUEUE_OVERFLOW, HeardBroadcast
 from .simulate import SimulatedRig, simulate_room, simulate_room_links
 
@@ -90,10 +100,12 @@ SIM_CALIBRATION_SEED = 10
 LOG_FORMAT = "csi-dashboard-log"  # first line of a --log file; replay.py refuses other files
 LOG_VERSION = 1
 COMMAND_PATHS = frozenset({"/api/calibrate", "/api/calibrate/cancel", "/api/threshold",
-                           "/api/thresholds/save", "/api/params", "/api/raw-mode"})
+                           "/api/thresholds/save", "/api/params", "/api/raw-mode", "/api/ota"})
 MAX_BODY_BYTES = 64 * 1024
 DEFAULT_THRESHOLDS_FILE = "links_thresholds.json"   # working directory, unless --save-thresholds says otherwise
 COMMAND_LOG_MAX = 20
+DEFAULT_OTA_SIGNER = Path(__file__).resolve().parent.parent / "data" / "ota-signing.digest"
+OTA_FIELDS = frozenset({"image", "nodes", "ap_channel", "port", "channel", "bind", "checkin"})
 SEND_TIMEOUT_S = 2.0       # a command's write to a gateway's port that takes longer is given up (503 "timeout")
 # live heatmap parameters: request key -> (heatmap attribute, allowed range)
 PARAM_RANGES = {
@@ -480,6 +492,8 @@ class DashboardServer(FrameServer):
     ``gateways`` maps a source name to the object that can send for it (a node gateway, the simulated rig):
     raw mode requests go out through the one that last delivered the target node's round broadcast.
     ``possibly_occupied_s`` is the transceiver room state's possibly-occupied hold (csi/room_state.py).
+    ``ota_signer`` is the file with the kit's trusted image signing key digest that POST /api/ota checks images
+    against (default data/ota-signing.digest).
     """
 
     def __init__(self, room: Room, sources: Mapping[str, Stream], thresholds: Optional[Mapping[str, float]] = None,
@@ -490,16 +504,22 @@ class DashboardServer(FrameServer):
                  thresholds_path: Optional[Union[str, Path]] = None, replay: bool = False,
                  mode: str = "fixed", kit_key: bytes = TEST_KIT_KEY,
                  possibly_occupied_s: float = POSSIBLY_OCCUPIED_S,
-                 gateways: Optional[Mapping[str, SendingGateway]] = None, **heatmap_params) -> None:
+                 gateways: Optional[Mapping[str, SendingGateway]] = None,
+                 ota_signer: Optional[Union[str, Path]] = None, **heatmap_params) -> None:
         network_control = allow_control and not is_loopback(host)
         super().__init__(host, port, web_index, trusted_host=host if network_control else None)
         self._room = room
+        self._kit_key = bytes(kit_key)
         self._state = DashboardState(room, dict(thresholds or {}), mode=mode, kit_key=kit_key,
                                      possibly_occupied_s=possibly_occupied_s, **heatmap_params)
         self._expected = [link_id for link_id, _, _ in room_link_ids(room)]
         self._labels = {link.label for link in self._expected}
         self._controls_on = controls_allowed(host, allow_control)
         self._gateways = dict(gateways or {})
+        self._ota_signer = Path(ota_signer) if ota_signer is not None else DEFAULT_OTA_SIGNER
+        self._ota: Optional[RolloutJob] = None
+        self._ota_starting = False
+        self._serials = {node.name: node.serial.upper() for node in room.transceivers if node.serial}
         # sources that count what they lost before the host (a node gateway): status.broadcasts.gateways
         self._lossy = {name: obj for name, obj in {**dict(sources), **self._gateways}.items()
                        if callable(getattr(obj, "losses", None))}
@@ -538,6 +558,8 @@ class DashboardServer(FrameServer):
 
     def stop(self) -> None:
         super().stop()
+        if self._ota is not None:
+            self._ota.stop()
         self._close_log()
 
     def _close_sources(self) -> None:
@@ -648,6 +670,8 @@ class DashboardServer(FrameServer):
         """Caller holds the lock."""
         if isinstance(pkt, HeardBroadcast):
             self._state.push_broadcast(pkt.host_ts, pkt.data, receiver)
+            if self._ota is not None and self._state.last_node is not None:
+                self._ota.heard(self._serials[self._state.last_node])   # back on the round (a staged rollout)
         else:
             self._state.push(receiver, pkt)
             if self._calib is not None and self._calib.active:
@@ -719,7 +743,8 @@ class DashboardServer(FrameServer):
                 "calibration": self._calib_status(now),
                 "skipped": dict(self._calib.skipped) if self._calib is not None else {},
                 "commands": list(self._commands), "commands_status": self._commands_status(),
-                "gateways": {name: obj.losses() for name, obj in self._lossy.items()}}
+                "gateways": {name: obj.losses() for name, obj in self._lossy.items()},
+                "ota": None if self._ota is None else self._ota.status()}
 
     def _status_extension(self, inputs: Mapping, links: Sequence[Mapping], broadcasts: Mapping) -> dict:
         """The ``status`` extension from ``_status_inputs`` and the link rows (LinkMonitor.snapshot rows)."""
@@ -740,6 +765,10 @@ class DashboardServer(FrameServer):
                         for name, msg in sorted(errors.items()))
         messages.extend(f"calibration skipped {label}: {why}" for label, why in inputs["skipped"].items())
         messages.extend(f"command: {line}" for line in inputs["commands"])
+        ota_status = inputs["ota"]
+        if ota_status is not None and ota_status["state"] in ("failed", "stopped"):
+            messages.append(f"OTA rollout {ota_status['state']} at stage {ota_status['stage']} of "
+                            f"{ota_status['stages']}: {ota_status['failure'] or 'the dashboard stopped it'}")
         return {
             "receivers": inputs["receivers"],
             "errors": errors,
@@ -750,6 +779,7 @@ class DashboardServer(FrameServer):
             "messages": messages,
             "calibration": inputs["calibration"],
             "commands": inputs["commands_status"],
+            "ota": ota_status,
         }
 
     def _commands_status(self) -> dict:
@@ -812,6 +842,7 @@ class DashboardServer(FrameServer):
                 "/api/thresholds/save": self._cmd_save,
                 "/api/params": self._cmd_params,
                 "/api/raw-mode": self._cmd_raw_mode,
+                "/api/ota": self._cmd_ota,
             }
             try:
                 return handlers[path](body)
@@ -939,6 +970,94 @@ class DashboardServer(FrameServer):
             return 200, {"raw_mode": status, "sent": len(frames), "via": via}
 
         return send
+
+    def _cmd_ota(self, body: Mapping) -> Union[tuple[int, dict], object]:
+        """POST /api/ota: checks under the lock; the image is read and checked and the rollout started off it."""
+        unknown = sorted(set(body) - OTA_FIELDS)
+        if unknown:
+            raise RequestError(f"unknown field(s): {', '.join(unknown)}; allowed: {', '.join(sorted(OTA_FIELDS))}")
+        checkin = body.get("checkin", False)
+        image_path = body.get("image")
+        if not isinstance(checkin, bool) or (not checkin and not isinstance(image_path, str)):
+            raise RequestError('name the signed image: {"image": "node-signed.bin"}, or {"checkin": true}')
+        numbers = {key: body.get(key, default) for key, default in (("ap_channel", 0), ("port", 8070))}
+        for key in ("ap_channel", "port", "channel"):
+            value = body.get(key, numbers.get(key))
+            if value is not None and (isinstance(value, bool) or not isinstance(value, int) or value < 0):
+                raise RequestError(f"{key} must be a whole number, got {value!r}")
+        try:
+            serials = ota.target_serials(self._room, body.get("nodes") or ())
+        except ValueError as e:
+            raise RequestError(str(e)) from None
+        if not serials:
+            raise RequestError("the room has no transceiver with a serial to update")
+        if (self._ota is not None and self._ota.active) or self._ota_starting:
+            return 409, {"error": "an OTA rollout is already running", "reason": "running",
+                         "ota": None if self._ota is None else self._ota.status()}
+        ready = [name for name, g in self._gateways.items()
+                 if getattr(g, "gateway_serial", None) and callable(getattr(g, "send_maintenance", None))]
+        if not ready:
+            return 409, {"error": "OTA needs a node gateway that can send maintenance commands (--node-gateway)",
+                         "reason": "no_gateway"}
+        gateway = self._gateways[ready[0]]
+        channel = body.get("channel", getattr(gateway, "channel", None))
+        if not channel:
+            return 409, {"error": "the sensing channel is not known yet (no status record from the gateway): pass "
+                                  '"channel"', "reason": "no_channel"}
+        if not ota.channels_clear(channel, numbers["ap_channel"]):
+            return 409, {"error": f"a maintenance network on channel {numbers['ap_channel']} overlaps sensing channel "
+                                  f"{channel}: put it on 5 GHz or 5+ channels away", "reason": "channel"}
+        self._ota_starting = True
+        return lambda: self._start_ota(gateway, ready[0], serials, image_path, checkin, numbers, channel,
+                                       body.get("bind", "0.0.0.0"))
+
+    def _start_ota(self, gateway, via: str, serials: list[str], image_path: Optional[str], checkin: bool,
+                   numbers: Mapping[str, int], channel: int, bind: str) -> tuple[int, dict]:
+        """Off the lock: read and check the image, open the image server and start the rollout's thread."""
+        try:
+            outcome = self._make_ota(gateway, serials, image_path, checkin, numbers, channel, bind)
+            if isinstance(outcome, tuple):
+                return outcome
+            with self._lock:
+                self._ota = outcome.start()
+                what = "check-in" if checkin else f"rollout of {image_path}"
+                self._commands.append(f"OTA {what} to {len(serials)} node(s) via {via}")
+                return 202, {"ota": self._ota.status()}
+        finally:
+            with self._lock:
+                self._ota_starting = False
+
+    def _make_ota(self, gateway, serials, image_path, checkin, numbers, channel, bind):
+        data, image = b"", None
+        if not checkin:
+            try:
+                signer = ota.load_signer(self._ota_signer)
+            except (OSError, ValueError) as e:
+                return 409, {"error": f"no trusted signing key digest ({self._ota_signer}): {e}", "reason": "no_signer"}
+            try:
+                data = Path(image_path).read_bytes()
+            except OSError as e:
+                return 400, {"error": f"cannot read {image_path}: {e.strerror or e}"}
+            try:
+                image = ota.check_image(data, signer)
+            except ota.ImageError as e:
+                return 409, {"error": f"image refused ({e.reason}): {e}", "reason": e.reason}
+        try:
+            server = ota.ImageServer(data, self._kit_key, host=bind, port=numbers["port"])
+        except OSError as e:
+            return 409, {"error": f"cannot serve the image on {bind}:{numbers['port']}: {e}", "reason": "port"}
+        command = ota.OTA_CMD_REPORT if checkin else ota.OTA_CMD_UPDATE
+
+        def make_rollout(send, log):
+            return ota.Rollout(ota.plan_stages(serials), self._kit_key, command=command, image=image,
+                               port=server.port, ap_channel=numbers["ap_channel"], sensing_channel=channel,
+                               send=send, log=log)
+
+        try:
+            return ota.RolloutJob(make_rollout, server, gateway.send_maintenance)
+        except ValueError as e:
+            server.close()
+            return 409, {"error": str(e), "reason": "channel"}
 
     def _gateway_for(self, label: str) -> Optional[str]:
         """The source to send a raw mode request through: the one that last delivered the target node's round

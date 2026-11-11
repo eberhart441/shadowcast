@@ -23,6 +23,7 @@ import struct
 import time
 import zlib
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 
 from .round_auth import kit_key_check, sign_broadcast
@@ -397,6 +398,15 @@ class Rollout:
         self.failure = ""
         self.results: dict[str, str] = {}
 
+    @property
+    def stage(self) -> int:
+        """The stage running or last run, 1-based; 0 before the first."""
+        return self._stage + 1
+
+    @property
+    def stage_count(self) -> int:
+        return len(self._stages)
+
     # -- the caller's events
 
     def report(self, r: Report, now: float) -> None:
@@ -544,5 +554,121 @@ class ImageServer:
         return reports
 
     def close(self) -> None:
-        self._httpd.shutdown()
+        if self._thread.is_alive():
+            self._httpd.shutdown()
         self._httpd.server_close()
+
+
+# ---------------------------------------------------------------- a rollout run by the dashboard
+
+JOB_POLL_S = 0.05
+JOB_LOG_KEPT = 50
+
+
+def load_signer(path) -> bytes:
+    """The trusted signing key digest in ``path``: 32 raw bytes (espsecure digest-sbv2-public-key) or 64 hex digits.
+    Raises FileNotFoundError, or ValueError for a file that holds neither."""
+    raw = Path(path).read_bytes()
+    if len(raw) == 32:
+        return raw
+    try:
+        digest = bytes.fromhex(raw.decode().strip())
+    except (UnicodeDecodeError, ValueError):
+        digest = b""
+    if len(digest) != 32:
+        raise ValueError(f"{path} holds neither 32 bytes nor 64 hex digits")
+    return digest
+
+
+def target_serials(room, names) -> list[str]:
+    """Board serials (upper case) of ``names`` (transceiver names of ``room`` or board serials), or of every
+    transceiver with a serial, in room order, when ``names`` is empty. ValueError for a name that is neither."""
+    nodes = [n for n in room.transceivers if n.serial]
+    if not names:
+        return [n.serial.upper() for n in nodes]
+    by_name = {n.name: n.serial.upper() for n in nodes}
+    serials = []
+    for name in names:
+        name = str(name).strip()
+        if name in by_name:
+            serials.append(by_name[name])
+        elif len(name.replace(":", "")) == 12:
+            serials.append(name.upper())
+        else:
+            raise ValueError(f"{name!r} is neither a transceiver of the room nor a board serial")
+    return serials
+
+
+class RolloutJob:
+    """A staged rollout the dashboard runs (POST /api/ota) beside the live pipeline, on its own thread.
+
+    It owns the image server and the ``Rollout``. ``heard(serial)`` is called for every round broadcast the
+    dashboard accepts (cheap: it queues); the job's thread feeds the queued heard serials and the image server's
+    reports to the rollout, steps it, and hands the maintenance commands to ``send`` (a gateway's port write)
+    without holding the job's lock, so a slow port never stalls ``status`` or the dashboard. The image server
+    closes when the rollout ends or ``stop`` is called.
+    """
+
+    def __init__(self, make_rollout, server: "ImageServer", send, *, clock=time.monotonic,
+                 poll_s: float = JOB_POLL_S) -> None:
+        import threading
+        from collections import deque
+
+        self._lock = threading.Lock()
+        self._outbox: deque = deque()
+        self._heard: deque = deque()
+        self.messages: deque = deque(maxlen=JOB_LOG_KEPT)
+        self._rollout = make_rollout(send=self._outbox.append, log=self.messages.append)
+        self._server, self._send, self._clock, self._poll = server, send, clock, poll_s
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, name="ota-rollout", daemon=True)
+        self.send_error = ""
+
+    def start(self) -> "RolloutJob":
+        self._server.start()
+        self._thread.start()
+        return self
+
+    def heard(self, serial: str) -> None:
+        self._heard.append((serial, self._clock()))
+
+    @property
+    def active(self) -> bool:
+        return self._thread.is_alive()
+
+    def _run(self) -> None:
+        try:
+            while not self._stop.is_set():
+                now = self._clock()
+                with self._lock:
+                    for r in self._server.take_reports():
+                        self._rollout.report(r, now)
+                    while self._heard:
+                        serial, at = self._heard.popleft()
+                        self._rollout.heard(serial, at)
+                    state = self._rollout.step(now)
+                while self._outbox:
+                    try:
+                        self._send(self._outbox.popleft())
+                    except (OSError, RuntimeError) as e:
+                        self.send_error = str(e) or type(e).__name__
+                        self.messages.append(f"the gateway could not send a maintenance command: {self.send_error}")
+                if state != "running":
+                    return
+                self._stop.wait(self._poll)
+        finally:
+            self._server.close()
+
+    def stop(self, timeout: float = 5.0) -> None:
+        self._stop.set()
+        if self._thread.is_alive():
+            self._thread.join(timeout)
+
+    def status(self) -> dict:
+        """``status.ota`` in the payload: state (running, done, failed or stopped), stage of stages, the failure, the
+        outcome each node reported, the image server's port and the rollout's log lines."""
+        with self._lock:
+            r = self._rollout
+            state = r.state if r.state != "running" or self._thread.is_alive() else "stopped"
+            return {"state": state, "stage": r.stage, "stages": r.stage_count, "failure": r.failure,
+                    "results": dict(r.results), "image_port": self._server.port, "log": list(self.messages)}
