@@ -443,6 +443,7 @@ Other options:
 | `--baud N` | 921600 | Serial baud rate. |
 | `--seed N` | 0 | Simulator seed. |
 | `--sim-quiet-first SECONDS` | 0 | With `--simulate-room` or `--simulate`: the simulated room stays empty this long before the walk starts, so Calibrate can be tried. 60 is a good value; a default calibration takes about 45 s. |
+| `--kit-key PATH` | see right | The kit key round broadcasts are verified with ([`round-broadcast.md`](round-broadcast.md) "Kit key"). `--node-gateway` reads `data/kit.key` by default and will not start without it; `--replay-rounds` defaults to the simulator's published test key, so pass the recorded kit's key to replay a real rig. |
 | `--log run.jsonl` | none | Append the state stream to a file. |
 | `--speed 1\|N\|max` | 1 | Replay speed. |
 | `--margin X` | 1.25 | With `--replay-session` and no `--thresholds`: the calibration margin. |
@@ -458,6 +459,8 @@ The server checks the combination at start and exits with an error when:
 - `--sim-quiet-first` is given without `--simulate-room` or `--simulate`;
 - `--thresholds` or `--raw-log` is combined with `--simulate` or `--node-gateway`;
 - `--simulate` or `--node-gateway` is given a room with fewer than two transceivers;
+- `--kit-key` is given without `--node-gateway` or `--replay-rounds`, or the kit key file is missing, malformed or
+  holds the published test key;
 - `--margin` is given without `--replay-session`;
 - `--log` or `--thresholds` is combined with `--replay` (a log already holds its states);
 - `--auto-threshold` is combined with a replay;
