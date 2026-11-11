@@ -151,6 +151,11 @@
   .controls button { min-width: 0; min-height: 40px; }
   .ctl-note { color: var(--uncal); margin: 8px 0 0; }
   .ctl-error { color: #ffb4ae; margin: 6px 0 0; }
+  .raw-mode { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 8px; }
+  .raw-mode h3 { margin: 0 0 6px; font-size: 0.95rem; }
+  .raw-mode button { min-height: 40px; }
+  .raw-links { margin: 6px 0 0; padding-left: 18px; color: var(--muted); font-size: 0.9rem; }
+  .raw-links li.warn { color: #ffb4ae; }
   .cal-state { margin: 6px 0; color: var(--text); font-weight: 600; }
   .cal-table { width: 100%; border-collapse: collapse; font-size: 0.9rem; margin-top: 8px; color: var(--text); }
   .cal-table th, .cal-table td { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--line); }
@@ -242,6 +247,15 @@
     <canvas id="matrix" role="img" aria-label="link states: one cell per link, receiving node by row, transmitting node by column"></canvas>
     <p class="muted">Row: receiving node. Column: transmitting node. Click a cell for that link.</p>
     <div id="link-detail"><p class="muted">no link selected</p></div>
+    <div class="raw-mode" aria-labelledby="raw-title">
+      <h3 id="raw-title">Raw mode</h3>
+      <div class="ctl-row">
+        <button type="button" id="raw-toggle" disabled>Stream raw CSI</button>
+        <span class="muted" id="raw-note">select a link to stream its full CSI (recorded with --record)</span>
+      </div>
+      <p class="ctl-error" id="raw-error" role="alert" hidden></p>
+      <ul class="raw-links" id="raw-links"></ul>
+    </div>
   </section>
 
   <section class="card" id="links-card" aria-labelledby="links-title">
@@ -1012,6 +1026,43 @@
     updateRow(detailCard, detail, now == null ? (shown ? shown.status.time_s : 0) : now);
   }
 
+  // ------------------------------------------------------------------ raw mode (POST /api/raw-mode)
+
+  function rawRow(p, id) {
+    var rows = (p.raw_mode && p.raw_mode.links) || [];
+    for (var k = 0; k < rows.length; k++) if (rows[k].id === id) return rows[k];
+    return null;
+  }
+
+  function renderRaw(p) {
+    var raw = p.raw_mode || { links: [], budget_bytes: 0, used_bytes: 0 };
+    var cmds = p.status.commands || { available: true };
+    var row = selected ? rawRow(p, selected) : null;
+    var wanted = !!(row && row.wanted);
+    var btn = $("raw-toggle");
+    btn.disabled = !selected || !cmds.available;
+    btn.textContent = wanted ? "Stop raw CSI" : "Stream raw CSI";
+    $("raw-note").textContent = (selected ? selected + ": " + (row ? row.state : "off") + ". " : "select a link. ") +
+      "Budget " + raw.used_bytes + " of " + raw.budget_bytes + " B per round in use (" + raw.link_bytes +
+      " B per link, at most " + raw.max_links_per_node + " per node).";
+    var list = $("raw-links");
+    clearChildren(list);
+    raw.links.filter(function (r) { return r.state !== "off" || r.blocks; }).forEach(function (r) {
+      var text = r.id + " " + r.state + ", " + r.blocks + " CSI blocks, " + r.rate_hz + "/s";
+      list.appendChild(el("li", r.state === "no answer" ? "warn" : null, text));
+    });
+  }
+
+  $("raw-toggle").addEventListener("click", function () {
+    if (!selected || !shown) return;
+    var row = rawRow(shown, selected);
+    var link = selected;
+    $("raw-toggle").disabled = true;
+    command("/api/raw-mode", { link: link, on: !(row && row.wanted) }).then(function (r) {
+      reply("raw-error", r);
+    });
+  });
+
   els.matrix.addEventListener("click", function (ev) {
     if (!matrixView || !shown || !isNodeRig(shown)) return;
     var cell = matrixCellAt(ev.offsetX, ev.offsetY, matrixView);
@@ -1243,6 +1294,7 @@
       renderNodes(p);
       renderMatrix(p);
       fetchDetail();
+      renderRaw(p);
     } else {
       renderLinks(p);
     }
