@@ -40,7 +40,7 @@ python scripts/dashboard.py --node-gateway <GATEWAY PORT> --room config/room_tr2
   `python scripts/node.py <PORT> status`, not a serial terminal. Nothing goes to the UART after boot, and no CSI is
   ever formatted as text.
 - **Gain** is the hackathon receiver's (record 100 frames, then force their median gain) until ticket #15.
-- **Over-the-air updates** ([`docs/ota.md`](../docs/ota.md), [ADR-0029](../docs/adr/0029-ota-maintenance-network-signed-images.md)):
+- **Over-the-air updates** ([`docs/ota.md`](../docs/ota.md), [ADR-0030](../docs/adr/0030-ota-maintenance-network-signed-images.md)):
   two 1.875 MB app slots (`node/partitions.csv`, 4 MB flash), rollback on a failed health check, and only images
   signed with the kit's signing key. The build makes an **unsigned** `node.bin` ("App built but not signed"); sign
   it with `espsecure sign-data --version 2 --keyfile data/ota-signing.pem` and flash or roll out the signed file

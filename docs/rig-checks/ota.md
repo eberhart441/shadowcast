@@ -3,7 +3,7 @@
 Checks on hardware what the tests check on the PC and what only a board can show: two boards update over the air
 and rejoin the round; a node itself refuses an unsigned, a corrupt and a foreign-signed image (not only the host);
 a new image that fails its health check, or loses power during it, rolls back. The procedure is
-[`docs/ota.md`](../ota.md); the decision is [ADR-0029](../adr/0029-ota-maintenance-network-signed-images.md).
+[`docs/ota.md`](../ota.md); the decision is [ADR-0030](../adr/0030-ota-maintenance-network-signed-images.md).
 
 **Result:** not yet run. Record the result at the end of this page and tick the ticket's rig-check box.
 

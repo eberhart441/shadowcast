@@ -1,4 +1,4 @@
-"""Over-the-air updates of the node image, on the host (docs/ota.md, docs/adr/0029).
+"""Over-the-air updates of the node image, on the host (docs/ota.md, docs/adr/0030).
 
     image = check_image(data, trusted_key_digest)   # refuse an unsigned, corrupt or foreign-signed image
     frame = maintenance_command(OTA_CMD_UPDATE, targets, kit_key, image=image, port=8070, ap_channel=36)

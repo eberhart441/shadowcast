@@ -138,7 +138,7 @@ frame (both carry the joiner's round numbers, so they count on with its own) and
 
 ## Maintenance command
 
-Frame type 8 tells chosen nodes to update their firmware or to report it ([ADR-0029](adr/0029-ota-maintenance-network-signed-images.md),
+Frame type 8 tells chosen nodes to update their firmware or to report it ([ADR-0030](adr/0030-ota-maintenance-network-signed-images.md),
 [`docs/ota.md`](ota.md)). The host builds and signs it (`csi/ota.py` `maintenance_command`) and the gateway sends it
 (`ota send <hex>` on its USB port), three copies 0.2 s apart; nodes decode it with `firmware/core/ota_core.h`, not
 with the round broadcast decoder. The golden cases are

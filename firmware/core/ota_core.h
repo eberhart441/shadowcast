@@ -1,5 +1,5 @@
 /*
- * Over-the-air updates on the node: the decisions, without ESP-IDF (docs/adr/0029, docs/ota.md).
+ * Over-the-air updates on the node: the decisions, without ESP-IDF (docs/adr/0030, docs/ota.md).
  *
  *   maintenance command   frame type 8 on the sensing channel (docs/round-broadcast.md "Maintenance command"):
  *                         the 26-byte header (signed with the kit key, round_auth.h), then what to do, the image's

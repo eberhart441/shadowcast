@@ -1,4 +1,4 @@
-# 0029. Over-the-air updates: a signed maintenance command on the round, the image pulled from a maintenance network off the sensing channel, A/B slots with a health check
+# 0030. Over-the-air updates: a signed maintenance command on the round, the image pulled from a maintenance network off the sensing channel, A/B slots with a health check
 
 - **Status:** Accepted
 - **Date:** 2026-11-11

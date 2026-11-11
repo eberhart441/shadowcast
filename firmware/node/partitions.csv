@@ -1,4 +1,4 @@
-# The node image's partition table (docs/adr/0029): two app slots for over-the-air updates, 4 MB flash.
+# The node image's partition table (docs/adr/0030): two app slots for over-the-air updates, 4 MB flash.
 # NVS stays where the single-app table had it, so node settings and the kit key survive the USB reflash.
 # Name,   Type, SubType, Offset,   Size
 nvs,      data, nvs,     0x9000,   0x6000

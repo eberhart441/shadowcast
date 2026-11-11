@@ -1,5 +1,5 @@
 /*
- * Over-the-air updates on the node: ESP-IDF glue over firmware/core/ota_core.h (docs/ota.md, docs/adr/0029).
+ * Over-the-air updates on the node: ESP-IDF glue over firmware/core/ota_core.h (docs/ota.md, docs/adr/0030).
  *
  * The rest of the node image talks to this module through these five calls only:
  *

@@ -1,7 +1,7 @@
 # Over-the-air updates
 
 How to update the node image on every board without a USB cable, and what each node does meanwhile. The decision
-and its reasons are [ADR-0029](adr/0029-ota-maintenance-network-signed-images.md); the frame that starts an update
+and its reasons are [ADR-0030](adr/0030-ota-maintenance-network-signed-images.md); the frame that starts an update
 is the [maintenance command](round-broadcast.md#maintenance-command); the hardware check is
 [`rig-checks/ota.md`](rig-checks/ota.md). Terms are as in [`GLOSSARY.md`](../GLOSSARY.md).
 

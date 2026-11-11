@@ -14,7 +14,7 @@ All of these decisions were made during the CodeMetalForge hackathon and recorde
 | [0006](0006-identify-boards-by-usb-serial.md) | Identify boards by USB serial, not by port name | Accepted | 2026-11-07 |
 | [0007](0007-amplitude-only-motion-score.md) | Motion score from CSI amplitude only, with the breathing band removed | Accepted | 2026-11-07 |
 | [0008](0008-motion-only-by-default.md) | Motion-only by default; breathing is opt-in | Accepted | 2026-11-07 |
-| [0009](0009-fixed-thresholds-by-default.md) | Fixed per-link thresholds by default; adaptive mode is experimental | Accepted | 2026-11-07 |
+| [0009](0009-fixed-thresholds-by-default.md) | Fixed per-link thresholds by default; adaptive mode is experimental | Accepted for the line pipeline; superseded by [0029](0029-adaptive-baseline-only-and-a-room-state-from-zones.md) for the transceiver pipeline | 2026-11-07 |
 | [0010](0010-two-noisy-room-calibration-methods.md) | Two noisy-room calibration methods, no winner declared | Experimental | 2026-11-07 |
 | [0011](0011-heatmap-evidence-from-quiet-baseline.md) | Heatmap evidence from each link's quiet baseline, not its threshold | Accepted | 2026-11-07 |
 | [0012](0012-host-ts-line-stream-seam.md) | Every packet source is a `(host_ts, line)` stream | Accepted for the line pipeline; superseded by [0022](0022-host-time-round-broadcast-seam.md) for the transceiver pipeline | 2026-11-07 |
@@ -34,7 +34,8 @@ All of these decisions were made during the CodeMetalForge hackathon and recorde
 | [0026](0026-one-node-image-runtime-settings-gateway-records.md) | One node image: runtime settings over USB, binary gateway records, HT20 MCS0 broadcasts | Accepted (fixed round and per-board index superseded by 0027) | 2026-11-11 |
 | [0027](0027-round-scheduler.md) | The round scheduler: slot 0 schedules, anyone keeps time, lowest scheduler ID wins | Accepted | 2026-11-11 |
 | [0028](0028-hmac-sha256-tag-and-round-number-freshness.md) | Round broadcasts carry a truncated HMAC-SHA256 tag under a kit key, and the round number guards replay | Accepted | 2026-11-11 |
-| [0029](0029-ota-maintenance-network-signed-images.md) | Over-the-air updates: a signed maintenance command on the round, the image from a maintenance network off the sensing channel, A/B slots with a health check | Accepted | 2026-11-11 |
+| [0029](0029-adaptive-baseline-only-and-a-room-state-from-zones.md) | Transceiver links: adaptive baseline only, and a room state from zones and independent links | Accepted | 2026-11-11 |
+| [0030](0030-ota-maintenance-network-signed-images.md) | Over-the-air updates: a signed maintenance command on the round, the image from a maintenance network off the sensing channel, A/B slots with a health check | Accepted | 2026-11-11 |
 
 Reading order: 0001 is the principle the detection records (0007 to 0011) argue from. 0002 to 0006 are the hardware and radio. 0012 to 0018 are the software architecture and how it is tested.
 
