@@ -26,6 +26,7 @@ All of these decisions were made during the CodeMetalForge hackathon and recorde
 | [0018](0018-evaluate-by-recording.md) | Evaluate by recording, never by random window | Accepted | 2026-11-07 |
 | [0019](0019-wireless-receivers-over-esp-now.md) | Wireless receivers: forward CSI over ESP-NOW to one gateway | Accepted | 2026-11-08 |
 | [0020](0020-plug-and-play-no-per-layout-training.md) | Plug and play: no per-layout training | Accepted | 2026-11-08 |
+| [0021](0021-on-node-score-streaming-window-and-score-code.md) | On-node score: streaming window statistics, and a log-scale score code | Accepted | 2026-11-11 |
 
 Reading order: 0001 is the principle the detection records (0007 to 0011) argue from. 0002 to 0006 are the hardware and radio. 0012 to 0018 are the software architecture and how it is tested.
 
