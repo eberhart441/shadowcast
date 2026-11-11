@@ -57,6 +57,7 @@ from .heatmap import RTI, Heatmap
 from .links import LinkMonitor, NO_SIGNAL, UNCALIBRATED, WARMUP, room_link_ids
 from .parser import CSIPacket
 from .room import Room
+from .round_auth import TEST_KIT_KEY
 from .rounds import RoundIngest
 from .tracker import Tracker
 
@@ -66,11 +67,11 @@ PAYLOAD_DECIMALS = 4
 
 class DashboardState:
     def __init__(self, room: Room, thresholds: Optional[Mapping[str, float]] = None, *, mode: str = "fixed",
-                 **heatmap_params) -> None:
+                 kit_key: bytes = TEST_KIT_KEY, **heatmap_params) -> None:
         self._room = room
         expected = [link_id for link_id, _, _ in room_link_ids(room)]
         self._monitor = LinkMonitor(thresholds or {}, mode=mode, expected=expected, room=room)
-        self._ingest = RoundIngest(room)
+        self._ingest = RoundIngest(room, kit_key)
         self._heat = Heatmap(room, **heatmap_params)
         self._track = Tracker(room.width_m, room.depth_m, self._heat.centres)
         self._senders = {tx.mac: tx.name for tx in room.senders}

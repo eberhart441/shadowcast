@@ -1,7 +1,8 @@
-"""Round broadcast format v1: the encoder and decoder against the golden byte fixtures (docs/round-broadcast.md).
+"""Round broadcast format v2: the encoder and decoder against the golden byte fixtures (docs/round-broadcast.md).
 
-The fixtures are written by hand from the byte layout, so they are the independent source of truth that the
-firmware's encoder and decoder must also reproduce.
+The fixtures' layout bytes are written by hand and their tags computed with openssl, so they are the independent
+source of truth that the firmware's encoder and decoder must also reproduce. v2 is v1's layout with a real
+authentication tag (tests/test_round_auth.py); the frozen v1 fixtures pin that the layout did not change.
 """
 import json
 from pathlib import Path
@@ -11,9 +12,12 @@ import pytest
 from csi.broadcast import (FORMAT_VERSION, BroadcastError, LinkReport, RoundBroadcast, decode_broadcast,
                            dequantise_score, encode_broadcast, quantise_score)
 
-GOLDEN = json.loads((Path(__file__).parent / "fixtures" / "round_broadcast_v1.json").read_text())
+FIXTURES = Path(__file__).parent / "fixtures"
+GOLDEN = json.loads((FIXTURES / "round_broadcast_v2.json").read_text())
 VALID = {case["name"]: case for case in GOLDEN["valid"]}
 INVALID = {case["name"]: case for case in GOLDEN["invalid"]}
+GOLDEN_V1 = json.loads((FIXTURES / "round_broadcast_v1.json").read_text())
+VALID_V1 = {case["name"]: case for case in GOLDEN_V1["valid"]}
 
 
 def as_fields(broadcast: RoundBroadcast) -> dict:
@@ -36,8 +40,24 @@ def from_fields(fields: dict) -> RoundBroadcast:
                           fields["membership"], fields["node_id"], bytes.fromhex(fields["tag"]), reports)
 
 
-def test_the_format_version_is_1():
-    assert FORMAT_VERSION == 1
+def test_the_format_version_is_2():
+    assert FORMAT_VERSION == 2
+
+
+@pytest.mark.parametrize("name", sorted(VALID_V1))
+def test_v2_is_the_v1_layout_with_a_new_version_byte_and_a_real_tag(name):
+    v1, v2 = bytes.fromhex(VALID_V1[name]["hex"]), bytes.fromhex(VALID[name]["hex"])
+    assert (v1[0], v2[0]) == (1, 2)
+    assert v2[1:18] + v2[26:] == v1[1:18] + v1[26:]
+    fields_v1 = dict(VALID_V1[name]["broadcast"], version=2, tag=None)
+    assert dict(VALID[name]["broadcast"], tag=None) == fields_v1
+
+
+@pytest.mark.parametrize("name", sorted(VALID_V1))
+def test_a_v1_broadcast_is_rejected_as_an_old_version(name):
+    with pytest.raises(BroadcastError) as err:
+        decode_broadcast(bytes.fromhex(VALID_V1[name]["hex"]))
+    assert err.value.reason == "version"
 
 
 @pytest.mark.parametrize("name", sorted(VALID))

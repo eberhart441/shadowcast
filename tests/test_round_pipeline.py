@@ -8,8 +8,9 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from csi.broadcast import FLAG_WARMING, LinkReport, RoundBroadcast, encode_broadcast, quantise_score
+from csi.broadcast import FLAG_WARMING, FORMAT_VERSION, LinkReport, RoundBroadcast, encode_broadcast, quantise_score
 from csi.dashboard import DashboardState
+from csi.round_auth import TEST_KIT_KEY, sign_broadcast
 from csi.room import load_room
 
 ROOM = load_room(Path(__file__).parent / "fixtures" / "room_tr8.json")
@@ -31,8 +32,9 @@ def broadcast(sender, round_no, reports=None, *, membership=ALL, node_id=None, s
         fields = {"score_q": quantise_score(QUIET), "rssi": -50, "heard": 15, "since": 0, "flags": 0}
         fields.update((reports or {}).get(name, {}))
         rows.append(LinkReport(i, **fields))
-    return encode_broadcast(RoundBroadcast(1, 1, round_no % 65536, index, len(NAMES) + 1, schedule, index,
-                                           membership, node_id or SERIAL[sender], bytes(8), tuple(rows)))
+    return sign_broadcast(encode_broadcast(RoundBroadcast(FORMAT_VERSION, 1, round_no % 65536, index, len(NAMES) + 1,
+                                                          schedule, index, membership, node_id or SERIAL[sender],
+                                                          bytes(8), tuple(rows))), TEST_KIT_KEY)
 
 
 def run(state, seconds, start_s=0.0, reports=lambda round_no, sender: None, senders=NAMES, seed=0):
@@ -140,7 +142,7 @@ def test_link_rate_is_the_round_rate_scaled_by_the_heard_counter():
 
 def test_rejected_bytes_and_unknown_nodes_are_counted_not_dropped_silently():
     state = auto_state()
-    state.push_broadcast(T0, b"\x02" + broadcast("n1", 0)[1:])                       # a future version
+    state.push_broadcast(T0, b"\x03" + broadcast("n1", 0)[1:])                       # a future version
     state.push_broadcast(T0, broadcast("n1", 0)[:-1])                                # truncated
     state.push_broadcast(T0, broadcast("n1", 0, node_id="02:00:00:00:99:5C"))         # not in the room config
     counts = state.snapshot(T0)["status"]["broadcasts"]

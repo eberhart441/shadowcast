@@ -146,13 +146,24 @@ def fake_gateway_port(monkeypatch, data: bytes):
     return opened
 
 
-def test_cli_node_gateway_serves_the_gateways_round_broadcasts_in_auto_mode(monkeypatch):
-    from csi.gateway_records import encode_heard
+def kit_key_file(tmp_path):
+    """A real kit key on disk, as scripts/node.py keygen writes it; (path, key)."""
+    from csi.round_auth import write_kit_key
 
-    broadcasts = list(simulate_rounds(ROOM, duration_s=1.0, t0=T0))
+    path = tmp_path / "kit.key"
+    return path, write_kit_key(path)
+
+
+def test_cli_node_gateway_serves_the_gateways_round_broadcasts_in_auto_mode(monkeypatch, tmp_path):
+    from csi.gateway_records import encode_heard
+    from csi.round_auth import kit_key_check
+
+    key_path, key = kit_key_file(tmp_path)
+    broadcasts = list(simulate_rounds(ROOM, duration_s=1.0, t0=T0, kit_key=key))
     opened = fake_gateway_port(monkeypatch, b"boot text\r\n" + b"".join(
         encode_heard(int((ts - T0) * 1e6), -50, data) for ts, data in broadcasts))
-    args = cli.build_parser().parse_args(["--node-gateway", "COM7", "--room", str(TR8), "--http-port", "0"])
+    args = cli.build_parser().parse_args(["--node-gateway", "COM7", "--room", str(TR8), "--http-port", "0",
+                                          "--kit-key", str(key_path)])
     cli.check_source(args)
     assert cli.server_mode(args) == "auto"
     server = cli.build_server(args)
@@ -171,6 +182,45 @@ def test_cli_node_gateway_serves_the_gateways_round_broadcasts_in_auto_mode(monk
     assert payload["status"]["broadcasts"]["accepted"] == len(broadcasts)
     assert sum(payload["status"]["broadcasts"]["rejected"].values()) == 0
     assert len(payload["links"]) == 56
+    assert any(kit_key_check(key) in m and "kit key" in m for m in payload["status"]["messages"])
+
+
+def test_cli_node_gateway_rejects_broadcasts_signed_with_another_key(monkeypatch, tmp_path):
+    from csi.gateway_records import encode_heard
+
+    key_path, _ = kit_key_file(tmp_path)
+    broadcasts = list(simulate_rounds(ROOM, duration_s=0.5, t0=T0))          # the test key, not this kit's
+    fake_gateway_port(monkeypatch, b"".join(encode_heard(int((ts - T0) * 1e6), -50, d) for ts, d in broadcasts))
+    args = cli.build_parser().parse_args(["--node-gateway", "COM7", "--room", str(TR8), "--http-port", "0",
+                                          "--kit-key", str(key_path)])
+    server = cli.build_server(args)
+    server.start()
+    try:
+        for _ in range(200):
+            payload = get_state(server)
+            if payload["status"]["broadcasts"]["rejected"]["auth"] >= len(broadcasts):
+                break
+            server.wait_finished(timeout=0.05)
+    finally:
+        server.stop()
+    assert payload["status"]["broadcasts"]["rejected"]["auth"] == len(broadcasts)
+    assert payload["status"]["broadcasts"]["accepted"] == 0
+
+
+def test_cli_node_gateway_without_a_kit_key_says_how_to_make_one(monkeypatch, tmp_path):
+    monkeypatch.setattr(cli, "DEFAULT_KIT_KEY_PATH", tmp_path / "kit.key")
+    args = cli.build_parser().parse_args(["--node-gateway", "COM7", "--room", str(TR8)])
+    cli.check_source(args)
+    with pytest.raises(SystemExit) as err:
+        cli.build_server(args)
+    assert "keygen" in str(err.value)
+
+
+def test_cli_kit_key_applies_to_the_real_rig_and_round_replays_only():
+    args = cli.build_parser().parse_args(["--simulate", "--room", str(TR8), "--kit-key", "kit.key"])
+    with pytest.raises(SystemExit) as err:
+        cli.check_source(args)
+    assert "--kit-key" in str(err.value)
 
 
 @pytest.mark.parametrize("extra, message", [
@@ -198,11 +248,12 @@ def test_cli_node_gateway_records_the_real_rigs_round_broadcasts(monkeypatch, tm
     from csi.gateway_records import encode_heard
     from csi.round_recording import load_rounds
 
-    broadcasts = list(simulate_rounds(ROOM, duration_s=0.5, t0=T0))
+    key_path, key = kit_key_file(tmp_path)
+    broadcasts = list(simulate_rounds(ROOM, duration_s=0.5, t0=T0, kit_key=key))
     fake_gateway_port(monkeypatch, b"".join(encode_heard(int((ts - T0) * 1e6), -50, data) for ts, data in broadcasts))
     out = tmp_path / "rig.rounds"
     args = cli.build_parser().parse_args(["--node-gateway", "COM7", "--room", str(TR8), "--http-port", "0",
-                                          "--record", str(out), "--label", "empty"])
+                                          "--record", str(out), "--label", "empty", "--kit-key", str(key_path)])
     cli.check_source(args)
     server = cli.build_server(args)
     server.start()

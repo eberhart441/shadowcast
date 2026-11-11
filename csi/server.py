@@ -57,7 +57,8 @@ from .links import calibrate_links, room_link_ids, save_thresholds
 from .multisource import MultiSource
 from .parser import CSIPacket, Stream
 from .room import Room, Walk
-from .rounds import DUPLICATE, QUEUE_OVERFLOW, HeardBroadcast
+from .round_auth import TEST_KIT_KEY
+from .rounds import AUTH, DUPLICATE, QUEUE_OVERFLOW, HeardBroadcast
 from .simulate import simulate_room, simulate_room_links, simulate_rounds
 
 DEFAULT_HOST = "127.0.0.1"
@@ -465,7 +466,8 @@ class DashboardServer(FrameServer):
 
     ``log`` appends the frame stream to a file: a header line (room, thresholds, heatmap parameters, start
     time, ``log_meta``, ``notes``) and then one payload per line, exactly as /api/events sends them.
-    ``notes`` are extra human-readable lines for ``status.messages``.
+    ``notes`` are extra human-readable lines for ``status.messages``. Round broadcasts are verified with
+    ``kit_key`` (csi/round_auth.py; by default the published test key the simulator signs with).
     """
 
     def __init__(self, room: Room, sources: Mapping[str, Stream], thresholds: Optional[Mapping[str, float]] = None,
@@ -474,11 +476,12 @@ class DashboardServer(FrameServer):
                  log: Optional[Union[str, Path]] = None, log_meta: Optional[Mapping] = None,
                  notes: Sequence[str] = (), allow_control: bool = False,
                  thresholds_path: Optional[Union[str, Path]] = None, replay: bool = False,
-                 mode: str = "fixed", **heatmap_params) -> None:
+                 mode: str = "fixed", kit_key: bytes = TEST_KIT_KEY, **heatmap_params) -> None:
         network_control = allow_control and not is_loopback(host)
         super().__init__(host, port, web_index, trusted_host=host if network_control else None)
         self._room = room
-        self._state = DashboardState(room, dict(thresholds or {}), mode=mode, **heatmap_params)
+        self._state = DashboardState(room, dict(thresholds or {}), mode=mode, kit_key=kit_key,
+                                     **heatmap_params)
         self._expected = [link_id for link_id, _, _ in room_link_ids(room)]
         self._labels = {link.label for link in self._expected}
         self._controls_on = controls_allowed(host, allow_control)
@@ -897,8 +900,10 @@ def broadcast_messages(counts: Mapping) -> list[str]:
     rejected = counts.get("rejected") or {}
     bad = {reason: n for reason, n in rejected.items() if n and reason not in (DUPLICATE, QUEUE_OVERFLOW)}
     if bad:
+        hint = (" Failed authentication (auth) means a node has another kit key (compare `scripts/node.py PORT key` "
+                "with the host's) or someone is sending forged round broadcasts." if bad.get(AUTH) else "")
         out.append(f"{sum(bad.values())} round broadcast(s) rejected: "
-                   + ", ".join(f"{reason} {n}" for reason, n in sorted(bad.items())) + ".")
+                   + ", ".join(f"{reason} {n}" for reason, n in sorted(bad.items())) + "." + hint)
     if rejected.get(QUEUE_OVERFLOW):
         out.append(f"{rejected[QUEUE_OVERFLOW]} round broadcast(s) dropped because the host fell behind (queue full).")
     return out
