@@ -48,7 +48,7 @@ _Avoid_: turn, window (reserved for the score window)
 **Round broadcast**:
 The ESP-NOW broadcast a transceiver sends in its slot: a round header (version, round number, slot, membership, the sender's board serial, an authentication tag) and one link report per other member. It is both the frame the others measure CSI on and the data for the host. Format version 1 is defined in [`docs/round-broadcast.md`](docs/round-broadcast.md).
 _Avoid_: packet (that is a parsed CSI_DATA line), frame (that is the dashboard's event)
-_See_: `csi/broadcast.py`, [ADR-0021](docs/adr/0021-host-time-round-broadcast-seam.md)
+_See_: `csi/broadcast.py`, [ADR-0022](docs/adr/0022-host-time-round-broadcast-seam.md)
 
 **Link report**:
 The 4 bytes a receiving node sends about one of its links in its round broadcast: the quantised score, the RSSI, how many round broadcasts it heard from the transmitter in the last 15 rounds and how many rounds since the last one, and flags (baseline warming, possible move, raw mode). A heard count of 0 makes the link NO_SIGNAL.
@@ -296,7 +296,7 @@ _See_: `csi/heatmap.py`, `csi/server.py` (`PARAM_RANGES`)
 **Stream**:
 The input from one receiver: a sequence of `(host_ts, line)` pairs, from a serial port, the simulator or a replay. Every source plugs into the pipeline through it. In the transceiver pipeline a stream is a sequence of `(host time, round broadcast bytes)` pairs, from a gateway, the simulator or a replay.
 _Avoid_: feed, channel
-_See_: `csi/parser.py` (`Stream`), `csi/rounds.py` (`BroadcastStream`), [ADR-0012](docs/adr/0012-host-ts-line-stream-seam.md), [ADR-0021](docs/adr/0021-host-time-round-broadcast-seam.md)
+_See_: `csi/parser.py` (`Stream`), `csi/rounds.py` (`BroadcastStream`), [ADR-0012](docs/adr/0012-host-ts-line-stream-seam.md), [ADR-0022](docs/adr/0022-host-time-round-broadcast-seam.md)
 
 **Source**:
 A named stream (receiver name to stream) given to the dashboard. Sources are read concurrently, each on its own thread with its own parser.

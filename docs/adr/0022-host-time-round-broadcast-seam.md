@@ -1,4 +1,4 @@
-# 0021. Every transceiver source is a `(host time, round broadcast)` stream
+# 0022. Every transceiver source is a `(host time, round broadcast)` stream
 
 - **Status:** Accepted
 - **Date:** 2026-11-11

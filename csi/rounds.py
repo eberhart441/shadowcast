@@ -1,7 +1,7 @@
 """Round broadcasts in, placed link reports out: the host's ingest for the transceiver pipeline.
 
 Every transceiver source is a stream of ``(host time, round broadcast bytes)`` (``BroadcastStream``; see
-docs/adr/0021-host-time-round-broadcast-seam.md). ``RoundIngest`` decodes each round broadcast
+docs/adr/0022-host-time-round-broadcast-seam.md). ``RoundIngest`` decodes each round broadcast
 (csi/broadcast.py), names its sender by board serial from the room config, and places each link report on its
 link, ``NodeLinkId(receiving node, transmitting node)``:
 
