@@ -1,5 +1,5 @@
 {
-  "comment": "Golden round broadcasts, format v2 (docs/round-broadcast.md): the v1 layout with version 2 and a real authentication tag, the first 8 bytes of HMAC-SHA256(kit key, the broadcast with its tag bytes 18..25 set to zero). The layout bytes are written by hand; every tag was computed with openssl (`openssl dgst -sha256 -mac HMAC -macopt hexkey:<key>`), not by the code under test. 'key' is the published test kit key (never provision it on a real kit) and 'key_check' its check value, the first 4 bytes of HMAC-SHA256(key, 'shadowcast kit key check'). 'valid' cases decode to 'broadcast', encode back to 'hex' and verify under 'key'; each has the same name, fields and bytes as its v1 case apart from the version byte and the tag. 'forged' cases decode but fail verification (reason auth). 'invalid' cases are rejected before verification with 'reason'. 'freshness' is one sequence of authenticated broadcasts (t_us = receive time in microseconds, node id, round), in order, each 'fresh' or 'replay' under the freshness rule (resync after 2 s of silence, forward window 16 + 1 per ms).",
+  "comment": "Golden round broadcasts, format v2 (docs/round-broadcast.md): the v1 layout with version 2 and a real authentication tag, the first 8 bytes of HMAC-SHA256(kit key, the broadcast with its tag bytes 18..25 set to zero). The layout bytes are written by hand; every tag was computed with openssl (`openssl dgst -sha256 -mac HMAC -macopt hexkey:<key>`), not by the code under test. 'key' is the published test kit key (never provision it on a real kit) and 'key_check' its check value, the first 4 bytes of HMAC-SHA256(key, 'shadowcast kit key check'). 'valid' cases decode to 'broadcast', encode back to 'hex' and verify under 'key'; each has the same name, fields and bytes as its v1 case apart from the version byte and the tag. 'forged' cases decode but fail verification (reason auth). 'invalid' cases are rejected before verification with 'reason'. 'freshness' is one sequence of authenticated broadcasts (t_us = receive time in microseconds, node id, round), in order, each 'fresh' or 'replay' under the freshness rule (resync after 2 s of silence, forward window 16 + 1 per ms). Ticket #17 added frame types 4 (raw mode request) and 5 (round broadcast with raw CSI blocks), which have no v1 case.",
   "key": "000102030405060708090a0b0c0d0e0f",
   "key_check": "88a46367",
   "valid": [
@@ -61,6 +61,53 @@
         "version": 2, "frame_type": 3, "round": 17, "slot": 3, "slots_per_round": 4, "schedule_version": 8, "node_index": 3, "membership": 15, "node_id": "02:00:00:00:00:09", "tag": "cec2aa692987d7b4",
         "reports": []
       }
+    },
+    {
+      "name": "raw_csi_one_link",
+      "hex": "020534120104070107000000020000000002a0144e87caae0c6a8acef00400800f01005704ce0801ff02fe03fd7f80",
+      "broadcast": {
+        "version": 2, "frame_type": 5, "round": 4660, "slot": 1, "slots_per_round": 4, "schedule_version": 7, "node_index": 1, "membership": 7, "node_id": "02:00:00:00:00:02", "tag": "a0144e87caae0c6a",
+        "reports": [
+          {"transmitter_index": 0, "score": 138, "rssi": -50, "heard": 15, "since": 0, "flags": 4},
+          {"transmitter_index": 2, "score": 0, "rssi": null, "heard": 0, "since": 15, "flags": 1}
+        ],
+        "raw": [
+          {"transmitter_index": 0, "round": 1111, "rssi": -50, "iq": "01ff02fe03fd7f80"}
+        ]
+      }
+    },
+    {
+      "name": "raw_csi_two_links",
+      "hex": "020534120104070107000000020000000002a2a2a499980da43b8acef00464b0f004005704ce040a0bf6f5022200b0027f81",
+      "broadcast": {
+        "version": 2, "frame_type": 5, "round": 4660, "slot": 1, "slots_per_round": 4, "schedule_version": 7, "node_index": 1, "membership": 7, "node_id": "02:00:00:00:00:02", "tag": "a2a2a499980da43b",
+        "reports": [
+          {"transmitter_index": 0, "score": 138, "rssi": -50, "heard": 15, "since": 0, "flags": 4},
+          {"transmitter_index": 2, "score": 100, "rssi": -80, "heard": 15, "since": 0, "flags": 4}
+        ],
+        "raw": [
+          {"transmitter_index": 0, "round": 1111, "rssi": -50, "iq": "0a0bf6f5"},
+          {"transmitter_index": 2, "round": 34, "rssi": -80, "iq": "7f81"}
+        ]
+      }
+    },
+    {
+      "name": "raw_mode_request_one_link",
+      "hex": "02042a0000000000000000000200000000809fa1f526c8221aef020000000002341201020000000001",
+      "broadcast": {
+        "version": 2, "frame_type": 4, "round": 42, "slot": 0, "slots_per_round": 0, "schedule_version": 0, "node_index": 0, "membership": 0, "node_id": "02:00:00:00:00:80", "tag": "9fa1f526c8221aef",
+        "reports": [],
+        "request": {"target": "02:00:00:00:00:02", "target_round": 4660, "transmitters": ["02:00:00:00:00:01"]}
+      }
+    },
+    {
+      "name": "raw_mode_request_off",
+      "hex": "02042b00000000000000000002000000008066035a2fcfae9adf020000000002351200",
+      "broadcast": {
+        "version": 2, "frame_type": 4, "round": 43, "slot": 0, "slots_per_round": 0, "schedule_version": 0, "node_index": 0, "membership": 0, "node_id": "02:00:00:00:00:80", "tag": "66035a2fcfae9adf",
+        "reports": [],
+        "request": {"target": "02:00:00:00:00:02", "target_round": 4661, "transmitters": []}
+      }
     }
   ],
   "forged": [
@@ -69,7 +116,8 @@
     {"name": "score_changed_after_signing", "hex": "020134120104070107000000020000000002a843f381c52bf1118bcef00000800f01"},
     {"name": "node_id_changed_after_signing", "hex": "0201ffff0509ff052000000010bda3cc85bdedf68666734a0fe9"},
     {"name": "round_changed_after_signing", "hex": "0201feff0509ff052000000010bda3cc85bcedf68666734a0fe9"},
-    {"name": "signed_with_another_key", "hex": "0201ffff0509ff052000000010bda3cc85bc4ff19a7185372be7"}
+    {"name": "signed_with_another_key", "hex": "0201ffff0509ff052000000010bda3cc85bc4ff19a7185372be7"},
+    {"name": "raw_csi_changed_after_signing", "hex": "020534120104070107000000020000000002a0144e87caae0c6a8acef00400800f01005704ce0801ff02fe03fd7f81"}
   ],
   "invalid": [
     {"name": "shorter_than_the_header", "hex": "02013412010407010700", "reason": "short"},
@@ -80,7 +128,17 @@
     {"name": "sender_not_a_member", "hex": "0201ffff0509ff050100000010bda3cc85bcedf68666734a0fe9", "reason": "membership"},
     {"name": "join_request_with_a_report", "hex": "02021000030407030700000002000000000900000000000000008acef000", "reason": "length"},
     {"name": "join_request_index_out_of_range", "hex": "0202100003040720070000000200000000090000000000000000", "reason": "membership"},
-    {"name": "join_grant_index_not_a_member", "hex": "0203110003040803070000000200000000090000000000000000", "reason": "membership"}
+    {"name": "join_grant_index_not_a_member", "hex": "0203110003040803070000000200000000090000000000000000", "reason": "membership"},
+    {"name": "raw_csi_without_a_block", "hex": "02053412010407010700000002000000000200000000000000008acef00400800f01", "reason": "length"},
+    {"name": "raw_block_empty", "hex": "02053412010407010700000002000000000200000000000000008acef00400800f01005704ce00", "reason": "length"},
+    {"name": "raw_block_odd_length", "hex": "02053412010407010700000002000000000200000000000000008acef00400800f01005704ce0701ff02fe03fd7f", "reason": "length"},
+    {"name": "raw_block_cut_short", "hex": "02053412010407010700000002000000000200000000000000008acef00400800f01005704ce0801ff02fe03fd", "reason": "length"},
+    {"name": "raw_block_over_128_bytes", "hex": "02053412010407010700000002000000000200000000000000008acef00400800f01005704ce8201010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101", "reason": "length"},
+    {"name": "raw_three_blocks", "hex": "02053412010407010700000002000000000200000000000000008acef00400800f01005704ce027f81025704ce027f81005804ce027f81", "reason": "length"},
+    {"name": "raw_block_for_a_non_member", "hex": "02053412010407010700000002000000000200000000000000008acef00400800f01055704ce0801ff02fe03fd7f80", "reason": "membership"},
+    {"name": "raw_block_for_the_sender", "hex": "02053412010407010700000002000000000200000000000000008acef00400800f01015704ce0801ff02fe03fd7f80", "reason": "membership"},
+    {"name": "raw_mode_request_three_links", "hex": "02042a0000000000000000000200000000800000000000000000020000000002341203020000000001020000000003020000000004", "reason": "length"},
+    {"name": "raw_mode_request_cut_short", "hex": "02042a0000000000000000000200000000809fa1f526c8221aef0200000000023412010200000000", "reason": "length"}
   ],
   "freshness": [
     {"t_us": 0, "node_id": "02:00:00:00:00:01", "round": 100, "expect": "fresh", "why": "first broadcast heard from the node"},

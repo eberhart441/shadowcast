@@ -13,6 +13,12 @@ A round broadcast is a 26-byte round header and one 4-byte link report per other
 ascending node index. Little-endian throughout. The round scheduler's join frames (a join request and a join
 grant, frame types 2 and 3) are the round header alone; they decode to a ``RoundBroadcast`` with no reports.
 
+Raw mode (ticket #17) adds two frame types. A **round broadcast with raw CSI** (5) is a round broadcast whose link
+reports are followed by one or two raw CSI blocks (``RoundBroadcast.raw``): the int8 I/Q of the last round
+broadcast the sender heard from that transmitter. A **raw mode request** (4) is the round header (sent by a
+gateway, signed by the host) followed by the target node, the target's round number and the transmitters whose
+links it is to stream (``RoundBroadcast.request``); it carries no link reports.
+
 The score byte is the score code of ``csi/score_code.py`` (ADR-0021; ``firmware/core/motion_score.h`` on the node):
 0 is no score, code c >= 1 is 2 ** ((c - 1) / 10 - 10). ``quantise_score`` and ``dequantise_score`` are its
 encode and decode under the names this module uses.
@@ -29,8 +35,11 @@ TAG_OFFSET = 18                  # the authentication tag is header bytes 18..25
 FRAME_ROUND = 1                  # a round broadcast carrying link reports
 FRAME_JOIN_REQUEST = 2           # a node asking to join the round, in the join slot (header only)
 FRAME_JOIN_GRANT = 3             # the scheduler admitting it, in the join slot (header only)
-FRAME_TYPES = frozenset({FRAME_ROUND, FRAME_JOIN_REQUEST, FRAME_JOIN_GRANT})
+FRAME_RAW_REQUEST = 4           # the host asking one node to stream raw CSI for some of its links (sent by a gateway)
+FRAME_ROUND_RAW = 5             # a round broadcast with raw CSI blocks after its link reports
+FRAME_TYPES = frozenset({FRAME_ROUND, FRAME_JOIN_REQUEST, FRAME_JOIN_GRANT, FRAME_RAW_REQUEST, FRAME_ROUND_RAW})
 JOIN_FRAMES = frozenset({FRAME_JOIN_REQUEST, FRAME_JOIN_GRANT})
+REPORT_FRAMES = frozenset({FRAME_ROUND, FRAME_ROUND_RAW})   # frames that are a node's round broadcast
 MAX_NODES = 32                   # the membership bitmap is 32 bits
 _HEADER = struct.Struct("<BBHBBBBI6s8s")
 _REPORT = struct.Struct("<BbBB")
@@ -50,6 +59,14 @@ FLAGS_KNOWN = FLAG_WARMING | FLAG_POSSIBLE_MOVE | FLAG_RAW_MODE
 LATENESS_SHIFT = 3
 LATENESS_MAX_CODE = 31           # code c >= 1: the broadcast started (c - 1) x 32 to c x 32 us into its slot
 LATENESS_UNIT_US = 32            # 31 means 960 us or more; 0 means not measured
+_RAW_HEAD = struct.Struct("<BHbB")   # transmitter index, its round number, rssi, I/Q byte count
+RAW_BLOCK_HEAD_BYTES = _RAW_HEAD.size   # 5
+RAW_IQ_MAX_BYTES = 128           # 64 subcarriers x (imaginary, real): one HT20 long training field
+RAW_MAX_LINKS = 2                # raw CSI blocks one round broadcast may carry (per node)
+RAW_BLOCK_MAX_BYTES = RAW_BLOCK_HEAD_BYTES + RAW_IQ_MAX_BYTES   # 133
+_REQUEST_HEAD = struct.Struct("<6sHB")   # target node id, target round, number of transmitters
+REQUEST_HEAD_BYTES = _REQUEST_HEAD.size  # 9
+RAW_REQUEST_MAX_AGE_ROUNDS = 64  # a node takes a raw mode request only within this many rounds of its target round
 DECODE_REASONS = ("short", "version", "frame_type", "length", "membership")   # every BroadcastError.reason
 
 
@@ -101,6 +118,29 @@ class LinkReport(NamedTuple):
         return bool(self.flags & FLAG_RAW_MODE)
 
 
+class RawCsi(NamedTuple):
+    """One raw CSI block of a round broadcast with raw CSI: what the sender measured on the last round broadcast it
+    heard from ``transmitter_index``, the I/Q bytes exactly as its Wi-Fi driver gave them."""
+    transmitter_index: int       # node index of the transmitting node, as in the link reports
+    round: int                   # the transmitter's round number of the round broadcast the CSI was measured on
+    rssi: Optional[int]          # dBm of that round broadcast; None if not known
+    iq: bytes                    # int8 pairs per subcarrier, imaginary then real (ESP-IDF order), 2..128 bytes
+
+    @property
+    def values(self) -> list[int]:
+        """The I/Q bytes as signed int8 values, in order."""
+        return list(struct.unpack(f"<{len(self.iq)}b", self.iq))
+
+
+class RawModeRequest(NamedTuple):
+    """The body of a raw mode request: ``target`` is to stream raw CSI for its links from ``transmitters`` (none:
+    raw mode off). ``target_round`` is the target's own round number when the host asked; the target ignores a
+    request whose target round is not within its last RAW_REQUEST_MAX_AGE_ROUNDS rounds."""
+    target: str                  # board serial of the receiving node, "AA:BB:CC:DD:EE:FF"
+    target_round: int
+    transmitters: tuple[str, ...]
+
+
 class RoundBroadcast(NamedTuple):
     version: int
     frame_type: int
@@ -113,6 +153,13 @@ class RoundBroadcast(NamedTuple):
     node_id: str                 # the sender's board serial (base MAC), "AA:BB:CC:DD:EE:FF"
     tag: bytes                   # 8-byte authentication tag (csi/round_auth.py)
     reports: tuple[LinkReport, ...]
+    raw: tuple[RawCsi, ...] = ()            # frame type 5 only
+    request: Optional[RawModeRequest] = None   # frame type 4 only
+
+    @property
+    def carries_reports(self) -> bool:
+        """A node's round broadcast (with or without raw CSI), as opposed to a join frame or a raw mode request."""
+        return self.frame_type in REPORT_FRAMES
 
     @property
     def is_join_request(self) -> bool:
@@ -140,19 +187,61 @@ def decode_broadcast(data: bytes) -> RoundBroadcast:
     if frame_type in JOIN_FRAMES:
         return _decode_join(data, version, frame_type, round_no, slot, slots, schedule, node_index, membership,
                             node_id, tag)
+    if frame_type == FRAME_RAW_REQUEST:
+        return RoundBroadcast(version, frame_type, round_no, slot, slots, schedule, node_index, membership,
+                              _format_id(node_id), bytes(tag), (), (), _decode_request(data))
     if node_index >= MAX_NODES or not membership >> node_index & 1:
         raise BroadcastError("membership", f"node index {node_index} is not in membership {membership:#010x}")
     indices = report_indices(membership, node_index)
     expected = HEADER_BYTES + REPORT_BYTES * len(indices)
-    if len(data) != expected:
+    if len(data) < expected or (frame_type == FRAME_ROUND and len(data) != expected):
         raise BroadcastError("length", f"{len(data)} bytes; membership {membership:#010x} needs {expected}")
+    raw = _decode_raw(data, expected, set(indices)) if frame_type == FRAME_ROUND_RAW else ()
     reports = []
     for k, index in enumerate(indices):
         score_q, rssi, counts, flags = _REPORT.unpack_from(data, HEADER_BYTES + REPORT_BYTES * k)
         reports.append(LinkReport(index, score_q, None if rssi == RSSI_NONE else rssi, counts >> 4, counts & 0x0F,
                                   flags & FLAGS_KNOWN, flags >> LATENESS_SHIFT))
     return RoundBroadcast(version, frame_type, round_no, slot, slots, schedule, node_index, membership,
-                          _format_id(node_id), bytes(tag), tuple(reports))
+                          _format_id(node_id), bytes(tag), tuple(reports), raw)
+
+
+def _decode_raw(data: bytes, offset: int, transmitters: set[int]) -> tuple[RawCsi, ...]:
+    """The raw CSI blocks that fill data[offset:] exactly: 1 to RAW_MAX_LINKS, each from a member other than the
+    sender, with an even I/Q count of 2 to RAW_IQ_MAX_BYTES."""
+    blocks = []
+    while offset < len(data):
+        if len(blocks) == RAW_MAX_LINKS:
+            raise BroadcastError("length", f"more than {RAW_MAX_LINKS} raw CSI blocks")
+        if offset + RAW_BLOCK_HEAD_BYTES > len(data):
+            raise BroadcastError("length", "a raw CSI block is cut short")
+        index, round_no, rssi, n = _RAW_HEAD.unpack_from(data, offset)
+        if not (2 <= n <= RAW_IQ_MAX_BYTES and n % 2 == 0):
+            raise BroadcastError("length", f"a raw CSI block of {n} I/Q bytes (an even 2 to {RAW_IQ_MAX_BYTES})")
+        start = offset + RAW_BLOCK_HEAD_BYTES
+        if start + n > len(data):
+            raise BroadcastError("length", "a raw CSI block is cut short")
+        if index not in transmitters:
+            raise BroadcastError("membership", f"raw CSI for node index {index}, which has no link to the sender")
+        blocks.append(RawCsi(index, round_no, None if rssi == RSSI_NONE else rssi, bytes(data[start:start + n])))
+        offset = start + n
+    if not blocks:
+        raise BroadcastError("length", "a round broadcast with raw CSI carries no raw CSI block")
+    return tuple(blocks)
+
+
+def _decode_request(data: bytes) -> RawModeRequest:
+    """The body of a raw mode request: target, target round, 0 to RAW_MAX_LINKS transmitter node ids."""
+    if len(data) < HEADER_BYTES + REQUEST_HEAD_BYTES:
+        raise BroadcastError("length", f"{len(data)} bytes is too short for a raw mode request")
+    target, target_round, n = _REQUEST_HEAD.unpack_from(data, HEADER_BYTES)
+    expected = HEADER_BYTES + REQUEST_HEAD_BYTES + NODE_ID_BYTES * n
+    if n > RAW_MAX_LINKS or len(data) != expected:
+        raise BroadcastError("length", f"{len(data)} bytes; a raw mode request for {n} link(s) is {expected} "
+                                       f"(at most {RAW_MAX_LINKS} links)")
+    start = HEADER_BYTES + REQUEST_HEAD_BYTES
+    ids = tuple(_format_id(data[start + NODE_ID_BYTES * k:start + NODE_ID_BYTES * (k + 1)]) for k in range(n))
+    return RawModeRequest(_format_id(target), target_round, ids)
 
 
 def _decode_join(data: bytes, *fields) -> RoundBroadcast:
@@ -172,8 +261,7 @@ def _decode_join(data: bytes, *fields) -> RoundBroadcast:
 def encode_broadcast(broadcast: RoundBroadcast) -> bytes:
     """The bytes of ``broadcast``. Its reports must follow the membership (``report_indices``); a join frame has
     none."""
-    indices = ([] if broadcast.frame_type in JOIN_FRAMES
-               else report_indices(broadcast.membership, broadcast.node_index))
+    indices = report_indices(broadcast.membership, broadcast.node_index) if broadcast.carries_reports else []
     if [r.transmitter_index for r in broadcast.reports] != indices:
         raise ValueError(f"reports must be for node indices {indices} in that order, got "
                          f"{[r.transmitter_index for r in broadcast.reports]}")
@@ -189,7 +277,36 @@ def encode_broadcast(broadcast: RoundBroadcast) -> bytes:
             raise ValueError(f"flags are 3 bits and the lateness code 5 bits, got {r.flags} and {r.lateness}")
         out += _REPORT.pack(r.score_q, RSSI_NONE if r.rssi is None else r.rssi, r.heard << 4 | r.since,
                             r.flags | r.lateness << LATENESS_SHIFT)
+    if broadcast.frame_type == FRAME_ROUND_RAW:
+        out += _encode_raw(broadcast.raw, set(indices))
+    elif broadcast.raw:
+        raise ValueError("only a round broadcast with raw CSI (frame type 5) carries raw CSI blocks")
+    if broadcast.frame_type == FRAME_RAW_REQUEST:
+        out += _encode_request(broadcast.request)
     return bytes(out)
+
+
+def _encode_raw(blocks: tuple[RawCsi, ...], transmitters: set[int]) -> bytes:
+    if not 1 <= len(blocks) <= RAW_MAX_LINKS:
+        raise ValueError(f"a round broadcast with raw CSI carries 1 to {RAW_MAX_LINKS} blocks, got {len(blocks)}")
+    out = bytearray()
+    for c in blocks:
+        n = len(c.iq)
+        if not (2 <= n <= RAW_IQ_MAX_BYTES and n % 2 == 0):
+            raise ValueError(f"a raw CSI block holds an even 2 to {RAW_IQ_MAX_BYTES} I/Q bytes, got {n}")
+        if c.transmitter_index not in transmitters:
+            raise ValueError(f"raw CSI for node index {c.transmitter_index}, which has no link to the sender")
+        out += _RAW_HEAD.pack(c.transmitter_index, c.round, RSSI_NONE if c.rssi is None else c.rssi, n) + c.iq
+    return bytes(out)
+
+
+def _encode_request(request: Optional[RawModeRequest]) -> bytes:
+    if request is None:
+        raise ValueError("a raw mode request (frame type 4) needs its request")
+    if len(request.transmitters) > RAW_MAX_LINKS:
+        raise ValueError(f"a raw mode request names at most {RAW_MAX_LINKS} transmitters")
+    return (_REQUEST_HEAD.pack(_parse_id(request.target), request.target_round, len(request.transmitters))
+            + b"".join(_parse_id(t) for t in request.transmitters))
 
 
 def quantise_score(score: Optional[float]) -> int:

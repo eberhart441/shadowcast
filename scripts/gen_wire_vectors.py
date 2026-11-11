@@ -12,6 +12,8 @@ round_broadcast.txt (fixture tests/fixtures/round_broadcast_v2.json, format docs
 
     valid <name> <hex> <version> <frame_type> <round> <slot> <slots> <schedule> <index> <membership>
           <node_id hex> <tag hex> <n_reports> then per report: <transmitter_index> <score> <rssi> <heard> <since> <flags>
+    raw <the fields of a valid line, frame type 5> <n_raw> then per block: <transmitter_index> <round> <rssi> <iq hex>
+    request <name> <hex> <round> <node_id hex> <target hex> <target_round> <n> then each transmitter's node id hex
     invalid <name> <hex> <reason>
 
 The rssi of a report is the signed byte; -128 is "none" (null in the fixture). <flags> is the whole flags byte:
@@ -49,16 +51,30 @@ def round_broadcast_lines(fixture: dict) -> list[str]:
              "# tests/fixtures/round_broadcast_v2.json. Do not edit by hand; the format is in the script's docstring."]
     for case in fixture["valid"]:
         b = case["broadcast"]
-        fields = ["valid", case["name"], case["hex"], b["version"], b["frame_type"], b["round"], b["slot"],
-                  b["slots_per_round"], b["schedule_version"], b["node_index"], b["membership"],
-                  b["node_id"].replace(":", "").lower(), b["tag"], len(b["reports"])]
+        if "request" in b:
+            q = b["request"]
+            fields = ["request", case["name"], case["hex"], b["round"], _id(b["node_id"]), _id(q["target"]),
+                      q["target_round"], len(q["transmitters"]), *(_id(t) for t in q["transmitters"])]
+            lines.append(" ".join(str(f) for f in fields))
+            continue
+        fields = ["raw" if "raw" in b else "valid", case["name"], case["hex"], b["version"], b["frame_type"],
+                  b["round"], b["slot"], b["slots_per_round"], b["schedule_version"], b["node_index"],
+                  b["membership"], _id(b["node_id"]), b["tag"], len(b["reports"])]
         for r in b["reports"]:
             fields += [r["transmitter_index"], r["score"], RSSI_NONE if r["rssi"] is None else r["rssi"],
                        r["heard"], r["since"], r["flags"] | r.get("lateness", 0) << 3]
+        if "raw" in b:
+            fields.append(len(b["raw"]))
+            for c in b["raw"]:
+                fields += [c["transmitter_index"], c["round"], RSSI_NONE if c["rssi"] is None else c["rssi"], c["iq"]]
         lines.append(" ".join(str(f) for f in fields))
     for case in fixture["invalid"]:
         lines.append(f"invalid {case['name']} {case['hex']} {case['reason']}")
     return lines
+
+
+def _id(node_id: str) -> str:
+    return node_id.replace(":", "").lower()
 
 
 def round_auth_lines(fixture: dict) -> list[str]:
