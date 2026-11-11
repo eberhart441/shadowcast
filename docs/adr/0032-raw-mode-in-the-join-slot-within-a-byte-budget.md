@@ -25,10 +25,19 @@ round number that only counts forward (#16), and a gateway holds no kit key.
   gateway's serial as node id and its own count as round number, one up per frame. The gateway gets it over USB
   (`send <hex>`) and sends it verbatim. A target takes a request only within 64 rounds after its target round (the
   target's own round number), so a recorded request cannot be replayed later even after the 2 s resync of #16.
-- **Sent in the join slot of even rounds.** The gateway follows the schedule from slot 0's round broadcasts and sends
-  in the slot joiners already use, in rounds the scheduler numbers even, never in a member's slot nor in a grant's
-  round, at most one frame per round, never early. A collision with a joiner costs one try on each side; the host
-  sends three copies and the raw mode flag in the target's link reports is the acknowledgement.
+- **Sent in the join slot of even rounds, not in "the gateway's own slot".** This deviates from the wording of #17
+  and of the spec ("in its own slot"): the round scheduler gives a gateway no slot (see Alternatives). The gateway
+  follows the schedule from slot 0's round broadcasts and sends in the slot joiners already use, in rounds the
+  scheduler numbers even, never in a member's slot nor in a grant's round (odd), at most one frame per round, never
+  early.
+- **Collisions in the join slot.** A raw mode request and a joiner's join request can go out in the same join slot
+  and destroy each other. Neither is acknowledged on air; both sides retry. The host sends every request
+  `REQUEST_COPIES` = 3 times, each a separate frame with the next round number (so each is fresh at the target), and
+  the gateway sends at most one per even round, so the copies land in three different join slots; the whole raw set
+  is in every copy, so taking two is harmless. The acknowledgement is the raw mode flag in the target's link reports;
+  without it within `ACK_TIMEOUT_S` (3 s) the dashboard shows "no answer" and the operator asks again. A joiner
+  retries in a later even round as it always does. Pinned by
+  `tests/test_raw_mode.py::test_a_request_lost_to_a_collision_in_the_join_slot_is_taken_from_a_later_copy`.
 - **Budget:** 133 bytes per raw link per round, at most 400 bytes per round in the rig (three links) and two links per
   node; the host refuses more with a reason. On the node, raw CSI only goes out if the frame still fits its slot
   (`rs_frame_cap`); otherwise it is dropped and counted, never sent late. By report 03's model the full budget costs

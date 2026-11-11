@@ -257,3 +257,26 @@ def test_a_transceiver_on_the_port_is_not_a_gateway_that_can_send():
     assert gateway.gateway_serial is None
     with pytest.raises(RuntimeError):
         GatewaySource([(T0, None)]).send_frame(b"\x02\x04")    # chunks that cannot be written to
+
+
+@pytest.mark.parametrize("lost", [1, 2], ids=["first copy collided", "two copies collided"])
+def test_a_request_lost_to_a_collision_in_the_join_slot_is_taken_from_a_later_copy(lost):
+    """ADR-0032: the request goes out in the join slot, where a joiner's request can collide with it, so the host
+    sends REQUEST_COPIES copies, each with a fresh round number. With the first copies lost, the node still takes a
+    later one and its link reports acknowledge it (the raw mode flag)."""
+    from collections import deque
+    from csi.simulate import simulate_rounds
+    state = DashboardState(ROOM, mode="auto")
+    commands = deque()
+    flagged_at = None
+    for k, (host_ts, data) in enumerate(simulate_rounds(ROOM, None, duration_s=3.0, seed=4, commands=commands)):
+        state.push_broadcast(host_ts, data, "sim")
+        if k == 8 * 10:
+            frames = state.raw_mode_request("n2<-n7", True, host_ts, gateway_serial=GATEWAY)
+            assert len(frames) == REQUEST_COPIES == 3
+            commands.extend(frames[lost:])          # the first ``lost`` copies collided with a join request
+        b = decode_broadcast(data)
+        if flagged_at is None and b.node_id == SERIAL["n2"] and any(r.raw_mode for r in b.reports):
+            flagged_at = k // 8
+    assert flagged_at == 11
+    assert {row["id"]: row["state"] for row in state.raw_mode_status(host_ts)["links"]} == {"n2<-n7": "on"}
