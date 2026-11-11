@@ -16,7 +16,9 @@
 #include <stdint.h>
 
 #define RB_VERSION 1
-#define RB_FRAME_ROUND 1          /* the only frame type in v1: a round broadcast carrying link reports */
+#define RB_FRAME_ROUND 1          /* a round broadcast carrying link reports */
+#define RB_FRAME_JOIN_REQUEST 2   /* a node asking to join, in the join slot: the header alone */
+#define RB_FRAME_JOIN_GRANT 3     /* the scheduler admitting it, in the join slot: the header alone */
 #define RB_MAX_NODES 32           /* the membership bitmap is 32 bits */
 #define RB_HEADER_BYTES 26
 #define RB_REPORT_BYTES 4
@@ -30,7 +32,10 @@
 #define RB_FLAG_WARMING 0x01       /* the receiving node's score on this link is still warming up */
 #define RB_FLAG_POSSIBLE_MOVE 0x02 /* the receiving node suspects a node moved */
 #define RB_FLAG_RAW_MODE 0x04      /* raw mode is active on this link */
-#define RB_FLAGS_KNOWN 0x07        /* bits 3-7 are reserved: sent as 0, ignored on decode */
+#define RB_FLAGS_KNOWN 0x07        /* bits 0-2 of byte 3; bits 3-7 are the slot lateness code */
+#define RB_LATENESS_SHIFT 3
+#define RB_LATENESS_MAX 31
+#define RB_LATENESS_NONE_CODE 0   /* not measured */
 
 typedef enum {
     RB_OK = 0,
@@ -49,6 +54,7 @@ typedef struct {
     uint8_t heard;              /* round broadcasts heard from it over the last 15 rounds, 0..15 */
     uint8_t since;              /* rounds since it was last heard, 0..15 */
     uint8_t flags;              /* RB_FLAG_* */
+    uint8_t lateness;           /* slot lateness code of the transmitter's broadcast, 0..31; 0 = not measured */
 } rb_report_t;
 
 typedef struct {
@@ -66,11 +72,14 @@ typedef struct {
     rb_report_t reports[RB_MAX_REPORTS];
 } rb_broadcast_t;
 
-/* Decode `len` bytes into *out. Anything but RB_OK leaves *out unspecified. */
+/* Decode `len` bytes into *out: a round broadcast, or a join request or grant (n_reports 0; in a request the node
+ * index is the index asked for, in a grant the index given, which must be in the new membership). Anything but
+ * RB_OK leaves *out unspecified. */
 rb_status_t rb_decode(const uint8_t *data, size_t len, rb_broadcast_t *out);
 
 /* Encode *b into out[0..cap). Returns the byte count, or 0 when b is not a valid v1 broadcast (the sender is not a
- * member, the reports do not follow the membership, a count is over 15) or does not fit in cap. */
+ * member, the reports do not follow the membership, a count is over 15, flags or lateness out of range, a join
+ * frame with reports) or does not fit in cap. */
 size_t rb_encode(const rb_broadcast_t *b, uint8_t *out, size_t cap);
 
 /* The byte count of a broadcast with this membership: 26 + 4 x (members - 1). */
