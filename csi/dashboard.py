@@ -56,7 +56,6 @@ part that touches live state (the server runs it under its lock), ``render`` rea
 """
 from __future__ import annotations
 
-import time
 from dataclasses import dataclass
 from typing import Any, Mapping, Optional
 
@@ -185,7 +184,7 @@ class DashboardState:
         server lock. ``render`` turns the capture into the payload, without the lock.
         """
         if now is None:
-            now = self._last_host if self._last_host is not None else time.time()
+            now = self._last_host if self._last_host is not None else 0.0   # host time, never the wall clock
         rows = self._monitor.snapshot(now)
         heat = self._heat
         heat.advance(now, rows)
@@ -227,7 +226,7 @@ class DashboardState:
         """One link's payload row (as in ``links``) at host time ``now``, or None for an unknown label. It reads the
         heatmap's baseline and evidence from its last advance and changes nothing."""
         if now is None:
-            now = self._last_host if self._last_host is not None else time.time()
+            now = self._last_host if self._last_host is not None else 0.0   # host time, never the wall clock
         row = self._monitor.row(label, now)
         if row is None:
             return None

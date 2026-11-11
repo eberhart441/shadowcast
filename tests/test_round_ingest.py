@@ -327,3 +327,17 @@ def test_a_maintenance_command_heard_on_the_channel_is_counted_on_its_own_not_re
     assert counts["heard"] == (counts["accepted"] + sum(counts["rejected"].values()) + sum(counts["unknown_nodes"].values())
                                + sum(counts["join_frames"].values()) + counts["raw_requests"]
                                + counts["maintenance_commands"])
+
+
+def test_a_link_is_judged_on_packet_time_when_no_time_is_given_not_the_wall_clock(monkeypatch):
+    """ADR-0013: with no ``now``, a link row and its detail use the newest host time of the pipeline. The wall clock
+    (here years after the recording) must not turn every link of a replayed or simulated run NO_SIGNAL."""
+    state = DashboardState(ROOM, mode="auto")
+    for host_ts, _, data in rounds(1.0):
+        state.push_broadcast(host_ts, data, "gw1")
+    monkeypatch.setattr(time, "time", lambda: T0 + 1e6)
+    detail = state.link_detail("n1<-n5")
+    assert detail["state"] != "NO_SIGNAL" and detail["age_s"] < 0.1
+    monitor = state._monitor
+    assert monitor.row("n1<-n5")["state"] != "NO_SIGNAL"
+    assert all(row["state"] != "NO_SIGNAL" for row in monitor.snapshot())
