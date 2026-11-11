@@ -4,10 +4,16 @@ Model: static per-subcarrier baseline + Gaussian noise. While a person is
 ``still`` a ~0.3 Hz sinusoid (breathing) is added, with per-subcarrier gain and
 phase so some subcarriers respond more than others. During ``motion`` noise is
 amplified and slow random-walk drift is added. ``empty`` is baseline + noise.
+
+The transceiver rig (``simulate_rounds``) is simulated one level up, as the nodes' own output: each node
+broadcasts once per round in its slot, carrying a link report per other node whose score is the link's quiet
+level times lognormal noise, raised by a person near the link (the same Gaussian falloff as above). The stream is
+(host time, round broadcast bytes), as a gateway delivers it.
 """
 from __future__ import annotations
 
 import heapq
+import itertools
 import time
 from dataclasses import dataclass
 from operator import itemgetter
@@ -15,9 +21,11 @@ from typing import Callable, Iterator, Mapping, Optional, Sequence
 
 import numpy as np
 
+from .broadcast import (FLAG_WARMING, FORMAT_VERSION, FRAME_ROUND, HEARD_WINDOW_ROUNDS, MAX_NODES, SINCE_MAX,
+                        LinkReport, RoundBroadcast, encode_broadcast, quantise_score)
 from .links import LinkId
 from .parser import DEFAULT_HEADER, CSIPacket, CSIParser, parse_stream
-from .room import Person, Room, link_responses, load_room
+from .room import FALLOFF_SIGMA_M, Person, Room, link_responses, load_room
 
 N_SUBCARRIERS = 64
 NULL_SUBCARRIERS = tuple(range(0, 6)) + (32,) + tuple(range(59, 64))  # 12 nulls (LLTF-like)
@@ -317,3 +325,103 @@ def simulate_links(
 def _tagged(name: str, lines: Iterator[tuple[float, str]]) -> Iterator[tuple[str, CSIPacket]]:
     for pkt in parse_stream(lines, CSIParser()):
         yield name, pkt
+
+
+# ---------------------------------------------------------------------- transceiver rig: round broadcasts
+
+ROUND_HZ = 20.0            # rounds per second: each link is measured at this rate
+SIM_WARMING_S = 1.0        # a node's link scores need one 1 s window first: warming flag, no score
+ROUND_QUIET_SCORE = (0.5, 3.0)   # each link's quiet score level is drawn from this range (its own scale)
+ROUND_NOISE_SIGMA = 0.2    # lognormal spread of a quiet score from round to round
+ROUND_MOTION_GAIN = 20.0   # a person on the link multiplies its score by 1 + this
+GATEWAY_LATENCY_S = 0.0005  # up to this much is added to a broadcast's host time
+
+
+def simulate_rounds(
+    room: Room,
+    person: Optional[Person] = None,
+    *,
+    duration_s: Optional[float] = None,
+    quiet_first_s: float = 0.0,
+    round_hz: float = ROUND_HZ,
+    dead_after: Optional[Mapping[str, float]] = None,
+    drop_prob: float = 0.0,
+    seed: int = 0,
+    realtime: bool = False,
+    t0: float = 1_700_000_000.0,
+) -> Iterator[tuple[float, bytes]]:
+    """(host time, round broadcast bytes) from a simulated rig of the room's transceivers, as one gateway hears it.
+
+    Every transceiver is a member and broadcasts once per round in its slot (node index = slot = its position in
+    ``room.transceivers``; one join slot ends the round). ``person`` is in the room from ``quiet_first_s`` on
+    (its time 0 is then); ``None`` is an empty room. ``duration_s=None`` runs forever. ``dead_after`` maps a node
+    name to the seconds after which it stops broadcasting; it stays in the membership (no scheduler is
+    simulated), so the others' heard counters for it fall to 0. ``drop_prob`` is the chance that a node misses
+    one round broadcast from another. Seeded: the same arguments give the same bytes. ``realtime`` paces the
+    stream to the wall clock and stamps it with ``time.time()``.
+    """
+    nodes = list(room.transceivers)
+    n = len(nodes)
+    if not 2 <= n <= MAX_NODES:
+        raise ValueError(f"the simulated rig needs 2 to {MAX_NODES} transceivers, the room has {n}")
+    dead_after = dict(dead_after or {})
+    unknown = sorted(set(dead_after) - {node.name for node in nodes})
+    if unknown:
+        raise ValueError(f"dead_after names no transceiver: {', '.join(unknown)}")
+    rng = np.random.default_rng(seed)
+    dead_round = [int(round(dead_after[node.name] * round_hz)) if node.name in dead_after else None
+                  for node in nodes]
+    pairs = [(r, t) for r in range(n) for t in range(n) if r != t]          # (receiving, transmitting) indices
+    a = np.array([(nodes[r].x, nodes[r].y) for r, _ in pairs])
+    b = np.array([(nodes[t].x, nodes[t].y) for _, t in pairs])
+    quiet = rng.uniform(*ROUND_QUIET_SCORE, len(pairs))
+    rssi = np.round(-40 - 20 * np.log10(np.maximum(np.linalg.norm(b - a, axis=1), 0.1))).astype(int)
+    heard = np.zeros((len(pairs), HEARD_WINDOW_ROUNDS), dtype=bool)  # ring of the last 15 rounds per link
+    since = np.full(len(pairs), SINCE_MAX)
+    period, slot_s = 1.0 / round_hz, 1.0 / (round_hz * (n + 1))
+    warming_rounds = int(round(SIM_WARMING_S * round_hz))
+    membership = (1 << n) - 1
+    last_round = None if duration_s is None else int(round(duration_s * round_hz))
+    start = time.time()
+    for round_no in itertools.count():
+        if last_round is not None and round_no >= last_round:
+            return
+        t = round_no * period
+        alive = np.array([dead_round[i] is None or round_no < dead_round[i] for i in range(n)])
+        got = alive[[tx for _, tx in pairs]] & (rng.random(len(pairs)) >= drop_prob)
+        heard[:, round_no % HEARD_WINDOW_ROUNDS] = got
+        since = np.where(got, 0, np.minimum(since + 1, SINCE_MAX))
+        response = _round_response(person, t - quiet_first_s, a, b)
+        scores = quiet * rng.lognormal(0.0, ROUND_NOISE_SIGMA, len(pairs)) * (1.0 + ROUND_MOTION_GAIN * response)
+        counts = heard.sum(axis=1)
+        for slot, node in enumerate(nodes):
+            if not alive[slot]:
+                continue
+            reports = []
+            for k in range(slot * (n - 1), (slot + 1) * (n - 1)):   # pairs are grouped by receiving node
+                _, tx = pairs[k]
+                if round_no < warming_rounds:
+                    reports.append(LinkReport(tx, 0, int(rssi[k]), int(counts[k]), int(since[k]), FLAG_WARMING))
+                elif counts[k] == 0:
+                    reports.append(LinkReport(tx, 0, None, 0, int(since[k])))
+                else:
+                    reports.append(LinkReport(tx, quantise_score(float(scores[k])), int(rssi[k]), int(counts[k]),
+                                              int(since[k])))
+            data = encode_broadcast(RoundBroadcast(FORMAT_VERSION, FRAME_ROUND, round_no % 65536, slot, n + 1, 1,
+                                                   slot, membership, node.serial, bytes(8), tuple(reports)))
+            host_ts = t0 + t + slot * slot_s + float(rng.uniform(0.0, GATEWAY_LATENCY_S))
+            if realtime:
+                time.sleep(max(0.0, start + (host_ts - t0) - time.time()))
+                host_ts = time.time()
+            yield host_ts, data
+
+
+def _round_response(person: Optional[Person], t: float, a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """Per link (segment a-b), the person's response in 0..1 at person time ``t``; zeros before it arrives."""
+    if person is None or t < 0:
+        return np.zeros(len(a))
+    p = person.position(np.array([t]))[0]
+    ab = b - a
+    u = np.clip(np.einsum("ij,ij->i", p - a, ab) / np.maximum(np.einsum("ij,ij->i", ab, ab), 1e-12), 0.0, 1.0)
+    d = np.linalg.norm(p - (a + u[:, None] * ab), axis=1)
+    return np.exp(-d ** 2 / (2 * FALLOFF_SIGMA_M ** 2))
