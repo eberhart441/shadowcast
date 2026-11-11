@@ -23,7 +23,8 @@ HTTP:
     finished           True once every source has ended and its packets are drained
     calibrated_links   link labels with a threshold
     uncalibrated_links link labels without one
-    messages           human-readable notes (uncalibrated links, failed receivers)
+    messages           human-readable notes (uncalibrated links, failed receivers, unknown nodes, rejected or
+                       dropped round broadcasts)
 
 Frames: the pump emits a frame every ``frame_interval_s`` of packet time, so a fast finite stream still
 yields intermediate events. Frames are kept in a bounded log; an event stream opened after the sources

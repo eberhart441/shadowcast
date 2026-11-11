@@ -70,3 +70,11 @@ about 3.5 % of the score. `csi/broadcast.py` (`quantise_score`, `dequantise_scor
   the link's detector as a packet's score does in the line pipeline.
 - Bytes that fail to decode are counted by reason (`short`, `version`, `frame_type`, `length`, `membership`)
   and dropped; a round broadcast whose node id is not in the room config is counted as an unknown node.
+- Several gateways may hear one round broadcast. The host places the first copy of (node id, schedule version,
+  round number); any other copy within 2 s of host time, from any gateway, is counted as a `duplicate` and not
+  placed again. Two gateways therefore never double-count a link report. A node must not send two different
+  round broadcasts with the same round number in one schedule version.
+- A live round broadcast that arrives while the host's queue is full (the host fell behind) is dropped and
+  counted as `queue_overflow`; a recorded one waits. Every reason, unknown nodes and per-gateway counts are in
+  the dashboard payload at `status.broadcasts` (`csi/rounds.py`), and unknown nodes, rejections and drops also
+  raise a line in `status.messages`.

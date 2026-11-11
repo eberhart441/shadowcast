@@ -6,12 +6,20 @@ docs/adr/0022-host-time-round-broadcast-seam.md). ``RoundIngest`` decodes each r
 link, ``NodeLinkId(receiving node, transmitting node)``:
 
     ingest = RoundIngest(room)
-    for link_id, report in ingest.place(data): ...
-    ingest.counts()     # {"accepted", "rejected": {reason: n}, "unknown_nodes": {serial: n}, "unplaced_reports"}
+    for link_id, report in ingest.place(data, host_ts, source="gw1"): ...
+    ingest.count_dropped("gw1", n)   # records the source's queue dropped before they got here
+    ingest.counts()     # see counts()
+
+Several gateways may hear the same round broadcast. The first copy of (node serial, schedule version, round
+number) is placed; another copy within ``DEDUP_WINDOW_S`` of host time, from any source, is counted as a
+``duplicate`` and not placed again. The window is far shorter than the u16 round number takes to wrap.
 
 A link report names its transmitter only by node index. The index of a node is learned from that node's own
 round broadcasts, per schedule version, so a report about a node the host has not heard from yet (this schedule
-version) cannot be placed: it is counted as unplaced. Nothing is dropped without being counted.
+version) cannot be placed: it is counted as unplaced. Nothing is dropped without being counted: every record a
+source delivered is accepted, rejected for one of ``REJECT_REASONS`` or from an unknown node, so
+``heard == accepted + sum(rejected) + sum(unknown_nodes)``. Memory is bounded: the de-duplication memory by
+time and ``DEDUP_MAX``, the unknown serials by ``UNKNOWN_NODES_KEPT``.
 """
 from __future__ import annotations
 
@@ -119,6 +127,10 @@ class RoundIngest:
         return tally
 
     def counts(self) -> dict:
+        """``status.broadcasts``: heard (records delivered, including those dropped on a full queue), accepted
+        (placed), rejected {reason: n} for every one of REJECT_REASONS, unknown_nodes {serial: n} (beyond
+        UNKNOWN_NODES_KEPT serials, the rest under "other"), unplaced_reports, and per source
+        {heard, accepted, duplicate, queue_overflow}."""
         return {"heard": self._heard, "accepted": self._accepted, "rejected": dict(self._rejected), "unknown_nodes": dict(self._unknown),
                 "unplaced_reports": self._unplaced,
                 "sources": {name: dict(tally) for name, tally in self._sources.items()}}

@@ -123,7 +123,7 @@ def test_a_serial_missing_from_the_room_config_shows_as_an_unknown_node():
     payload = serve({"gw1": iter(sorted(stream))})
     assert payload["status"]["broadcasts"]["unknown_nodes"] == {stranger: 20}
     assert payload["status"]["broadcasts"]["accepted"] == 8 * 20
-    assert any("unknown node" in m and stranger in m and "config/room.json" in m
+    assert any("unknown node" in m and stranger in m and "room config" in m
                for m in payload["status"]["messages"])
 
 
