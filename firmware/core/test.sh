@@ -39,3 +39,5 @@ build_and_run() {
 build_and_run test_motion_score motion_score.c tests/test_motion_score.c -- tests/vectors/motion_score.txt
 build_and_run test_round_broadcast round_broadcast.c tests/test_round_broadcast.c -- tests/vectors/round_broadcast.txt
 build_and_run test_gateway_record gateway_record.c tests/test_gateway_record.c -- tests/vectors/gateway_record.txt
+build_and_run test_espnow_frame espnow_frame.c tests/test_espnow_frame.c --
+build_and_run test_csi_layout csi_layout.c tests/test_csi_layout.c --
