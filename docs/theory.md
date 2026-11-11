@@ -664,6 +664,33 @@ separate rise and decay constants, but the defaults are equal. The grid advances
 on packet arrival, and again at every 0.2 s frame (`csi/server.py`, `FRAME_INTERVAL_S`). Sensitivity,
 rise, decay and falloff can be changed live (`Heatmap.set_params`, `POST /api/params`).
 
+### 6.7 Transceiver rooms: regularised radio tomography
+
+`csi/rti.py`, used by `Heatmap` when the room has transceivers ([ADR-0025](adr/0025-radio-tomography-heatmap.md)).
+Sections 6.3 to 6.4 stay for rooms of receivers and senders. With $M$ links and $N$ cells, let
+$y_\ell=w_\ell e_\ell$ be the weighted evidence of (6.1), $d_\ell$ the link length and $d_{\ell1}(\mathbf c)$,
+$d_{\ell2}(\mathbf c)$ the distances from a cell centre to the link's two nodes. The weight model is the
+normalised ellipse of Wilson and Patwari (VRTI eq. 14), with excess path $\lambda=0.2$ m:
+
+```math
+W_{\ell\mathbf c}=\begin{cases}1/\sqrt{d_\ell} & d_{\ell1}(\mathbf c)+d_{\ell2}(\mathbf c)\le d_\ell+\lambda\ 0 & \text{otherwise}\end{cases}
+```
+
+(cells within half a cell of the segment always count). With a Gaussian prior on the image,
+$[C_x]_{kl}=\exp(-\lVert\mathbf c_k-\mathbf c_l\rVert/\delta_c)$ with $\delta_c=1.0$ m, and noise-to-prior
+variance ratio $r=30$, the MAP estimate (RTI eq. 12-13) is a fixed linear map of the evidence:
+
+```math
+\hat{\mathbf x}=\Pi\,\mathbf y,\qquad\Pi=\big(W^\top W+r\,C_x^{-1}\big)^{-1}W^\top=C_xW^\top\big(WC_xW^\top+r\,I\big)^{-1}.\qquad\text{(6.4)}
+```
+
+The second form, by the matrix inversion lemma, solves an $M\times M$ system and never inverts $C_x$. $\Pi$
+depends only on geometry, so it is computed once per layout. The image is divided by
+$x_{\mathrm{ref}}$, the median over covered cells $\mathbf c$ of $(\Pi \mathbf 1_{\mathbf c})_{\mathbf c}$,
+where $\mathbf 1_{\mathbf c}$ sets every link whose ellipse covers $\mathbf c$ to 1: one person at full
+evidence is about 1. Negative values are clipped, and (6.3) and Section 6.6 follow as before. Unlike
+(6.2), every link that covers a cell counts towards it, so heat sharpens as links are added.
+
 ---
 
 ## 7. Breathing band (experimental, off by default)
@@ -931,6 +958,7 @@ no labelled recording of it (`docs/agents/project-context.md`).
 | Evidence $r_0$, $r_1$ | 1.2, 3.0 | `csi/heatmap.py` |
 | Baseline window, percentile, warm-up | 60 s, 50, 10 s | `csi/heatmap.py` |
 | Agreement $\gamma$, sensitivity $\kappa$ | 0.5, 1.3 | `csi/heatmap.py` |
+| Radio tomography $\lambda$, $\delta_c$, $r$ (transceiver rooms) | 0.2 m, 1.0 m, 30 | `csi/rti.py` |
 | Rise / decay $\tau$, step | 0.3 s / 0.3 s, 0.1 s | `csi/heatmap.py` |
 | Adaptive window, warm-up, min samples | 75 s, 10 s, 20 | `csi/adaptive.py` |
 | Adaptive $k$, ratio floor, exit $k$, exit ratio | 5.5, 2.0, 2.5, 1.5 | `csi/adaptive.py` |

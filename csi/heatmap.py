@@ -17,6 +17,12 @@ than one link alone, and a lone noisy spike is suppressed. The result goes throu
 ``1 - exp(-sensitivity * combined)``. Finally the grid is smoothed in time with exponential rise and
 decay, so an empty room settles to cold. All time is host time from the packets, never the wall clock.
 
+In a room with transceivers (spec #2) the spatial step is radio tomography instead (``imaging="rti"``,
+csi/rti.py, ADR-0025): the weighted evidence of every link forms one vector, and one matrix precomputed from the
+room's geometry turns it into the image over the grid, so every link that covers a cell counts and more links
+sharpen the map. The footprints and the top-2 agreement rule are then not used, and ``falloff_m`` is refused.
+The evidence, the soft saturation and the time smoothing are the same in both.
+
 Known limit: the baseline adapts, so a person who stands still for more than half the baseline window
 (about 30 s) is absorbed into it and fades. The map shows change in the room, not standing presence.
 
@@ -25,7 +31,8 @@ Public API:
     QuietBaseline(window_s, percentile, warmup_s)   rolling low percentile of a link's quiet score
     cell_centres(cols, rows, width_m, depth_m)      -> (cols*rows, 2) row-major
     segment_falloff(centres, a, b, sigma_m)         -> (cols*rows,) in 0..1
-    Heatmap(room, ...)                              per-link falloff maps, baselines, smoothing
+    Heatmap(room, ..., imaging=None)                per-link falloff maps or the RTI image, baselines, smoothing;
+                                                    imaging "rti" when the room has transceivers, else "footprint"
         .advance(now, rows)   step the grid to host time ``now`` from link rows (LinkMonitor snapshot)
         .values               current grid, flat row-major, 0..1
         .target               the last advance's grid before time smoothing (what the tracker reads)
@@ -35,12 +42,14 @@ Public API:
 """
 from __future__ import annotations
 
+import bisect
 import math
 from collections import deque
 from typing import Mapping, Optional, Sequence
 
 import numpy as np
 
+from . import rti
 from .links import room_link_ids
 from .room import Room, point_segment_distance
 
@@ -61,6 +70,8 @@ STEP_S = 0.1              # host-time step between smoothing updates while packe
 CONTRIBUTING_STATES = frozenset({"EMPTY", "MOTION"})
 BASELINE_STATES = frozenset({"EMPTY", "MOTION"})
 LIVE_PARAMS = frozenset({"sensitivity", "rise_tau", "decay_tau", "falloff_m"})  # changeable while running
+FOOTPRINT, RTI = "footprint", "rti"   # imaging: per-link footprints and top-2 agreement, or radio tomography
+FOOTPRINT_ONLY_PARAMS = frozenset({"falloff_m"})
 
 
 def link_evidence(score: Optional[float], baseline: Optional[float], r_floor: float = R_FLOOR,
@@ -77,35 +88,33 @@ def link_evidence(score: Optional[float], baseline: Optional[float], r_floor: fl
 
 
 class QuietBaseline:
-    """Low percentile of a link's score over the last ``window_s`` of host time, once warmed up.
-
-    The percentile is recomputed at most once per ``recalc_s`` of sample time; in between, ``value`` returns the
-    last one (a 60 s baseline hardly moves in half a second, and at 30 nodes it is computed for 870 links).
-    """
+    """A percentile (the median by default) of a link's score over the last ``window_s`` of host time, once
+    warmed up. The window is also kept sorted, so the value costs O(1) and a push O(window) memory moves: at
+    870 links a step stays within the per-frame budget (tests/test_heatmap_rti.py)."""
 
     def __init__(self, window_s: float = BASELINE_WINDOW_S, percentile: float = BASELINE_PERCENTILE,
-                 warmup_s: float = BASELINE_WARMUP_S, recalc_s: float = BASELINE_RECALC_S) -> None:
+                 warmup_s: float = BASELINE_WARMUP_S, recalc_s: float = 0.0) -> None:
         self._window_s, self._percentile, self._warmup_s = window_s, percentile, warmup_s
         self._recalc_s = recalc_s
         self._samples: deque[tuple[float, float]] = deque()
-        self._value: Optional[float] = None
-        self._value_t = -math.inf
+        self._sorted: list[float] = []
 
     def push(self, t: float, score: float) -> None:
         self._samples.append((t, score))
+        bisect.insort(self._sorted, score)
         while self._samples and self._samples[0][0] < t - self._window_s:
-            self._samples.popleft()
+            _, old = self._samples.popleft()
+            del self._sorted[bisect.bisect_left(self._sorted, old)]
 
     def value(self) -> Optional[float]:
         """The baseline, or None until the window holds ``warmup_s`` of history."""
         if not self._samples or self._samples[-1][0] - self._samples[0][0] < self._warmup_s:
             return None
-        newest = self._samples[-1][0]
-        if self._value is None or not 0 <= newest - self._value_t < self._recalc_s:
-            self._value = float(np.percentile([s for _, s in self._samples], self._percentile))
-            self._value_t = newest
-        return self._value
-
+        values = self._sorted                       # numpy's default (linear) percentile, on the sorted window
+        rank = self._percentile / 100.0 * (len(values) - 1)
+        lo = int(math.floor(rank))
+        hi = min(lo + 1, len(values) - 1)
+        return float(values[lo] + (values[hi] - values[lo]) * (rank - lo))
 
 
 def cell_centres(cols: int, rows: int, width_m: float, depth_m: float) -> np.ndarray:
@@ -132,7 +141,15 @@ class Heatmap:
                  baseline_percentile: float = BASELINE_PERCENTILE,
                  baseline_warmup_s: float = BASELINE_WARMUP_S,
                  rise_tau_s: float = RISE_TAU_S, decay_tau_s: float = DECAY_TAU_S,
-                 step_s: float = STEP_S) -> None:
+                 step_s: float = STEP_S, imaging: Optional[str] = None,
+                 excess_path_m: float = rti.EXCESS_PATH_M, corr_m: float = rti.CORR_M,
+                 noise_ratio: float = rti.NOISE_RATIO) -> None:
+        if imaging is None:
+            imaging = RTI if room.transceivers else FOOTPRINT
+        if imaging not in (FOOTPRINT, RTI):
+            raise ValueError(f"imaging must be {FOOTPRINT!r} or {RTI!r}, not {imaging!r}")
+        self.imaging = imaging
+        self.excess_path_m, self.corr_m, self.noise_ratio = excess_path_m, corr_m, noise_ratio
         self.cols, self.rows = cols, rows
         self.falloff_m, self.sensitivity, self.agreement = falloff_m, sensitivity, agreement
         self.r_floor, self.r_full = r_floor, r_full
@@ -144,6 +161,11 @@ class Heatmap:
         self.centres = cell_centres(cols, rows, room.width_m, room.depth_m)
         self._falloff: dict[str, np.ndarray] = {}
         self._build_falloff(falloff_m)
+        self._column = {label: k for k, label in enumerate(self._falloff)}   # link label -> RTI column
+        self._imager = None
+        if imaging == RTI:
+            ends = np.array([[(rx.x, rx.y), (tx.x, tx.y)] for _, rx, tx in room_link_ids(room)]).reshape(-1, 2, 2)
+            self._imager = rti.imager(self.centres, ends, excess_path_m, corr_m, noise_ratio)
         self._baselines: dict[str, QuietBaseline] = {
             label: QuietBaseline(baseline_window_s, baseline_percentile, baseline_warmup_s)
             for label in self._falloff}
@@ -157,7 +179,8 @@ class Heatmap:
 
     def _build_falloff(self, falloff_m: float) -> None:
         for link_id, rx, tx in room_link_ids(self._room):
-            self._falloff[link_id.label] = segment_falloff(self.centres, (rx.x, rx.y), (tx.x, tx.y), falloff_m)
+            self._falloff[link_id.label] = (None if self.imaging == RTI else
+                                            segment_falloff(self.centres, (rx.x, rx.y), (tx.x, tx.y), falloff_m))
 
     def set_params(self, **kwargs) -> None:
         """Change live tunables: sensitivity, rise_tau, decay_tau, falloff_m (attribute names).
@@ -169,6 +192,9 @@ class Heatmap:
         if unknown:
             raise ValueError(f"not a live heatmap parameter: {', '.join(unknown)}; "
                              f"allowed: {', '.join(sorted(LIVE_PARAMS))}")
+        if self.imaging == RTI and FOOTPRINT_ONLY_PARAMS & set(kwargs):
+            raise ValueError(f"{', '.join(sorted(FOOTPRINT_ONLY_PARAMS & set(kwargs)))} applies to the footprint "
+                             "heatmap only; this room's heatmap is radio tomography")
         for name, value in kwargs.items():
             if not (isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
                     and value > 0):
@@ -191,6 +217,7 @@ class Heatmap:
         self.evidence = {}
         self.baselines = {}
         parts = []
+        y = np.zeros(len(self._column)) if self.imaging == RTI else None
         for row in rows:
             label = row["id"]
             if label not in self._falloff:
@@ -204,8 +231,11 @@ class Heatmap:
             if evidence <= 0:
                 continue
             self.contributing.append(label)
-            parts.append(self._weights.get(label, 1.0) * evidence * self._falloff[label])
-        target = self._combine(parts)
+            if y is not None:
+                y[self._column[label]] = self._weights.get(label, 1.0) * evidence
+            else:
+                parts.append(self._weights.get(label, 1.0) * evidence * self._falloff[label])
+        target = self._combine(parts) if y is None else np.maximum(self._imager.image(y), 0.0)
         target = 1.0 - np.exp(-self.sensitivity * target)
         self.target = target
         if self._last_t is None or now > self._last_t:

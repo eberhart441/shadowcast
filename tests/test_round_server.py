@@ -119,3 +119,101 @@ def test_setting_a_threshold_on_a_transceiver_link_is_a_bad_request():
         assert "adaptive baseline" in json.loads(err.value.read())["error"]
     finally:
         server.stop()
+
+
+def test_the_footprint_falloff_is_refused_on_a_transceiver_room_and_nothing_changes():
+    server = DashboardServer(ROOM, {"gateway": iter(())}, mode="auto", port=0)
+    before = json.loads(server.state_json())["status"]["parameters"]
+    status, reply = server.command("/api/params", {"falloff": 0.5, "sensitivity": 0.7})
+    assert status == 400 and "radio tomography" in reply["error"]
+    assert json.loads(server.state_json())["status"]["parameters"] == before
+    status, reply = server.command("/api/params", {"sensitivity": 0.7})
+    assert status == 200 and reply["parameters"]["sensitivity"] == 0.7
+    assert reply["parameters"]["imaging"] == "rti"
+
+
+def fake_gateway_port(monkeypatch, data: bytes):
+    """Replace the serial reader: the node gateway's port sends ``data`` once, then stays quiet."""
+    opened = []
+
+    def serial_chunks(port, baud=921600, timeout=1.0):
+        opened.append(port)
+        yield T0, data
+        while True:
+            yield T0, None
+
+    monkeypatch.setattr("csi.parser.serial_chunks", serial_chunks)
+    return opened
+
+
+def test_cli_node_gateway_serves_the_gateways_round_broadcasts_in_auto_mode(monkeypatch):
+    from csi.gateway_records import encode_heard
+
+    broadcasts = list(simulate_rounds(ROOM, duration_s=1.0, t0=T0))
+    opened = fake_gateway_port(monkeypatch, b"boot text\r\n" + b"".join(
+        encode_heard(int((ts - T0) * 1e6), -50, data) for ts, data in broadcasts))
+    args = cli.build_parser().parse_args(["--node-gateway", "COM7", "--room", str(TR8), "--http-port", "0"])
+    cli.check_source(args)
+    assert cli.server_mode(args) == "auto"
+    server = cli.build_server(args)
+    assert opened == []                                  # the port opens on first read, when the server starts
+    server.start()
+    try:
+        payload = get_state(server)
+        for _ in range(100):
+            if payload["status"]["broadcasts"]["accepted"] >= len(broadcasts):
+                break
+            server.wait_finished(timeout=0.05)
+            payload = get_state(server)
+    finally:
+        server.stop()
+    assert opened == ["COM7"]
+    assert payload["status"]["broadcasts"]["accepted"] == len(broadcasts)
+    assert sum(payload["status"]["broadcasts"]["rejected"].values()) == 0
+    assert len(payload["links"]) == 56
+
+
+@pytest.mark.parametrize("extra, message", [
+    (["--thresholds", "links.json"], "adaptive"),
+    (["--raw-log", "raw.tsv"], "--raw-log"),
+    (["--gateway", "COM8"], "one source"),
+])
+def test_cli_node_gateway_refuses_what_does_not_apply(extra, message):
+    args = cli.build_parser().parse_args(["--node-gateway", "COM7", "--room", str(TR8), *extra])
+    with pytest.raises(SystemExit) as err:
+        cli.check_source(args)
+    assert message in str(err.value)
+
+
+def test_cli_node_gateway_needs_a_room_with_transceivers():
+    args = cli.build_parser().parse_args(["--node-gateway", "COM7",
+                                          "--room", str(ROOT / "tests" / "fixtures" / "room_rig4.json")])
+    cli.check_source(args)
+    with pytest.raises(SystemExit) as err:
+        cli.build_server(args)
+    assert "transceiver" in str(err.value)
+
+
+def test_cli_node_gateway_records_the_real_rigs_round_broadcasts(monkeypatch, tmp_path):
+    from csi.gateway_records import encode_heard
+    from csi.round_recording import load_rounds
+
+    broadcasts = list(simulate_rounds(ROOM, duration_s=0.5, t0=T0))
+    fake_gateway_port(monkeypatch, b"".join(encode_heard(int((ts - T0) * 1e6), -50, data) for ts, data in broadcasts))
+    out = tmp_path / "rig.rounds"
+    args = cli.build_parser().parse_args(["--node-gateway", "COM7", "--room", str(TR8), "--http-port", "0",
+                                          "--record", str(out), "--label", "empty"])
+    cli.check_source(args)
+    server = cli.build_server(args)
+    server.start()
+    try:
+        for _ in range(200):
+            if get_state(server)["status"]["broadcasts"]["accepted"] >= len(broadcasts):
+                break
+            server.wait_finished(timeout=0.05)
+    finally:
+        server.stop()
+        args.recorder.close()
+    recording = load_rounds(out)
+    assert [b.data for b in recording.broadcasts] == [data for _, data in broadcasts]
+    assert {b.source for b in recording.broadcasts} == {"gateway"}

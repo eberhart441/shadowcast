@@ -3,6 +3,7 @@
 
     dashboard.py --simulate-room                                   # a simulated person walks the room, no hardware
     dashboard.py --simulate --room config/room_tr8.json            # simulated transceiver rig: round broadcasts
+    dashboard.py --node-gateway COM7 --room config/room_tr2.json   # real transceivers, heard by a gateway node
     dashboard.py --simulate --room config/room_tr8.json --record run.rounds --label empty   # record it, labelled
     dashboard.py --replay-rounds run.rounds --speed 8              # replay a round recording through the pipeline
     dashboard.py --simulate-room --http-port 8000 --host 0.0.0.0   # reachable from the network (opt-in)
@@ -23,7 +24,8 @@ see csi/adaptive.py) and ignores any thresholds file. A Set on a link makes it f
 Ctrl+C (or SIGTERM) stops the server and releases every port.
 A replay needs no serial port; when it has finished, the final state stays up (status.finished is true).
 --simulate runs the transceiver pipeline: the room's transceivers send round broadcasts (docs/round-broadcast.md)
-and every link is judged by its own adaptive baseline (WARMUP for its first 10 s or so).
+and every link is judged by its own adaptive baseline (WARMUP for its first 10 s or so). --node-gateway runs the same
+pipeline on real transceivers (firmware/node), from the binary records of a gateway node (docs/gateway-record.md).
 --record writes every round broadcast and the labels to a round recording (docs/round-recording.md); while it
 runs, type a label (and optional key=value extras, e.g. "walking mark=A3") and Enter to switch label.
 """
@@ -45,6 +47,7 @@ from csi.detect import DEFAULT_MARGIN  # noqa: E402
 from csi.links import load_thresholds  # noqa: E402
 from csi.multisource import parse_port_specs  # noqa: E402
 from csi.gateway import gateway_streams  # noqa: E402
+from csi.gateway_records import gateway_source  # noqa: E402
 from csi.rawlog import tee_sources  # noqa: E402
 from csi.ports import PortResolutionError, resolve_receiver_ports  # noqa: E402
 from csi.parser import Stream, serial_stream  # noqa: E402
@@ -108,6 +111,10 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--gateway", metavar="PATH",
                    help="serial port of the gateway board for wireless receivers (csi_recv built with CSI_GATEWAY=1); "
                         "receivers are told apart by their \"serial\" in config/room.json")
+    g.add_argument("--node-gateway", metavar="PATH",
+                   help="serial port of a gateway node of the transceiver rig (firmware/node, role gateway): it hands "
+                        "on every round broadcast it hears (every link in auto mode). Needs a room with transceivers "
+                        "whose \"serial\" is each board's, for example --room config/room_tr2.json")
     g.add_argument("--baud", type=int, default=921600)
     g.add_argument("--seed", type=int, default=0, help="simulator seed")
     g.add_argument("--sim-quiet-first", type=quiet_seconds, default=0.0, metavar="SECONDS",
@@ -132,7 +139,7 @@ def build_parser() -> argparse.ArgumentParser:
                     help="also append every CSI line the receivers deliver, with its host time, to this file "
                          "(host_ts, receiver, line; for exact offline replays: scripts/accuracy_eval.py)")
     ap.add_argument("--record", type=Path, default=None, metavar="run.rounds",
-                    help="with --simulate: also write every round broadcast, with its host time and source, and the "
+                    help="with --simulate or --node-gateway: also write every round broadcast, with its host time and source, and the "
                          "labels to this round recording (replay it with --replay-rounds)")
     ap.add_argument("--label", type=label_arg, default=None, metavar="LABEL",
                     help=f"with --record: the label from the start ({', '.join(LABELS)}); type another label and "
@@ -170,6 +177,7 @@ def check_source(args: argparse.Namespace) -> None:
                                     ("--port", bool(args.port)),
                                     ("--auto-ports", args.auto_ports),
                                     ("--gateway", args.gateway is not None),
+                                    ("--node-gateway", args.node_gateway is not None),
                                     ("--replay", args.replay is not None),
                                     ("--replay-session", args.replay_session is not None),
                                     ("--replay-rounds", args.replay_rounds is not None)) if on]
@@ -177,24 +185,27 @@ def check_source(args: argparse.Namespace) -> None:
         raise SystemExit(f"error: use one source, not {' and '.join(chosen)}")
     if not chosen:
         raise SystemExit("error: pass a source: --simulate-room, --simulate, --port [NAME=]PATH (repeat for each receiver), "
-                         "--auto-ports, --replay run.jsonl, --replay-session DIR or --replay-rounds run.rounds")
+                         "--auto-ports, --gateway PATH, --node-gateway PATH, --replay run.jsonl, --replay-session DIR or "
+                         "--replay-rounds run.rounds")
     replaying = args.replay is not None or args.replay_session is not None or args.replay_rounds is not None
     if args.speed is not None and not replaying:
         raise SystemExit("error: --speed applies to --replay and --replay-session only")
     if args.sim_quiet_first and not (args.simulate_room or args.simulate):
         raise SystemExit("error: --sim-quiet-first applies to --simulate-room and --simulate only")
-    if args.simulate and args.thresholds is not None:
-        raise SystemExit("error: --thresholds does not apply to --simulate: every transceiver link is judged by its "
+    rounds = "--simulate" if args.simulate else "--node-gateway" if args.node_gateway is not None else None
+    if rounds and args.thresholds is not None:
+        raise SystemExit(f"error: --thresholds does not apply to {rounds}: every transceiver link is judged by its "
                          "own adaptive baseline")
-    if args.simulate and args.raw_log is not None:
-        raise SystemExit("error: --raw-log records CSI lines; --simulate sends round broadcasts, which it cannot record")
+    if rounds and args.raw_log is not None:
+        raise SystemExit(f"error: --raw-log records CSI lines; {rounds} carries round broadcasts, which it cannot "
+                         "record (--record does)")
     if args.replay_rounds is not None and args.thresholds is not None:
         raise SystemExit("error: --thresholds does not apply to --replay-rounds: every transceiver link is judged by "
                          "its own adaptive baseline")
     if args.replay_rounds is not None and args.raw_log is not None:
         raise SystemExit("error: --raw-log records CSI lines; a round recording holds round broadcasts")
-    if args.record is not None and not args.simulate:
-        raise SystemExit("error: --record writes round broadcasts and applies to --simulate only "
+    if args.record is not None and not rounds:
+        raise SystemExit("error: --record writes round broadcasts and applies to --simulate and --node-gateway only "
                          "(--raw-log records CSI lines from receivers)")
     if args.label is not None and args.record is None:
         raise SystemExit("error: --label needs --record")
@@ -248,7 +259,17 @@ def server_mode(args: argparse.Namespace) -> str:
         return "auto"
     if args.replay is not None or args.replay_session is not None:
         return "fixed"
-    return "auto" if args.auto_threshold or args.simulate else "fixed"
+    return "auto" if args.auto_threshold or args.simulate or args.node_gateway is not None else "fixed"
+
+
+def record_rounds(args: argparse.Namespace, room: Room, streams: dict, notes: str) -> dict:
+    """With --record: tee the round broadcast streams into a round recording (args.recorder). Else unchanged."""
+    if args.record is None:
+        return streams
+    args.recorder = RoundRecorder(args.record, room, list(streams), notes=notes)
+    if args.label is not None:
+        args.recorder.label(args.label)
+    return args.recorder.tee(streams, close_when_done=True)
 
 
 def build_sources(args: argparse.Namespace, room: Room) -> tuple[dict[str, Stream], Optional[Mapping[str, float]]]:
@@ -260,12 +281,13 @@ def build_sources(args: argparse.Namespace, room: Room) -> tuple[dict[str, Strea
             raise SystemExit(f"error: --simulate needs a room with at least two transceivers; {args.room} has "
                              f"{len(room.transceivers)} (try --room config/room_tr8.json)")
         streams = simulated_rig_streams(room, seed=args.seed, quiet_first_s=args.sim_quiet_first)
-        if args.record is not None:
-            args.recorder = RoundRecorder(args.record, room, list(streams), notes="dashboard.py --simulate")
-            if args.label is not None:
-                args.recorder.label(args.label)
-            streams = args.recorder.tee(streams, close_when_done=True)
-        return streams, None
+        return record_rounds(args, room, streams, "dashboard.py --simulate"), None
+    if args.node_gateway is not None:
+        if len(room.transceivers) < 2:
+            raise SystemExit(f"error: --node-gateway needs a room with at least two transceivers; {args.room} has "
+                             f"{len(room.transceivers)} (try --room config/room_tr2.json)")
+        streams = {"gateway": gateway_source(args.node_gateway, args.baud)}
+        return record_rounds(args, room, streams, f"dashboard.py --node-gateway {args.node_gateway}"), None
     if args.simulate_room:
         thresholds = None
         if fixed:
@@ -316,6 +338,8 @@ def build_server(args: argparse.Namespace) -> FrameServer:
         source = "simulate-room"
     elif args.gateway is not None:
         source = f"gateway {args.gateway}"
+    elif args.node_gateway is not None:
+        source = f"node gateway {args.node_gateway}"
     else:
         source = "ports " + ", ".join(n for n, _ in parse_port_specs(args.port))
     save_to = args.save_thresholds or args.thresholds

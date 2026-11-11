@@ -872,7 +872,10 @@ class DashboardServer(FrameServer):
             if not lo <= value <= hi:
                 raise RequestError(f"{key} must be between {lo:g} and {hi:g}, got {value:g}")
             changes[attr] = float(value)
-        self._state.set_params(**changes)
+        try:
+            self._state.set_params(**changes)
+        except ValueError as e:   # e.g. the footprint falloff on a radio-tomography heatmap
+            raise RequestError(str(e)) from None
         self._commands.append("parameters: " + ", ".join(f"{k}={float(v):g}" for k, v in body.items()))
         return 200, {"parameters": self._state.parameters()}
 

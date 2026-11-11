@@ -53,7 +53,7 @@ from typing import Any, Mapping, Optional
 import numpy as np
 
 from .coverage import coverage, link_health, link_matrix, node_health
-from .heatmap import Heatmap
+from .heatmap import RTI, Heatmap
 from .links import LinkMonitor, NO_SIGNAL, UNCALIBRATED, WARMUP, room_link_ids
 from .parser import CSIPacket
 from .room import Room
@@ -118,12 +118,19 @@ class DashboardState:
         self._heat.set_params(**kwargs)
 
     def parameters(self) -> dict:
+        """Heatmap parameters. ``imaging`` is "rti" (radio tomography, a room with transceivers: ``excess_path_m``,
+        ``corr_m`` and ``noise_ratio`` apply, ``falloff_m`` and ``agreement`` are None) or "footprint"."""
+        rti = self._heat.imaging == RTI
         return {
+            "imaging": self._heat.imaging,
             "cols": self._heat.cols,
             "rows": self._heat.rows,
-            "falloff_m": self._heat.falloff_m,
+            "falloff_m": None if rti else self._heat.falloff_m,
             "sensitivity": self._heat.sensitivity,
-            "agreement": self._heat.agreement,
+            "agreement": None if rti else self._heat.agreement,
+            "excess_path_m": self._heat.excess_path_m if rti else None,
+            "corr_m": self._heat.corr_m if rti else None,
+            "noise_ratio": self._heat.noise_ratio if rti else None,
             "r_floor": self._heat.r_floor,
             "r_full": self._heat.r_full,
             "baseline_window_s": self._heat.baseline_window_s,

@@ -16,7 +16,7 @@ import types
 import pytest
 
 from csi.multisource import MultiSource
-from csi.parser import MAX_LINE_BYTES, CSIParser, parse_stream, serial_stream
+from csi.parser import MAX_LINE_BYTES, CSIParser, parse_stream, serial_chunks, serial_stream
 
 
 class FakePort:
@@ -205,3 +205,16 @@ def test_a_c5_line_split_across_chunks_parses_as_if_it_came_whole(fake_serial):
     pkt, = parse_stream(items, CSIParser())
     assert (pkt.mac, pkt.device_ts) == ("1a:0c:12:00:00:01", 123456)
     assert len(pkt.amplitude) == 114
+
+
+def test_serial_chunks_hands_on_raw_bytes_as_read_with_heartbeats_and_opens_without_a_reset(fake_serial):
+    # The binary gateway reader (csi/gateway_records.py) needs the bytes as they arrive, not lines.
+    FakePort.script = [b"SC\x01\x01", b"\n\x00\xff"]
+    stream = serial_chunks("/dev/cu.fake", baud=921600, timeout=0.05)
+    items = next_items(stream, 3, within_s=5.0)
+    stream.close()
+
+    assert [data for _, data in items] == [b"SC\x01\x01", b"\n\x00\xff", None]
+    port = fake_serial.opened[0]
+    assert (False, True) not in port.line_states and port.line_states[-1] == (False, False)
+    assert port.closed is True

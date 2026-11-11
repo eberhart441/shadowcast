@@ -12,7 +12,7 @@ import pytest
 
 from csi.broadcast import decode_broadcast
 from csi.dashboard import DashboardState
-from csi.room import FALLOFF_SIGMA_M, Walk, load_room, point_segment_distance
+from csi.room import FALLOFF_SIGMA_M, Stand, Walk, load_room, point_segment_distance
 from csi.simulate import simulate_gateways, simulate_rounds
 
 ROOM = load_room(Path(__file__).parent / "fixtures" / "room_tr8.json")
@@ -125,3 +125,14 @@ def test_simulated_gateways_hear_their_own_nodes_with_the_rigs_exact_bytes():
     assert 0 < len(got["lossy"]) < len(of("n4"))                # it misses about half
     with pytest.raises(ValueError, match="n9"):
         simulate_gateways(ROOM, hears={"gw1": ["n9"]}, duration_s=1.0)
+
+
+def test_two_people_each_raise_the_links_near_them():
+    a, b = Stand(1.0, 0.75), Stand(3.0, 2.25)
+    stream = simulate_rounds(ROOM, (a, b), duration_s=QUIET_S + 3.0, quiet_first_s=QUIET_S, seed=5, t0=T0)
+    payload, = payloads_at(stream, [T0 + QUIET_S + 2.5])
+    for person, other in ((a, b), (b, a)):
+        near = [row["state"] for row in payload["links"]
+                if distance_to_link(row["id"], (person.x, person.y)) < 0.5 * FALLOFF_SIGMA_M
+                and distance_to_link(row["id"], (other.x, other.y)) > 4 * FALLOFF_SIGMA_M]
+        assert near and near.count("MOTION") >= 0.8 * len(near), (person, near)

@@ -1,0 +1,13 @@
+# The node image (firmware/node). Settings that differ per board are runtime settings in NVS, not here.
+# Console on UART0 pins only, nothing on USB: the USB Serial/JTAG port carries only gateway records
+# (docs/gateway-record.md), written by the app. No CSI is ever printed.
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+CONFIG_ESP_CONSOLE_UART_BAUDRATE=115200
+CONFIG_BOOTLOADER_LOG_LEVEL_WARN=y
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+CONFIG_FREERTOS_HZ=1000
+CONFIG_ESP_WIFI_CSI_ENABLED=y
+CONFIG_ESP_WIFI_AMPDU_TX_ENABLED=n
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=128
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=30
