@@ -59,10 +59,11 @@ class DashboardState:
         self._monitor.push(receiver, pkt)
         self._advance(pkt.host_ts)
 
-    def push_broadcast(self, host_ts: float, data: bytes) -> None:
-        """One round broadcast heard at ``host_ts``: its link reports drive their links. Bytes that cannot be
-        used are counted in ``status.broadcasts``, never raised."""
-        self._monitor.push_reports(host_ts, self._ingest.place(data))
+    def push_broadcast(self, host_ts: float, data: bytes, source: str = "") -> None:
+        """One round broadcast heard at ``host_ts`` by ``source`` (a gateway): its link reports drive their links.
+        Bytes that cannot be used, and copies another gateway already delivered, are counted in
+        ``status.broadcasts``, never raised."""
+        self._monitor.push_reports(host_ts, self._ingest.place(data, host_ts, source))
         self._advance(host_ts)
 
     def _advance(self, host_ts: float) -> None:
