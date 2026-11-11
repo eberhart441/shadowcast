@@ -18,7 +18,7 @@ HTTP:
                        more than FRAME_LINKS_MAX links sends payloads without ``links`` (ADR-0024)
     GET /api/link?id=<label>   {link, time_s}: one link's full row on demand; 400 without id, 404 if unknown
     POST /api/raw-mode {"link": "n1<-n5", "on": true|false}: raw mode for one transceiver link (csi/raw_mode.py),
-                       sent through a gateway in ``transmitters``; 200 {raw_mode, sent, via}, 400 for a bad body
+                       sent through a gateway in ``gateways``; 200 {raw_mode, sent, via}, 400 for a bad body
                        or unknown link, 409 {error, reason} when refused (byte budget, a node's limit, the node not
                        heard yet, no gateway that can send, a replayed run). A command like the others: loopback only
                        unless --allow-control (ADR-0015)
@@ -62,7 +62,7 @@ from .live_calibration import CalibrationJob, RequestError, parse_request
 from .links import calibrate_links, room_link_ids, save_thresholds
 from .multisource import MultiSource
 from .parser import CSIPacket, Stream
-from .raw_mode import RawModeRefused, Transmitter, raw_messages
+from .raw_mode import RawModeRefused, SendingGateway, raw_messages
 from .room import Room, Walk
 from .room_state import POSSIBLY_OCCUPIED_S
 from .round_auth import TEST_KIT_KEY
@@ -477,7 +477,7 @@ class DashboardServer(FrameServer):
     time, ``log_meta``, ``notes``) and then one payload per line, exactly as /api/events sends them.
     ``notes`` are extra human-readable lines for ``status.messages``. Round broadcasts are verified with
     ``kit_key`` (csi/round_auth.py; by default the published test key the simulator signs with).
-    ``transmitters`` maps a source name to the object that can send for it (a node gateway, the simulated rig):
+    ``gateways`` maps a source name to the object that can send for it (a node gateway, the simulated rig):
     raw mode requests go out through the one that last delivered the target node's round broadcast.
     ``possibly_occupied_s`` is the transceiver room state's possibly-occupied hold (csi/room_state.py).
     """
@@ -490,7 +490,7 @@ class DashboardServer(FrameServer):
                  thresholds_path: Optional[Union[str, Path]] = None, replay: bool = False,
                  mode: str = "fixed", kit_key: bytes = TEST_KIT_KEY,
                  possibly_occupied_s: float = POSSIBLY_OCCUPIED_S,
-                 transmitters: Optional[Mapping[str, Transmitter]] = None, **heatmap_params) -> None:
+                 gateways: Optional[Mapping[str, SendingGateway]] = None, **heatmap_params) -> None:
         network_control = allow_control and not is_loopback(host)
         super().__init__(host, port, web_index, trusted_host=host if network_control else None)
         self._room = room
@@ -499,9 +499,9 @@ class DashboardServer(FrameServer):
         self._expected = [link_id for link_id, _, _ in room_link_ids(room)]
         self._labels = {link.label for link in self._expected}
         self._controls_on = controls_allowed(host, allow_control)
-        self._transmitters = dict(transmitters or {})
+        self._gateways = dict(gateways or {})
         # sources that count what they lost before the host (a node gateway): status.broadcasts.gateways
-        self._lossy = {name: obj for name, obj in {**dict(sources), **self._transmitters}.items()
+        self._lossy = {name: obj for name, obj in {**dict(sources), **self._gateways}.items()
                        if callable(getattr(obj, "losses", None))}
         self._replay = replay
         self._thresholds_path = Path(thresholds_path) if thresholds_path else Path(DEFAULT_THRESHOLDS_FILE)
@@ -918,17 +918,17 @@ class DashboardServer(FrameServer):
         link, on = body.get("link"), body.get("on")
         if not isinstance(link, str) or not isinstance(on, bool):
             raise RequestError(f'name a link and true or false: {{"link": "n1<-n5", "on": true}}, got {dict(body)!r}')
-        via = self._transmitter_for(link)
-        sender = getattr(self._transmitters.get(via), "sender_id", None) if via else None
+        via = self._gateway_for(link)
+        serial = getattr(self._gateways.get(via), "gateway_serial", None) if via else None
         now = self._clock()
         try:
-            frames = self._state.raw_mode_request(link, on, 0.0 if now is None else now, sender)
+            frames = self._state.raw_mode_request(link, on, 0.0 if now is None else now, serial)
         except RawModeRefused as e:
             return (400 if e.reason == "unknown_link" else 409), {"error": str(e), "reason": e.reason}
-        transmitter = self._transmitters[via]
+        gateway = self._gateways[via]
 
         def send() -> tuple[int, dict]:   # off the lock: a port write may block
-            error = send_with_timeout(transmitter, frames, SEND_TIMEOUT_S)
+            error = send_with_timeout(gateway, frames, SEND_TIMEOUT_S)
             if error is not None:
                 reason, why = error
                 return 503, {"error": f"gateway {via} could not send the raw mode request: {why}", "reason": reason}
@@ -940,14 +940,14 @@ class DashboardServer(FrameServer):
 
         return send
 
-    def _transmitter_for(self, label: str) -> Optional[str]:
+    def _gateway_for(self, label: str) -> Optional[str]:
         """The source to send a raw mode request through: the one that last delivered the target node's round
         broadcast if it can send, else the first that knows its own serial."""
         last = self._state.last_source(label)
-        if last in self._transmitters:
+        if last in self._gateways:
             return last
-        ready = [name for name, t in self._transmitters.items() if getattr(t, "sender_id", None)]
-        return ready[0] if ready else next(iter(self._transmitters), None)
+        ready = [name for name, t in self._gateways.items() if getattr(t, "gateway_serial", None)]
+        return ready[0] if ready else next(iter(self._gateways), None)
 
     def _apply_threshold(self, label: str, value: float) -> None:
         """Calibration's apply hook; the caller holds the lock."""
@@ -955,9 +955,9 @@ class DashboardServer(FrameServer):
         self._commands.append(f"threshold {label} = {value:.4g} (calibration)")
 
 
-def send_with_timeout(transmitter: Transmitter, frames: Sequence[bytes],
+def send_with_timeout(gateway: SendingGateway, frames: Sequence[bytes],
                       timeout_s: float) -> Optional[tuple[str, str]]:
-    """Hand ``frames`` to ``transmitter`` on a worker thread and wait at most ``timeout_s`` for it. None when every
+    """Hand ``frames`` to ``gateway`` on a worker thread and wait at most ``timeout_s`` for it. None when every
     frame was written; else (reason, message): "send" for a port error, "timeout" for a write still blocked (the
     worker is left to finish or fail on its own; it is a daemon, so it never holds the process up)."""
     result: list[Optional[tuple[str, str]]] = []
@@ -965,7 +965,7 @@ def send_with_timeout(transmitter: Transmitter, frames: Sequence[bytes],
     def write() -> None:
         try:
             for frame in frames:
-                transmitter.send_frame(frame)
+                gateway.send_frame(frame)
             result.append(None)
         except (OSError, RuntimeError) as e:
             result.append(("send", str(e) or type(e).__name__))
@@ -1075,6 +1075,6 @@ def simulated_rig_streams(room: Room, *, seed: int = 0, quiet_first_s: float = 0
                           realtime: bool = True) -> dict[str, Stream]:
     """One endless round broadcast stream from the simulated transceiver rig, as one gateway ("sim-gateway") hears
     it: ``default_walk`` repeated, after ``quiet_first_s`` seconds of an empty room. The stream is a
-    ``SimulatedRig``, so it is also the transmitter for raw mode requests."""
+    ``SimulatedRig``, so it is also the gateway that sends raw mode requests."""
     return {"sim-gateway": SimulatedRig(room, default_walk(room), quiet_first_s=quiet_first_s, seed=seed,
                                         realtime=realtime)}

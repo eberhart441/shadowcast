@@ -8,14 +8,15 @@ pipeline ``push_broadcast(host_ts, data)`` does the same from one round broadcas
                 zones: [{id, x0, y0, x1, y1}], the room state's zones (csi/room_state.py), "A1" top-left; only
                 for a room with transceivers
     nodes     [{name, role, chip, x, y}]              receivers, senders, then transceivers
-    links     [{id, receiver, sender, mac, state, mode, elevated, level, score, threshold, normalised, baseline,
+    links     [{id, receiver, sender, transmitter, mac, state, mode, elevated, level, score, threshold, normalised, baseline,
                 evidence, pkt_rate, drops, rssi, age_s, weight, contributes}]
                 baseline: the link's quiet baseline (None in warm-up); evidence: 0..1 above it.
                 mode: "fixed" (judged against threshold) or "auto" (its own adaptive baseline, csi/adaptive.py).
                 elevated: True when the link is in MOTION (auto: elevated above its adaptive enter level).
                 level: score / threshold (auto: / the adaptive enter level); >= 1 at or above it.
-                sender is the node name, None if the MAC is unknown; for a transceiver link (id "n1<-n5")
-                receiver and sender are the receiving and transmitting node, and mac is ""
+                sender is the sender's node name, None if the MAC is unknown, and transmitter None; for a
+                transceiver link (id "n1<-n5") receiver and transmitter are the receiving and transmitting node,
+                sender is None and mac is ""
     heatmap   {cols, rows, extents, cells, max, contributing}
                 cells: flat row-major floats in 0..1 (row 0 is the top edge, y = 0)
     track     {x, y, vx, vy, confidence} or None: the motion track, a Kalman-smoothed dot following the
@@ -44,8 +45,8 @@ pipeline ``push_broadcast(host_ts, data)`` does the same from one round broadcas
     (csi/coverage.py computes the last four.)
     raw_mode    {budget_bytes, used_bytes, link_bytes, max_links_per_node, links [{id, state, wanted, blocks,
                 iq_bytes, last_s, rate_hz}]}: raw mode per link (csi/raw_mode.py); state "on", "requested",
-                "no answer", "stopping" or "off". ``raw_mode_request(label, on, now, sender_id)`` makes the request
-                frames a gateway sends.
+                "no answer", "stopping" or "off". ``raw_mode_request(label, on, now, gateway_serial)``
+                makes the request frames a gateway sends.
 
 Time is host time from the packets. ``snapshot()`` with no argument uses the newest packet time, so the
 payload is deterministic for simulated streams; pass ``now`` to advance the decay while packets stop.
@@ -110,10 +111,10 @@ class DashboardState:
             self._heard_at[self._ingest.last_node] = max(host_ts, self._heard_at.get(self._ingest.last_node, host_ts))
         self._advance(host_ts)
 
-    def raw_mode_request(self, label: str, on: bool, now: float, sender_id: Optional[str]) -> list[bytes]:
+    def raw_mode_request(self, label: str, on: bool, now: float, gateway_serial: Optional[str]) -> list[bytes]:
         """The signed raw mode request frames that turn raw mode on or off for link ``label``, for the gateway with
-        board serial ``sender_id`` to send. Raises csi.raw_mode.RawModeRefused (with a reason) instead."""
-        return self._raw.request(label, on, self._ingest.last_rounds, now, sender_id)
+        board serial ``gateway_serial`` to send. Raises csi.raw_mode.RawModeRefused (with a reason) instead."""
+        return self._raw.request(label, on, self._ingest.last_rounds, now, gateway_serial)
 
     def raw_mode_status(self, now: float) -> dict:
         """The payload's ``raw_mode`` at host time ``now``, without advancing anything else."""
@@ -243,7 +244,8 @@ class DashboardState:
         return {
             "id": row["id"],
             "receiver": row["receiver"],
-            "sender": row.get("transmitter") or self._senders.get(row["mac"]),
+            "sender": None if row.get("transmitter") else self._senders.get(row["mac"]),
+            "transmitter": row.get("transmitter"),
             "mac": row["mac"],
             "state": row["state"],
             "mode": row["mode"],

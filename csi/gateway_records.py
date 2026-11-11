@@ -17,8 +17,8 @@ receive time relative to the newest of them. The order and spacing of the round 
 
 Sending (raw mode, ticket #17): ``send_frame(frame)`` writes the text command ``send <hex>`` to the gateway, which
 sends that frame (a raw mode request the host signed) in the join slot of the next round its scheduler numbers
-even. ``sender_id`` is the gateway's board serial from its status record (None before the first one, or when the
-board on the port is not a gateway), the node id the host puts in the frames it sends this way.
+even. ``gateway_serial`` is the gateway's board serial from its status record (None before the first one, or when
+the board on the port is not a gateway), the node id the host puts in the frames it sends this way.
 """
 from __future__ import annotations
 
@@ -239,7 +239,7 @@ class GatewaySource:
         return out
 
     @property
-    def sender_id(self) -> Optional[str]:
+    def gateway_serial(self) -> Optional[str]:
         """The gateway's board serial once its status record has arrived; None before, or for a transceiver."""
         status = self.status
         return status.serial if status is not None and status.role == "gateway" else None

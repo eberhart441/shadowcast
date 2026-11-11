@@ -75,7 +75,7 @@ def test_raw_mode_from_the_dashboard_is_recorded_and_replays(serve, tmp_path):
     rig = SimulatedRig(ROOM, None, duration_s=6.0, realtime=True, seed=3)
     path = tmp_path / "raw.rounds"
     with RoundRecorder(path, ROOM, ["sim"], notes="raw mode test") as recorder:
-        server = serve(recorder.tee({"sim": rig}), transmitters={"sim": rig})
+        server = serve(recorder.tee({"sim": rig}), gateways={"sim": rig})
         wait_for(server, everyone_heard)
         status, body = post(server, {"link": "n1<-n5", "on": True})
         assert status == 200, body
@@ -105,7 +105,7 @@ def test_raw_mode_from_the_dashboard_is_recorded_and_replays(serve, tmp_path):
 
 def test_a_request_beyond_the_budget_is_refused_over_http_with_its_reason(serve):
     rig = SimulatedRig(ROOM, None, duration_s=30.0, realtime=True)
-    server = serve({"sim": rig}, transmitters={"sim": rig})
+    server = serve({"sim": rig}, gateways={"sim": rig})
     wait_for(server, everyone_heard)
     for label in ("n1<-n5", "n2<-n5", "n3<-n5"):
         assert post(server, {"link": label, "on": True})[0] == 200
@@ -121,9 +121,9 @@ def test_a_request_beyond_the_budget_is_refused_over_http_with_its_reason(serve)
 
 def test_raw_mode_is_refused_where_commands_are(serve):
     rig = SimulatedRig(ROOM, None, duration_s=30.0, realtime=True)
-    open_bind = serve({"sim": rig}, transmitters={"sim": rig}, host="0.0.0.0")
+    open_bind = serve({"sim": rig}, gateways={"sim": rig}, host="0.0.0.0")
     assert post(open_bind, {"link": "n1<-n5", "on": True})[0] == 403          # not loopback, no --allow-control
-    local = serve({"sim": rig}, transmitters={"sim": rig})
+    local = serve({"sim": rig}, gateways={"sim": rig})
     assert post(local, {"link": "n1<-n5", "on": True}, headers={"Content-Type": "text/plain"})[0] == 415
     assert post(local, {"link": "n1<-n5", "on": True},
                 headers={**JSON_TYPE, "Origin": "http://evil.example"})[0] == 403
@@ -205,7 +205,7 @@ class StuckGateway:
 
     def __init__(self, rig):
         self._rig = rig
-        self.sender_id = rig.sender_id
+        self.gateway_serial = rig.gateway_serial
         self.release = __import__("threading").Event()
 
     def send_frame(self, frame):
@@ -220,7 +220,7 @@ def test_a_stuck_gateway_write_neither_blocks_the_state_nor_hangs_the_command(se
     monkeypatch.setattr(csi.server, "SEND_TIMEOUT_S", 0.5)
     rig = SimulatedRig(ROOM, None, duration_s=30.0, realtime=True)
     stuck = StuckGateway(rig)
-    server = serve({"sim": rig}, transmitters={"sim": stuck})
+    server = serve({"sim": rig}, gateways={"sim": stuck})
     try:
         wait_for(server, everyone_heard)
         answer = {}

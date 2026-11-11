@@ -506,8 +506,8 @@ class SimulatedRig:
     it as a source and as the transmitter of ``DashboardServer``. Thread-safe between the reader and the sender."""
 
     def __init__(self, room: Room, person: Union[Person, Sequence[Person], None] = None, *,
-                 sender_id: str = SIM_GATEWAY_ID, **kwargs) -> None:
-        self.sender_id: Optional[str] = sender_id
+                 gateway_serial: str = SIM_GATEWAY_ID, **kwargs) -> None:
+        self.gateway_serial: Optional[str] = gateway_serial
         self.sent: list[bytes] = []
         self._commands: deque = deque()
         self._room, self._person, self._kwargs = room, person, kwargs

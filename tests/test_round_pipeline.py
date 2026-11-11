@@ -65,7 +65,7 @@ def test_every_ordered_pair_of_transceivers_is_a_link_named_by_its_nodes():
     expected = {f"{rx}<-{tx}" for rx in NAMES for tx in NAMES if rx != tx}
     assert set(links(payload)) == expected and len(expected) == 56   # every serial ends in 5C: no collisions
     row = links(payload)["n3<-n7"]
-    assert (row["receiver"], row["sender"], row["state"]) == ("n3", "n7", "NO_SIGNAL")
+    assert (row["receiver"], row["transmitter"], row["state"]) == ("n3", "n7", "NO_SIGNAL")
     assert sorted((n["name"], n["role"]) for n in payload["nodes"]) == [(n, "transceiver") for n in NAMES]
 
 
