@@ -13,6 +13,7 @@ default is ``true``. Its name is kept in ``Room.disabled``.
 
 Public API:
     load_room(path)                  -> Room (receivers and senders by name; optional link_weights)
+    room_from_config(obj) / room_config(room)   Room from / to a parsed room.json object (round recordings keep one)
     Room.links()                     -> [(receiver Node, sender Node)] for every pair
     Room.transceiver_links()         -> [(receiving Node, transmitting Node)] for every ordered transceiver pair
     Room.wall_point(side, inset)     -> (x, y) just inside a wall: "left" | "right" | "top" | "bottom"
@@ -83,7 +84,11 @@ class Room:
 
 
 def load_room(path: Union[str, Path] = DEFAULT_ROOM_PATH) -> Room:
-    config = json.loads(Path(path).read_text())
+    return room_from_config(json.loads(Path(path).read_text()))
+
+
+def room_from_config(config: Mapping) -> Room:
+    """A Room from a parsed ``config/room.json`` object."""
     nodes, disabled = [], []
     for name, spec in sorted(config["nodes"].items()):
         enabled = spec.get("enabled", True)
@@ -106,6 +111,24 @@ def load_room(path: Union[str, Path] = DEFAULT_ROOM_PATH) -> Room:
         disabled=tuple(disabled),
         transceivers=tuple(n for n in nodes if n.role == TRANSCEIVER),
     )
+
+
+def room_config(room: Room) -> dict:
+    """``room`` as a ``config/room.json`` object: ``room_from_config(room_config(room)) == room``.
+
+    A disabled node keeps only its name (``"enabled": false``); its position is not in the Room.
+    """
+    nodes: dict[str, dict] = {}
+    for node in (*room.receivers, *room.senders, *room.transceivers):
+        spec: dict = {"role": node.role, "x": node.x, "y": node.y}
+        spec.update((key, value) for key, value in (("mac", node.mac), ("chip", node.chip), ("serial", node.serial))
+                    if value)
+        nodes[node.name] = spec
+    nodes.update((name, {"enabled": False}) for name in room.disabled)
+    config: dict = {"room": {"width_m": room.width_m, "depth_m": room.depth_m}, "nodes": nodes}
+    if room.link_weights:
+        config["link_weights"] = dict(room.link_weights)
+    return config
 
 
 def point_segment_distance(points: np.ndarray, a: Sequence[float], b: Sequence[float]) -> np.ndarray:
