@@ -284,6 +284,19 @@ def serial_stream(port: str, baud: int = 921600, timeout: float = 1.0) -> Iterat
 def serial_chunks(port: str, baud: int = 921600, timeout: float = 1.0) -> Iterator[tuple[float, Optional[bytes]]]:
     """Yield (time.time(), bytes) for every read of a serial port until closed: everything waiting, or 1 byte with
     ``timeout``. A read that times out yields (time.time(), None), a heartbeat. Closing the generator closes the port.
+    The port opens as ``open_serial`` opens it.
+    """
+    ser = open_serial(port, baud, timeout)
+    try:
+        while True:
+            chunk = ser.read(ser.in_waiting or 1)
+            yield time.time(), (chunk or None)
+    finally:
+        ser.close()
+
+
+def open_serial(port: str, baud: int = 921600, timeout: float = 1.0):
+    """An open pyserial port that did not reset the board on the way, with its input buffer cleared.
 
     DTR and RTS drive reset and boot mode on the ESP32 boards' auto-reset circuit: DTR released while RTS is
     asserted holds the chip in reset, and a receiver that resets re-rolls its forced gain. The OS asserts both
@@ -301,8 +314,7 @@ def serial_chunks(port: str, baud: int = 921600, timeout: float = 1.0) -> Iterat
         ser.rts = False        # RTS first: DTR asserted with RTS released does not reset the board
         ser.dtr = False
         ser.reset_input_buffer()
-        while True:
-            chunk = ser.read(ser.in_waiting or 1)
-            yield time.time(), (chunk or None)
-    finally:
+    except Exception:
         ser.close()
+        raise
+    return ser
