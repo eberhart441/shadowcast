@@ -9,6 +9,8 @@
 #define BACKOFF_MAX 16
 #define GRANT_KEEP_ROUNDS 4        /* a request not granted within this many rounds is forgotten */
 #define ESPNOW_OVERHEAD_BYTES 43   /* MAC header 24 + vendor action and element 15 + FCS 4 */
+#define ESPNOW_ELEMENT_BYTES 7     /* each further 250 bytes of payload (ESP-NOW v2) take another vendor element */
+#define ESPNOW_ELEMENT_BODY 250
 #define ALL_INDICES 0xFFFFFFFFu
 
 /* ---------------------------------------------------------------- small helpers */
@@ -69,8 +71,19 @@ uint8_t rs_slot_of(uint32_t membership, uint8_t index)
 int64_t rs_airtime_us(size_t bytes)
 {
     /* HT20 MCS0: 36 us of preambles, then 26 data bits per 4 us symbol, plus 22 service and tail bits */
-    int64_t bits = 8 * ((int64_t)bytes + ESPNOW_OVERHEAD_BYTES) + 22;
+    int64_t extra = bytes > ESPNOW_ELEMENT_BODY
+                    ? ESPNOW_ELEMENT_BYTES * (((int64_t)bytes - 1) / ESPNOW_ELEMENT_BODY) : 0;
+    int64_t bits = 8 * ((int64_t)bytes + ESPNOW_OVERHEAD_BYTES + extra) + 22;
     return 36 + 4 * ((bits + 25) / 26);
+}
+
+size_t rs_frame_cap_for(int64_t slot_us, int64_t guard_us)
+{
+    size_t n = RB_MAX_FRAME_BYTES;
+    while (n > 0 && rs_airtime_us(n) + guard_us > slot_us) {
+        n--;
+    }
+    return n;
 }
 
 uint8_t rs_max_members(uint32_t round_hz, uint32_t guard_us)
@@ -110,6 +123,18 @@ static uint8_t slots(const rs_t *s)
 static int64_t slot_us(const rs_t *s)
 {
     return s->period_us / slots(s);
+}
+
+size_t rs_frame_cap(const rs_t *s)
+{
+    return s->state == RS_MEMBER ? rs_frame_cap_for(slot_us(s), s->guard_us) : 0;
+}
+
+/* The bytes on air of a heard frame: as decoded, or (a frame built by hand) as its membership implies. */
+static size_t heard_bytes(const rb_broadcast_t *b)
+{
+    size_t n = broadcast_bytes(b->membership);
+    return b->len > n ? b->len : n;
 }
 
 static uint16_t wire_round(const rs_t *s, int64_t k)
@@ -203,7 +228,7 @@ static void plan_requests(rs_t *s, int64_t t)
 static int64_t timing(rs_t *s, int64_t t_rx, const rb_broadcast_t *b)
 {
     int64_t latency = s->latency_known ? s->latency_us : 0;
-    int64_t start = t_rx - rs_airtime_us(broadcast_bytes(b->membership)) - latency;   /* on air, by this clock */
+    int64_t start = t_rx - rs_airtime_us(heard_bytes(b)) - latency;   /* on air, by this clock */
     int64_t implied = start - (int64_t)b->slot * (s->period_us / b->slots_per_round);  /* its round's start */
     if (!s->synced) {
         s->base_us = implied;   /* the caller keeps the numbering (keep_numbering) */
@@ -400,8 +425,11 @@ rs_heard_t rs_heard(rs_t *s, int64_t t_rx_us, const rb_broadcast_t *b)
             || (mine && b->frame_type != RB_FRAME_JOIN_GRANT)) {
         return RS_HEARD_IGNORED;
     }
+    if (b->frame_type == RB_FRAME_RAW_REQUEST) {
+        return RS_HEARD_IGNORED;   /* the host's, through a gateway: raw_mode.h takes it */
+    }
     if (s->state == RS_LISTENING) {
-        if (b->frame_type != RB_FRAME_ROUND) {
+        if (!rb_carries_reports(b->frame_type)) {
             return RS_HEARD_IGNORED;
         }
         target(s, t_rx_us, b);
@@ -437,7 +465,7 @@ rs_heard_t rs_heard(rs_t *s, int64_t t_rx_us, const rb_broadcast_t *b)
         }
         return RS_HEARD_IGNORED;
     }
-    if (b->frame_type != RB_FRAME_ROUND) {
+    if (!rb_carries_reports(b->frame_type)) {
         return RS_HEARD_IGNORED;
     }
     if (!related(s, b)) {

@@ -100,12 +100,14 @@ typedef struct {
     uint32_t delivered, lost;   /* round broadcasts from members it heard / lost to overlap (as receiver) */
     rb_auth_t auth;             /* #16's freshness rule, as node_auth_accept applies it before the scheduler */
     uint32_t replays;           /* frames it dropped as replays (as receiver) */
+    bool raw;                   /* raw mode: its round broadcasts carry raw CSI for its first two links (#17) */
+    uint32_t raw_sent;          /* round broadcasts with raw CSI it sent */
 } sim_node_t;
 
 typedef struct {
     int sender, gen;
     int64_t start, end;
-    uint8_t bytes[RB_MAX_BYTES];
+    uint8_t bytes[RB_MAX_FRAME_BYTES];
     size_t len;
     bool round;
 } sim_frame_t;
@@ -232,6 +234,20 @@ static void sim_fire(sim_t *sim, int i)
             for (uint8_t k = 0; k < b.n_reports; k++) {
                 b.reports[k].lateness = rs_take_lateness(&nd->rs, b.reports[k].transmitter_index);
             }
+            static const int8_t iq[RB_RAW_IQ_MAX];
+            size_t room = rs_frame_cap(&nd->rs);
+            size_t size = rb_size(b.membership);
+            for (uint8_t k = 0; nd->raw && k < b.n_reports && b.n_raw < RB_RAW_MAX_LINKS; k++) {
+                if (size + RB_RAW_BLOCK_MAX <= room) {   /* as node_main: only what fits in the slot */
+                    b.raw[b.n_raw++] = (rb_raw_t){b.reports[k].transmitter_index, 7, -40, RB_RAW_IQ_MAX, iq};
+                    b.reports[k].flags |= RB_FLAG_RAW_MODE;
+                    size += RB_RAW_BLOCK_MAX;
+                }
+            }
+            if (b.n_raw) {
+                b.frame_type = RB_FRAME_ROUND_RAW;
+                nd->raw_sent++;
+            }
             uint32_t key = (uint32_t)b.schedule_version << 16 | b.round;
             int kept = nd->n_sent < SIM_SENT_KEPT ? nd->n_sent : SIM_SENT_KEPT;
             for (int k = 0; k < kept; k++) {
@@ -266,7 +282,7 @@ static void sim_fire(sim_t *sim, int i)
         CHECK(f->len > 0, "node %d built a frame the encoder refuses (type %u)", i, b.frame_type);
         f->sender = i;
         f->gen = nd->gen;
-        f->round = b.frame_type == RB_FRAME_ROUND;
+        f->round = rb_carries_reports(b.frame_type);
         f->start = sim->now + nd->tx_latency_us + (nd->tx_jitter_us ? (int64_t)(sim_rand(sim) % (uint32_t)nd->tx_jitter_us) : 0);
         f->end = f->start + rs_airtime_us(f->len);
         int fi = (sim->n_frames - 1) % SIM_FRAMES;
@@ -707,6 +723,67 @@ static void slot_lateness_shows_how_late_each_node_starts_in_its_slot(void)
     CHECK(late3 >= late1 + 5, "the late node reads later than the others (codes %u vs %u)", late3, late1);
 }
 
+/* Raw mode (#17): a node whose round broadcasts carry two full raw CSI blocks (416 bytes on air instead of 54) still
+ * fits its slot; everyone else hears every round of it, and its slot lateness reads like the others', because a
+ * receiver takes the airtime of the frame it heard, not of a plain round broadcast. */
+static void a_node_streaming_raw_csi_keeps_its_slot_and_its_timing(void)
+{
+    sim_t *sim = &g_sim;
+    sim_setup(sim, 8, HZ, 91);
+    for (int i = 0; i < 8; i++) {
+        sim->node[i].tx_latency_us = 200;
+        sim->node[i].tx_jitter_us = 20;
+        sim_power_on(sim, i);
+    }
+    CHECK(sim_until_one_schedule(sim, 6000000) >= 0, "eight nodes settle");
+    sim->node[3].raw = true;
+    sim_run(sim, sim->now + 500000);
+    sim_reset_counts(sim);
+    uint32_t raw_before = sim->node[3].raw_sent;
+    sim_run(sim, sim->now + 2000000);
+    CHECK(sim->node[3].raw_sent - raw_before >= 75, "it sent raw CSI every round (%u in 80 rounds)",
+          (unsigned)(sim->node[3].raw_sent - raw_before));
+    CHECK(sim->collisions == 0, "no frame overlapped another (%u collisions)", (unsigned)sim->collisions);
+    for (int i = 0; i < 8; i++) {
+        CHECK(sim->node[i].lost == 0, "node %d lost %u round broadcasts", i, (unsigned)sim->node[i].lost);
+    }
+    int compared = 0;
+    for (int j = 0; j < 8; j++) {   /* every receiver that measured both since its own last report */
+        rs_t copy = sim->node[j].rs;
+        uint8_t late3 = rs_take_lateness(&copy, index_of(sim, 3)), late1 = rs_take_lateness(&copy, index_of(sim, 1));
+        if (j == 1 || j == 3 || late3 == RS_LATENESS_NONE || late1 == RS_LATENESS_NONE) {
+            continue;
+        }
+        compared++;
+        CHECK(late3 <= late1 + 2 && late1 <= late3 + 2, "node %d reads its lateness like another node's (codes %u vs "
+              "%u)", j, late3, late1);
+    }
+    CHECK(compared > 0, "some receiver measured both");
+}
+
+/* How many bytes a node's round broadcast may have to fit its slot (raw CSI included). */
+static void the_frame_cap_keeps_a_round_broadcast_inside_its_slot(void)
+{
+    rs_t s;
+    uint8_t id[RB_NODE_ID_BYTES];
+    make_id(id, 1);
+    CHECK(rs_init(&s, id, HZ, RS_GUARD_DEFAULT_US, 1, 0), "init");
+    CHECK(rs_frame_cap(&s) == 0, "a node that is not a member has no slot");
+    rs_tx_t tx = rs_next(&s, 0);
+    rb_broadcast_t b;
+    CHECK(rs_take(&s, &tx, tx.at_us, &b), "founds");
+    CHECK(rs_frame_cap(&s) == RB_MAX_FRAME_BYTES, "alone at 40 Hz: the whole 416-byte frame fits (%zu)",
+          rs_frame_cap(&s));
+    /* worked example: a 700 us slot with a 250 us guard leaves 450 us on air: 103 symbols after the 36 us preamble,
+     * 2678 bits, 332 bytes of frame, 282 of payload (two 7-byte ESP-NOW elements) */
+    CHECK(rs_frame_cap_for(700, 250) == 282, "700 us slot, 250 us guard: %zu bytes", rs_frame_cap_for(700, 250));
+    CHECK(rs_frame_cap_for(1000, 250) == RB_MAX_FRAME_BYTES, "a 1 ms slot holds the longest frame");
+    CHECK(rs_frame_cap_for(200, 250) == 0, "a slot shorter than the guard holds nothing");
+    CHECK(rs_airtime_us(250) == 400 && rs_airtime_us(300) == 472,
+          "a frame over 250 bytes pays a second 7-byte ESP-NOW element (%lld, %lld us)", (long long)rs_airtime_us(250),
+          (long long)rs_airtime_us(300));
+}
+
 static void thirty_nodes_powered_at_once_fill_a_full_round(void)
 {
     sim_t *sim = &g_sim;
@@ -805,6 +882,8 @@ int main(void)
     slot_lateness_shows_how_late_each_node_starts_in_its_slot();
     thirty_nodes_powered_at_once_fill_a_full_round();
     the_scheduler_admits_no_more_members_than_the_slots_hold();
+    a_node_streaming_raw_csi_keeps_its_slot_and_its_timing();
+    the_frame_cap_keeps_a_round_broadcast_inside_its_slot();
     printf("round_scheduler: %d failures\n", failures);
     return failures ? 1 : 0;
 }
