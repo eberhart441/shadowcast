@@ -341,3 +341,22 @@ def test_a_link_is_judged_on_packet_time_when_no_time_is_given_not_the_wall_cloc
     monitor = state._monitor
     assert monitor.row("n1<-n5")["state"] != "NO_SIGNAL"
     assert all(row["state"] != "NO_SIGNAL" for row in monitor.snapshot())
+
+
+@pytest.mark.parametrize("kwargs", [{"join_after": {"n8": 2.0}}, {"split": ["n5", "n6", "n7", "n8"], "merge_after": 2.0}],
+                         ids=["a node joins mid-run", "two schedules merge"])
+def test_the_dashboard_takes_a_joining_node_and_a_schedule_merge_without_double_counting(kwargs):
+    """Seam 1 (host time, round broadcast bytes): a node joining mid-run and a schedule merge (a schedule version
+    change) reach every link once: each round broadcast is accepted once, nothing is rejected, every link reads at
+    one round's rate and no link is left silent once the rig is one schedule."""
+    stream = list(simulate_rounds(ROOM, duration_s=6.0, t0=T0, **kwargs))
+    from csi.broadcast import decode_broadcast as decode
+
+    sent = sum(1 for _, data in stream if decode(data).carries_reports)
+    payload = serve({"gw1": iter(stream)})
+    counts = payload["status"]["broadcasts"]
+    assert counts["accepted"] == sent and sum(counts["rejected"].values()) == 0
+    assert sum(counts["join_frames"].values()) >= 1
+    rows = links(payload)
+    assert len(rows) == 56 and all(row["state"] != "NO_SIGNAL" for row in rows.values())
+    assert max(row["pkt_rate"] for row in rows.values()) <= ROUND_HZ * 1.1      # 40 if a report counted twice

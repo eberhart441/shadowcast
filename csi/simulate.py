@@ -23,7 +23,8 @@ from typing import Callable, Iterable, Iterator, Mapping, Optional, Sequence, Un
 
 import numpy as np
 
-from .broadcast import (FLAG_RAW_MODE, FLAG_WARMING, FORMAT_VERSION, FRAME_RAW_REQUEST, FRAME_ROUND,
+from .broadcast import (FLAG_RAW_MODE, FLAG_WARMING, FORMAT_VERSION, FRAME_JOIN_GRANT, FRAME_JOIN_REQUEST,
+                        FRAME_RAW_REQUEST, FRAME_ROUND,
                         FRAME_ROUND_RAW, HEARD_WINDOW_ROUNDS, MAX_NODES, RAW_MAX_LINKS, RAW_REQUEST_MAX_AGE_ROUNDS,
                         SINCE_MAX, BroadcastError, LinkReport, RawCsi, RoundBroadcast, decode_broadcast,
                         encode_broadcast, quantise_score)
@@ -364,14 +365,17 @@ def simulate_rounds(
     kit_key: bytes = TEST_KIT_KEY,
     raw: Optional[Mapping[str, Iterable[str]]] = None,
     commands: Optional[deque] = None,
+    join_after: Optional[Mapping[str, float]] = None,
+    split: Iterable[str] = (),
+    merge_after: Optional[float] = None,
 ) -> Iterator[tuple[float, bytes]]:
     """(host time, round broadcast bytes) from a simulated rig of the room's transceivers, as one gateway hears it.
 
     Every transceiver is a member and broadcasts once per round in its slot (node index = slot = its position in
     ``room.transceivers``; one join slot ends the round). ``person`` is in the room from ``quiet_first_s`` on
     (its time 0 is then); a sequence of people are all there; ``None`` is an empty room. ``duration_s=None`` runs forever. ``dead_after`` maps a node
-    name to the seconds after which it stops broadcasting; it stays in the membership (no scheduler is
-    simulated), so the others' heard counters for it fall to 0. ``drop_prob`` is the chance that a node misses
+    name to the seconds after which it stops broadcasting; it stays in the membership (the simulated
+    scheduler never drops it), so the others' heard counters for it fall to 0. ``drop_prob`` is the chance that a node misses
     one round broadcast from another. ``noisy`` maps a node name to (from_s, to_s): in that time every link the
     node is on, as receiver or transmitter, has its score multiplied by ``NOISY_NODE_GAIN`` (a front-end fault or a
     gain step on that one board). ``glitch_rate_hz`` is the rate, per link, of independent glitches: each raises one
@@ -379,6 +383,15 @@ def simulate_rounds(
     Seeded: the same arguments give the same bytes, and noise or glitches do not change the rest of the stream.
     ``realtime`` paces the stream to the wall clock and stamps it with ``time.time()``. Every broadcast is signed with
     ``kit_key`` (default the published test key, which the host also defaults to).
+
+    Joining nodes and colliding schedules: ``join_after`` maps a node name to the seconds before which it is off
+    (silent, not a member). It then asks to join in the join slot of the next even round (a join request), the
+    scheduler grants it in the next odd round (a join grant: the new membership and schedule version), and it
+    broadcasts from the round after. ``split`` names nodes that run a second schedule of their own (its own schedule
+    version and membership; the two groups do not hear each other, the gateway hears both) until ``merge_after``
+    seconds: then the group whose lowest board serial is higher (the losing scheduler ID) leaves its schedule for one
+    round and is granted into the other's, under a new schedule version. Node indices are the nodes' positions in
+    ``room.transceivers`` throughout; only membership and schedule version change.
 
     Raw mode: ``raw`` maps a receiving node's name to the transmitters whose links it streams from the start
     (at most 2). ``commands`` is a deque of frames a gateway sent (``SimulatedRig.send_frame``); before each round
@@ -392,7 +405,8 @@ def simulate_rounds(
     if not 2 <= n <= MAX_NODES:
         raise ValueError(f"the simulated rig needs 2 to {MAX_NODES} transceivers, the room has {n}")
     dead_after, noisy = dict(dead_after or {}), dict(noisy or {})
-    for arg, names in (("dead_after", dead_after), ("noisy", noisy)):
+    join_after, split = dict(join_after or {}), set(split)
+    for arg, names in (("dead_after", dead_after), ("noisy", noisy), ("join_after", join_after), ("split", split)):
         unknown = sorted(set(names) - {node.name for node in nodes})
         if unknown:
             raise ValueError(f"{arg} names no transceiver: {', '.join(unknown)}")
@@ -412,7 +426,6 @@ def simulate_rounds(
     index = {node.name: i for i, node in enumerate(nodes)}
     on_node = {name: np.array([index[name] in pair for pair in pairs]) for name in noisy}
     glitch_until = np.full(len(pairs), -1.0)
-    membership = (1 << n) - 1
     last_round = None if duration_s is None else int(round(duration_s * round_hz))
     index_of = {node.name: i for i, node in enumerate(nodes)}
     raw_sets = [set() for _ in nodes]
@@ -422,6 +435,8 @@ def simulate_rounds(
             raise ValueError(f"raw mode on {name}: at most {RAW_MAX_LINKS} other transceivers")
     raw_rng = np.random.default_rng([seed, 17])
     fresh = Freshness()
+    plan = _SchedulePlan(nodes, join_after, split, merge_after, round_hz)
+    receivers, transmitters = np.array([r for r, _ in pairs]), np.array([t for _, t in pairs])
     start = time.time()
     for round_no in itertools.count():
         if last_round is not None and round_no >= last_round:
@@ -429,8 +444,10 @@ def simulate_rounds(
         t = round_no * period
         while commands:
             _take_request(commands.popleft(), nodes, raw_sets, round_no, t0 + t, kit_key, fresh)
-        alive = np.array([dead_round[i] is None or round_no < dead_round[i] for i in range(n)])
-        got = alive[[tx for _, tx in pairs]] & (rng.random(len(pairs)) >= drop_prob)
+        sends, group, versions, memberships = plan.round(round_no)
+        alive = np.array([(dead_round[i] is None or round_no < dead_round[i]) and sends[i] for i in range(n)])
+        got = (alive[transmitters] & (group[receivers] == group[transmitters])
+               & (rng.random(len(pairs)) >= drop_prob))
         heard[:, round_no % HEARD_WINDOW_ROUNDS] = got
         since = np.where(got, 0, np.minimum(since + 1, SINCE_MAX))
         response = _round_response(person, t - quiet_first_s, a, b)
@@ -447,8 +464,11 @@ def simulate_rounds(
             if not alive[slot]:
                 continue
             reports, blocks = [], []
+            membership = memberships[group[slot]]
             for k in range(slot * (n - 1), (slot + 1) * (n - 1)):   # pairs are grouped by receiving node
                 _, tx = pairs[k]
+                if not membership >> tx & 1:
+                    continue
                 flag = FLAG_RAW_MODE if tx in raw_sets[slot] else 0
                 if round_no < warming_rounds:
                     reports.append(LinkReport(tx, 0, int(rssi[k]), int(counts[k]), int(since[k]),
@@ -461,13 +481,80 @@ def simulate_rounds(
                 if flag and got[k]:
                     blocks.append(RawCsi(tx, round_no % 65536, int(rssi[k]), _raw_iq(raw_rng, float(response[k]))))
             data = sign_broadcast(encode_broadcast(RoundBroadcast(
-                FORMAT_VERSION, FRAME_ROUND_RAW if blocks else FRAME_ROUND, round_no % 65536, slot, n + 1, 1, slot,
-                membership, node.serial, bytes(8), tuple(reports), tuple(blocks))), kit_key)
+                FORMAT_VERSION, FRAME_ROUND_RAW if blocks else FRAME_ROUND, round_no % 65536, slot, n + 1,
+                versions[group[slot]], slot, membership, node.serial, bytes(8), tuple(reports), tuple(blocks))),
+                kit_key)
             host_ts = t0 + t + slot * slot_s + float(rng.uniform(0.0, GATEWAY_LATENCY_S))
             if realtime:
                 time.sleep(max(0.0, start + (host_ts - t0) - time.time()))
                 host_ts = time.time()
             yield host_ts, data
+        for k, (frame_type, joiner, version, joined) in enumerate(plan.join_frames(round_no)):
+            data = sign_broadcast(encode_broadcast(RoundBroadcast(
+                FORMAT_VERSION, frame_type, round_no % 65536, n, n + 1, version, joiner, joined,
+                nodes[joiner].serial, bytes(8), ())), kit_key)
+            host_ts = t0 + t + n * slot_s + k * slot_s / 8 + float(rng.uniform(0.0, GATEWAY_LATENCY_S))
+            if realtime:
+                time.sleep(max(0.0, start + (host_ts - t0) - time.time()))
+                host_ts = time.time()
+            yield host_ts, data
+
+
+class _SchedulePlan:
+    """Who is in which schedule in each round of the simulated rig: joins (``join_after``) and a split rig that
+    merges (``split``, ``merge_after``). Group 0 is the schedule of the lowest board serial, group 1 the other."""
+
+    def __init__(self, nodes: Sequence, join_after: Mapping[str, float], split: set, merge_after: Optional[float],
+                 round_hz: float) -> None:
+        n = len(nodes)
+        index = {node.name: i for i, node in enumerate(nodes)}
+        self._n = n
+        lowest = min(range(n), key=lambda i: nodes[i].serial.replace(":", "").upper())
+        in_split = np.array([node.name in split for node in nodes])
+        if split and (in_split.all() or merge_after is None):
+            raise ValueError("split needs merge_after and must leave some nodes in the other schedule")
+        # group 1 is the schedule that loses the merge: the one without the lowest serial
+        self._group = (in_split != in_split[lowest]).astype(int) if split else np.zeros(n, dtype=int)
+        self._merge = None if merge_after is None or not split else int(np.ceil(merge_after * round_hz))
+        self._join = {}      # node index -> round of its join request (even); granted next round, sends after
+        for name, after in join_after.items():
+            if self._group[index[name]] == 1:
+                raise ValueError(f"{name} cannot both join and be in the schedule that merges")
+            first = int(np.ceil(after * round_hz))
+            self._join[index[name]] = first + first % 2
+        self._grants = sorted((r + 1, i) for i, r in self._join.items())   # (round, node) of each join grant
+
+    def _versions(self, round_no: int) -> tuple[int, int]:
+        """Schedule versions of the two groups for broadcasts in ``round_no``: one more for every grant before it."""
+        joins = sum(1 for r, _ in self._grants if r < round_no)
+        if self._merge is not None and round_no > self._merge:
+            return 129 + joins, 129 + joins
+        return 1 + joins, 128
+
+    def round(self, round_no: int):
+        """(sends, group, versions, memberships) for the round broadcasts of ``round_no``."""
+        merged = self._merge is not None and round_no > self._merge
+        group = np.zeros(self._n, dtype=int) if merged else self._group
+        member = np.array([i not in self._join or round_no > self._join[i] + 1 for i in range(self._n)])
+        sends = member.copy()
+        if self._merge is not None and round_no == self._merge:
+            sends &= self._group == 0               # the losing schedule leaves its own to be granted in
+        memberships = [sum(1 << i for i in range(self._n) if member[i] and group[i] == g) for g in (0, 1)]
+        return sends, group, self._versions(round_no), memberships
+
+    def join_frames(self, round_no: int) -> list[tuple[int, int, int, int]]:
+        """(frame type, node index, schedule version, membership) of the join frames in ``round_no``'s join slot."""
+        out = []
+        _, _, versions, memberships = self.round(round_no)
+        after = self.round(round_no + 1)
+        for i, r in self._join.items():
+            if round_no == r:
+                out.append((FRAME_JOIN_REQUEST, i, versions[0], memberships[0]))
+            elif round_no == r + 1:
+                out.append((FRAME_JOIN_GRANT, i, after[2][0], after[3][0]))
+        if self._merge is not None and round_no == self._merge:
+            out.extend((FRAME_JOIN_GRANT, i, after[2][0], after[3][0]) for i in range(self._n) if self._group[i])
+        return out
 
 
 def _take_request(frame: bytes, nodes: Sequence, raw_sets: list, round_no: int, host_ts: float, kit_key: bytes,
