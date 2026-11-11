@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """Write the node-core C tests' wire-format vectors from the golden JSON fixtures.
 
-    gen_wire_vectors.py            # rewrite firmware/core/tests/vectors/{round_broadcast,round_auth,gateway_record}.txt
+    gen_wire_vectors.py            # rewrite firmware/core/tests/vectors/{round_broadcast,round_auth,gateway_record,ota_command}.txt
 
 The golden bytes live in one place, the JSON fixtures under tests/fixtures/ (hand-written from the byte layout).
 C has no JSON reader, so this script flattens them into one line per case for firmware/core/tests, and
@@ -30,6 +30,14 @@ gateway_record.txt (fixture tests/fixtures/gateway_record_v1.json, format docs/g
     status <name> <hex> <serial hex> <uptime_us> <reset_reason> <role> <channel> <then the counters, in order>
     text <name> <hex> <utf-8 text as hex>
     bad <name> <hex> <reason>
+
+ota_command.txt (fixture tests/fixtures/ota_command.json, docs/round-broadcast.md "Maintenance command"):
+
+    key <kit key hex>
+    valid <name> <hex> <round> <command> <port> <ap_channel> <issued> <image_size> <sha256 hex> <tag hex>
+          <n_targets> then each target serial as 12 hex digits
+    invalid <name> <hex> <reason>
+    forged <name> <hex>                     decodes, but its tag does not verify under the key
 """
 from __future__ import annotations
 
@@ -93,10 +101,26 @@ def gateway_record_lines(fixture: dict) -> list[str]:
     return lines
 
 
+def ota_command_lines(fixture: dict) -> list[str]:
+    lines = ["# Maintenance command vectors, written by scripts/gen_wire_vectors.py from",
+             "# tests/fixtures/ota_command.json. Do not edit by hand; the format is in the script's docstring.",
+             f"key {fixture['key']}"]
+    for case in fixture["valid"]:
+        c = case["command"]
+        fields = ["valid", case["name"], case["hex"], c["round"], c["command"], c["port"], c["ap_channel"],
+                  c["issued"], c["image_size"], c["image_sha256"], c["tag"], len(c["targets"])]
+        fields += [t.replace(":", "").lower() for t in c["targets"]]
+        lines.append(" ".join(str(f) for f in fields))
+    lines += [f"invalid {case['name']} {case['hex']} {case['reason']}" for case in fixture["invalid"]]
+    lines += [f"forged {case['name']} {case['hex']}" for case in fixture["forged"]]
+    return lines
+
+
 TARGETS = {
     "round_broadcast.txt": ("round_broadcast_v2.json", round_broadcast_lines),
     "round_auth.txt": ("round_broadcast_v2.json", round_auth_lines),
     "gateway_record.txt": ("gateway_record_v1.json", gateway_record_lines),
+    "ota_command.txt": ("ota_command.json", ota_command_lines),
 }
 
 
