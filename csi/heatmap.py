@@ -17,6 +17,12 @@ than one link alone, and a lone noisy spike is suppressed. The result goes throu
 ``1 - exp(-sensitivity * combined)``. Finally the grid is smoothed in time with exponential rise and
 decay, so an empty room settles to cold. All time is host time from the packets, never the wall clock.
 
+In a room with transceivers (spec #2) the spatial step is radio tomography instead (``imaging="rti"``,
+csi/rti.py, ADR-0023): the weighted evidence of every link forms one vector, and one matrix precomputed from the
+room's geometry turns it into the image over the grid, so every link that covers a cell counts and more links
+sharpen the map. The footprints and the top-2 agreement rule are then not used, and ``falloff_m`` is refused.
+The evidence, the soft saturation and the time smoothing are the same in both.
+
 Known limit: the baseline adapts, so a person who stands still for more than half the baseline window
 (about 30 s) is absorbed into it and fades. The map shows change in the room, not standing presence.
 
@@ -25,7 +31,8 @@ Public API:
     QuietBaseline(window_s, percentile, warmup_s)   rolling low percentile of a link's quiet score
     cell_centres(cols, rows, width_m, depth_m)      -> (cols*rows, 2) row-major
     segment_falloff(centres, a, b, sigma_m)         -> (cols*rows,) in 0..1
-    Heatmap(room, ...)                              per-link falloff maps, baselines, smoothing
+    Heatmap(room, ..., imaging=None)                per-link falloff maps or the RTI image, baselines, smoothing;
+                                                    imaging "rti" when the room has transceivers, else "footprint"
         .advance(now, rows)   step the grid to host time ``now`` from link rows (LinkMonitor snapshot)
         .values               current grid, flat row-major, 0..1
         .target               the last advance's grid before time smoothing (what the tracker reads)

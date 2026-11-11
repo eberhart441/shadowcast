@@ -3,8 +3,8 @@
 Each link is a straight line between its two nodes. Motion at a point changes the link when the point lies in
 an ellipse with the nodes as foci, the points whose path via the point is at most ``excess_m`` longer than the
 direct path. A link's weight for a cell is 1/sqrt(link length) inside that ellipse and 0 outside: Wilson and
-Patwari's normalised elliptical model (VRTI eq. 14; RTI eq. 14 divides by the length instead, VRTI found the root
-gave better images). The links' evidence y (one number per link, ADR-0011) is modelled as y = W x + noise, where
+Patwari's normalised elliptical model (VRTI eq. 14: of the length normalisations they tried, dividing by the
+root gave the best images). The links' evidence y (one number per link, ADR-0011) is modelled as y = W x + noise, where
 x is the motion image over the cells, and x is estimated by the MAP / Tikhonov solution with a Gaussian prior
 whose covariance falls off exponentially with the distance between cells (RTI eq. 12-15):
 
@@ -38,9 +38,13 @@ from functools import lru_cache
 
 import numpy as np
 
-EXCESS_PATH_M = 0.1   # ellipse: path via the cell at most this much longer than the direct path
-CORR_M = 0.5          # prior correlation distance between cells (image smoothness)
-NOISE_RATIO = 1.0     # measurement noise variance / prior pixel variance (more = smoother, weaker image)
+# Chosen on the simulated rig (tests/test_heatmap_rti.py, 8 and 30 nodes in 4 x 3 m, 0.14 x 0.17 m cells), not on
+# a real one: re-check them on the 8-node labelled walk (#20). Excess path 0.2 m is wider than the papers' (RTI
+# 0.02 m on 0.6 m pixels): a person's body reaches a link from a few tenths of a metre off its line, and with
+# thinner ellipses the 30-node image broke up into speckle around the person (peak error 0.45 m, not 0.12 m).
+EXCESS_PATH_M = 0.2   # ellipse: path via the cell at most this much longer than the direct path
+CORR_M = 1.0          # prior correlation distance between cells (image smoothness)
+NOISE_RATIO = 30.0    # measurement noise variance / prior pixel variance (more = smoother, weaker image)
 
 
 def ellipse_weights(centres: np.ndarray, ends: np.ndarray, excess_m: float = EXCESS_PATH_M,

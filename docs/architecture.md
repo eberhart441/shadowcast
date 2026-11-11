@@ -132,6 +132,7 @@ The diagram has two seams.
 | Model | [`room.py`](../csi/room.py) | Room geometry from the configuration file. The links are every receiver paired with every sender. Also models a simulated person's position | `load_room`, `Room` (`links()`, `wall_point`), `Node`, `Walk`, `Stand`, `link_responses`, `DEFAULT_ROOM_PATH` |
 | Model | [`links.py`](../csi/links.py) | Splits tagged packets out by link, one detector per link, and calibrates several links at once | `LinkId`, `LinkMonitor`, `calibrate_links`, `calibrate_links_report`, `LinkCalibration`, `save_thresholds`, `load_thresholds` |
 | Model | [`heatmap.py`](../csi/heatmap.py) | Heatmap of where motion is likely, in the style of RF tomography. Each link's evidence is measured against its own quiet baseline and spread along the line between its two boards | `Heatmap` (`advance`, `set_params`, `values`, `contributing`), `link_evidence`, `QuietBaseline`, `segment_falloff` |
+| Model | [`rti.py`](../csi/rti.py) | Radio tomography for rooms with transceivers: elliptical link weights and the regularised projection that images every link's evidence at once, cached per layout ([ADR-0023](adr/0023-radio-tomography-heatmap.md)) | `RtiImager` (`image`), `imager`, `ellipse_weights`, `projection` |
 | Model | [`tracker.py`](../csi/tracker.py) | The motion track: a Kalman filter following the heatmap's hot blob | `Tracker`, `heat_measurement` |
 | Model | [`dashboard.py`](../csi/dashboard.py) | Builds the single JSON payload the page renders from | `DashboardState` (`push`, `snapshot`, `set_threshold`, `set_params`, `parameters`) |
 | Serving | [`server.py`](../csi/server.py) | HTTP server: frame log, SSE stream, guarded commands, and the reordering pump | `FrameServer`, `DashboardServer`, `FrameLog`, `controls_allowed`, `is_loopback`, `simulated_thresholds`, `looping_room_streams` |
@@ -361,7 +362,7 @@ server.
 | `POST /api/calibrate/cancel` | Cancels a calibration during its countdown or recording. Thresholds stay unchanged | Command checks. 409 if none is running |
 | `POST /api/threshold` | `{link, value}` sets one link's threshold. `value: null` returns the link to auto mode, or to UNCALIBRATED in fixed mode | Command checks. 400 for an unknown link or a value that is not positive |
 | `POST /api/thresholds/save` | Writes `{label: threshold}` to `--save-thresholds`, else to the `--thresholds` file, else to `links_thresholds.json` in the working directory | Command checks. 409 if there is nothing to save |
-| `POST /api/params` | Changes the live heatmap settings: `sensitivity` 0.01–10, `decay` 0.05–60 s, `rise` 0.01–10 s, `falloff` 0.05–2 m | Command checks. 400 for an unknown key or a value out of range |
+| `POST /api/params` | Changes the live heatmap settings: `sensitivity` 0.01–10, `decay` 0.05–60 s, `rise` 0.01–10 s, `falloff` 0.05–2 m (not on a transceiver room: its heatmap is radio tomography) | Command checks. 400 for an unknown key, a value out of range, or `falloff` on a transceiver room |
 
 Command checks, in the order the server applies them:
 
