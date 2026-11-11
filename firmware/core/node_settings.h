@@ -1,0 +1,54 @@
+/*
+ * Node settings: everything that differs between boards running the one image, set at runtime and kept in flash
+ * (NVS) by the node, never by a build flag. The node's identity is not a setting: it is the board serial (base MAC).
+ *
+ * Settings are changed by one-line text commands written to the node's USB port (scripts/node.py does this):
+ *
+ *     show                          reply "ok serial=... role=... channel=... index=... nodes=... round_hz=..."
+ *     set key=value [key=value...]  all or nothing; on success the node saves and restarts
+ *     restart
+ *
+ * Replies go back as text records (docs/gateway-record.md): "ok ..." or "error ...".
+ *
+ * Portable C11: no allocation, no I/O, no platform calls.
+ */
+#ifndef NODE_SETTINGS_H
+#define NODE_SETTINGS_H
+
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+
+#define NODE_SETTINGS_VERSION 1
+
+typedef enum { NODE_ROLE_TRANSCEIVER = 0, NODE_ROLE_GATEWAY = 1 } node_role_t;
+
+typedef struct {
+    uint8_t version;     /* NODE_SETTINGS_VERSION: a stored blob of another version is ignored */
+    uint8_t role;        /* node_role_t */
+    uint8_t channel;     /* 2.4 GHz channel 1..13, kit-wide */
+    uint8_t index;       /* node index and slot in the fixed round, below nodes */
+    uint8_t nodes;       /* members of the fixed round, 2..32, kit-wide */
+    uint8_t round_hz;    /* rounds per second, kit-wide */
+} node_settings_t;
+
+typedef enum {
+    NODE_CMD_NONE = 0,           /* nothing to do (show, empty line) */
+    NODE_CMD_SAVE_AND_RESTART,   /* settings changed: save them, then restart */
+    NODE_CMD_RESTART,
+    NODE_CMD_ERROR,              /* refused; nothing changed */
+} node_cmd_t;
+
+/* Transceiver, channel 6, index 0 of 2 members, 40 rounds per second. */
+void node_settings_default(node_settings_t *s);
+
+/* Every value in range, index below nodes, and slots of at least FIXED_ROUND_MIN_SLOT_US. */
+bool node_settings_valid(const node_settings_t *s);
+
+/* "role=transceiver channel=6 index=0 nodes=2 round_hz=40" */
+void node_settings_format(const node_settings_t *s, char *out, size_t n);
+
+/* Run one command line. `serial` is the board serial, for show. The reply (without a line end) goes to reply. */
+node_cmd_t node_settings_command(node_settings_t *s, const char *serial, const char *line, char *reply, size_t n);
+
+#endif /* NODE_SETTINGS_H */
