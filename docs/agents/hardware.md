@@ -53,4 +53,4 @@ The room is never empty, so there are two ways to set per-link thresholds on a r
 
 ## Git
 
-Stay on `csi-sensing` in the main checkout and use `git worktree` for side branches. `data/` is gitignored on `csi-sensing` and tracked on `data/two-board-sessions`, so switching branches in the main checkout deletes it.
+Stay on `main` in the main checkout and use `git worktree` for side branches. `data/` is gitignored on `main` and tracked on `archive/data-two-board-sessions`, so switching branches in the main checkout deletes it.
