@@ -2,11 +2,15 @@
 
 A link is one (receiver, sender MAC) pair. Two senders on two receivers give up to four links, and
 each has its own signal scale, so each owns its own MotionScorer, debouncer, LinkHealth, last RSSI
-and calibrated threshold.
+and calibrated threshold. In the transceiver pipeline a link is (receiving node, transmitting node) by full
+node identity, and its score comes from the receiving node's link reports instead of from packets.
 
 Public API:
     LinkId                 (receiver, mac) with a short label such as "rx1<-01"
-    LinkMonitor            push(receiver, packet) -> state; snapshot(now) -> list of per-link dicts
+    NodeLinkId             (receiver, transmitter) node names, labelled "n1<-n5": a transceiver link
+    room_link_ids(room)    [(link id, receiving Node, transmitting Node)] for every link of the room
+    LinkMonitor            push(receiver, packet) -> state; push_reports(host_ts, [(NodeLinkId, LinkReport)]);
+                           snapshot(now) -> list of per-link dicts
     calibrate_links        tagged empty-room packets -> {label: threshold}
     calibrate_links_report same, plus {label: reason} for links that were skipped
     save_thresholds / load_thresholds   links.json, a plain {label: threshold} object
@@ -14,7 +18,9 @@ Public API:
 States: EMPTY and MOTION (from the detector), plus
     WARMUP        no full motion window yet
     UNCALIBRATED  no threshold for this link (the monitor still scores it)
-    NO_SIGNAL     no packet for more than NO_SIGNAL_S seconds (reported by snapshot)
+    NO_SIGNAL     no packet (or link report) for more than NO_SIGNAL_S seconds (reported by snapshot); for a
+                  transceiver link also a link report whose heard counter is 0
+A transceiver link is WARMUP while its link report carries the warming flag or no score yet.
 """
 from __future__ import annotations
 
@@ -22,13 +28,15 @@ import json
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Mapping, Optional, Sequence
+from typing import ClassVar, Iterable, Mapping, Optional, Sequence, Union
 
 from .adaptive import AdaptiveDetector, Reading, RoomDecision
 from .detect import (DEBOUNCE_S, DEFAULT_MARGIN, MIN_CLEAN_FRACTION, MOTION, Calibration, CalibrationError,
                      MotionScorer, _Debouncer, calibrate_clips, classify, validate_margin)
-from .health import LinkHealth
+from .broadcast import LinkReport
+from .health import LinkHealth, ReportHealth
 from .parser import CSIPacket
+from .room import Node, Room
 
 NO_SIGNAL = "NO_SIGNAL"
 WARMUP = "WARMUP"
@@ -42,6 +50,7 @@ AUTO = "auto"          # a link judged against its own adaptive baseline (csi/ad
 class LinkId:
     receiver: str
     mac: str
+    transmitter: ClassVar[Optional[str]] = None  # a sender is known by its MAC here, not by name
 
     @property
     def label(self) -> str:
@@ -49,12 +58,35 @@ class LinkId:
         return f"{self.receiver}<-{self.mac[-2:]}"
 
 
+@dataclass(frozen=True)
+class NodeLinkId:
+    """A transceiver link by full node identity: the receiving and the transmitting node's names."""
+    receiver: str
+    transmitter: str
+    mac: ClassVar[str] = ""
+
+    @property
+    def label(self) -> str:
+        """``n1<-n5``: node n1 receiving node n5's round broadcasts."""
+        return f"{self.receiver}<-{self.transmitter}"
+
+
+AnyLinkId = Union[LinkId, NodeLinkId]
+
+
+def room_link_ids(room: Room) -> list[tuple[AnyLinkId, Node, Node]]:
+    """(link id, receiving node, transmitting node) for every link: receiver x sender, then transceiver pairs."""
+    out: list[tuple[AnyLinkId, Node, Node]] = [(LinkId(rx.name, tx.mac), rx, tx) for rx, tx in room.links()]
+    out.extend((NodeLinkId(rx.name, tx.name), rx, tx) for rx, tx in room.transceiver_links())
+    return out
+
+
 class _Link:
     """Everything one link needs: scorer, debouncer, health, last RSSI, and either a fixed threshold or an
     adaptive detector (``mode``: "fixed" or "auto"; see csi/adaptive.py). ``auto_allowed`` is the monitor's
     mode: a link set back to no threshold returns to auto only when the monitor is in auto mode."""
 
-    def __init__(self, link_id: LinkId, threshold: Optional[float], debounce_s: float,
+    def __init__(self, link_id: AnyLinkId, threshold: Optional[float], debounce_s: float,
                  send_rate_hz: Optional[float], auto: bool = False) -> None:
         self.id, self.threshold = link_id, threshold
         self.auto_allowed = auto
@@ -62,7 +94,7 @@ class _Link:
         self.detector: Optional[AdaptiveDetector] = None
         self.scorer = MotionScorer()
         self.debounce = _Debouncer(debounce_s)
-        self.health = LinkHealth(send_rate_hz=send_rate_hz)
+        self.health = ReportHealth() if isinstance(link_id, NodeLinkId) else LinkHealth(send_rate_hz=send_rate_hz)
         self.score: Optional[float] = None
         self.rssi: Optional[int] = None
         self.last_host: Optional[float] = None
@@ -97,8 +129,29 @@ class _Link:
         self.health.observe(pkt)
         self.rssi, self.last_host = pkt.rssi, pkt.host_ts
         self.score = self.scorer.push(pkt)
+        return self._judge(pkt.host_ts)
+
+    def push_report(self, host_ts: float, report: LinkReport) -> str:
+        """One link report from the receiving node: its score is judged as a packet's score would be.
+
+        A heard counter of 0 is NO_SIGNAL; the warming flag, or no score yet, is WARMUP. Neither feeds the
+        detector, and neither counts as a warm link in the room decision."""
+        self.health.observe_report(host_ts, report)
+        self.last_host = host_ts
+        if report.rssi is not None:
+            self.rssi = report.rssi
+        self.score = report.score
+        if report.heard == 0 or report.warming or self.score is None:
+            self.state = NO_SIGNAL if report.heard == 0 else WARMUP
+            self.level, self.elevated = None, False
+            self.reading = None if report.heard == 0 else Reading(host_ts, WARMUP, self.score)
+            return self.state
+        return self._judge(host_ts)
+
+    def _judge(self, t: float) -> str:
+        """State from the latest score at time ``t``: the adaptive detector in auto mode, else the threshold."""
         if self.mode == AUTO:
-            self.reading = self.detector.push(pkt.host_ts, self.score)
+            self.reading = self.detector.push(t, self.score)
             self.state = self.reading.state
             self.level = self.reading.level
             self.elevated = self.reading.elevated
@@ -108,10 +161,10 @@ class _Link:
         elif self.score is None:
             self.state = WARMUP
         else:
-            self.state = self.debounce.update(classify(self.score, None, self.threshold), pkt.host_ts)
+            self.state = self.debounce.update(classify(self.score, None, self.threshold), t)
         self.level = None if self.score is None or not self.threshold else self.score / self.threshold
         self.elevated = self.state == MOTION
-        self.reading = Reading(pkt.host_ts, self.state, self.score, elevated=self.elevated,
+        self.reading = Reading(t, self.state, self.score, elevated=self.elevated,
                                warm=self.state not in (WARMUP, UNCALIBRATED))
         return self.state
 
@@ -141,7 +194,7 @@ class LinkMonitor:
         self._mode = mode
         self._thresholds = {} if mode == AUTO else dict(thresholds or {})
         self._debounce_s, self._send_rate_hz, self._no_signal_s = debounce_s, send_rate_hz, no_signal_s
-        self._links: dict[LinkId, _Link] = {}
+        self._links: dict[AnyLinkId, _Link] = {}
         self._room = RoomDecision()
         self.room_state = WARMUP
         self.room_elevated: list[str] = []
@@ -152,7 +205,7 @@ class LinkMonitor:
     def mode(self) -> str:
         return self._mode
 
-    def _get(self, link_id: LinkId) -> _Link:
+    def _get(self, link_id: AnyLinkId) -> _Link:
         if link_id not in self._links:
             self._links[link_id] = _Link(link_id, self._thresholds.get(link_id.label),
                                          self._debounce_s, self._send_rate_hz, auto=self._mode == AUTO)
@@ -181,6 +234,12 @@ class LinkMonitor:
         state = self._get(LinkId(receiver, pkt.mac)).push(pkt)
         self._update_room(pkt.host_ts)
         return state
+
+    def push_reports(self, host_ts: float, reports: Iterable[tuple[NodeLinkId, LinkReport]]) -> None:
+        """Feed the link reports of one round broadcast, heard at ``host_ts``; the room decision follows once."""
+        for link_id, report in reports:
+            self._get(link_id).push_report(host_ts, report)
+        self._update_room(host_ts)
 
     def _update_room(self, now: float) -> None:
         """Room decision at packet time ``now``, from the links heard within the NO_SIGNAL window."""
@@ -211,6 +270,7 @@ class LinkMonitor:
                 "id": link_id.label,
                 "receiver": link_id.receiver,
                 "mac": link_id.mac,
+                "transmitter": link_id.transmitter,
                 "state": NO_SIGNAL if silent else link.state,
                 "mode": link.mode,
                 "score": link.score,

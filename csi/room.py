@@ -1,8 +1,10 @@
 """Room geometry and a simulated person's position.
 
 The room comes from ``config/room.json``: metres, origin at the top-left corner, x to the right and
-y down. Receivers (role ``receiver``) and senders (role ``sender``, with a MAC) are the nodes. Each
-(receiver, sender) pair is a link, and its motion response to a person is a Gaussian falloff of the
+y down. Receivers (role ``receiver``) and senders (role ``sender``, with a MAC) are the nodes of the
+hackathon rig; transceivers (role ``transceiver``, the default when a node gives no role) both send and
+receive round broadcasts and are told apart by their board serial. Each (receiver, sender) pair is a link,
+and so is each ordered pair of distinct transceivers (``Room.transceiver_links``), and its motion response to a person is a Gaussian falloff of the
 person's distance to the link's segment (clamped to the segment ends).
 
 A node may carry ``"enabled": false``; it is then left out of the room altogether (no receiver or
@@ -12,6 +14,7 @@ default is ``true``. Its name is kept in ``Room.disabled``.
 Public API:
     load_room(path)                  -> Room (receivers and senders by name; optional link_weights)
     Room.links()                     -> [(receiver Node, sender Node)] for every pair
+    Room.transceiver_links()         -> [(receiving Node, transmitting Node)] for every ordered transceiver pair
     Room.wall_point(side, inset)     -> (x, y) just inside a wall: "left" | "right" | "top" | "bottom"
     Walk(waypoints, speed_mps, loop) position(t) over time (metres)
     Stand(x, y)                      fixed position
@@ -35,6 +38,8 @@ DEFAULT_ROOM_PATH = Path(os.environ.get("CSI_ROOM") or Path(__file__).resolve().
 FALLOFF_SIGMA_M = 0.25  # response is exp(-1/2) (about 60 %) at this distance from the segment
 WALL_INSET_M = 0.25     # how far inside the wall a person stands for "near a wall"
 WALLS = ("left", "right", "top", "bottom")
+TRANSCEIVER = "transceiver"
+ROLES = ("receiver", "sender", TRANSCEIVER)
 
 
 @dataclass(frozen=True)
@@ -56,9 +61,14 @@ class Room:
     senders: tuple[Node, ...]
     link_weights: Mapping[str, float] = field(default_factory=dict)  # link label -> weight (default 1.0)
     disabled: tuple[str, ...] = ()  # names of nodes with "enabled": false (not in receivers or senders)
+    transceivers: tuple[Node, ...] = ()  # nodes that both send and receive round broadcasts
 
     def links(self) -> list[tuple[Node, Node]]:
         return [(rx, tx) for rx in self.receivers for tx in self.senders]
+
+    def transceiver_links(self) -> list[tuple[Node, Node]]:
+        """(receiving node, transmitting node) for every ordered pair of distinct transceivers: N(N-1) links."""
+        return [(rx, tx) for rx in self.transceivers for tx in self.transceivers if rx is not tx]
 
     def wall_point(self, side: str, inset: float = WALL_INSET_M) -> tuple[float, float]:
         if side == "left":
@@ -82,7 +92,10 @@ def load_room(path: Union[str, Path] = DEFAULT_ROOM_PATH) -> Room:
         if not enabled:
             disabled.append(name)
             continue
-        nodes.append(Node(name, spec["role"], float(spec["x"]), float(spec["y"]), spec.get("mac", ""),
+        role = spec.get("role", TRANSCEIVER)
+        if role not in ROLES:
+            raise ValueError(f"node {name}: role must be one of {', '.join(ROLES)}, not {role!r}")
+        nodes.append(Node(name, role, float(spec["x"]), float(spec["y"]), spec.get("mac", ""),
                           spec.get("chip", ""), spec.get("serial", "")))
     return Room(
         width_m=float(config["room"]["width_m"]),
@@ -91,6 +104,7 @@ def load_room(path: Union[str, Path] = DEFAULT_ROOM_PATH) -> Room:
         senders=tuple(n for n in nodes if n.role == "sender"),
         link_weights={k: float(v) for k, v in config.get("link_weights", {}).items()},
         disabled=tuple(disabled),
+        transceivers=tuple(n for n in nodes if n.role == TRANSCEIVER),
     )
 
 

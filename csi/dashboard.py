@@ -1,23 +1,27 @@
 """The single state payload the dashboard renders from: per-link monitor plus heatmap.
 
-``DashboardState.push(receiver, pkt)`` feeds a LinkMonitor and the heatmap smoother. ``snapshot(now)``
-returns one JSON-serialisable dict:
+``DashboardState.push(receiver, pkt)`` feeds a LinkMonitor and the heatmap smoother. In the transceiver
+pipeline ``push_broadcast(host_ts, data)`` does the same from one round broadcast's link reports (csi/rounds.py).
+``snapshot(now)`` returns one JSON-serialisable dict:
 
     room      {width_m, depth_m}
-    nodes     [{name, role, chip, x, y}]              receivers then senders
+    nodes     [{name, role, chip, x, y}]              receivers, senders, then transceivers
     links     [{id, receiver, sender, mac, state, mode, elevated, level, score, threshold, normalised, baseline,
                 evidence, pkt_rate, drops, rssi, age_s, weight, contributes}]
                 baseline: the link's quiet baseline (None in warm-up); evidence: 0..1 above it.
                 mode: "fixed" (judged against threshold) or "auto" (its own adaptive baseline, csi/adaptive.py).
                 elevated: True when the link is in MOTION (auto: elevated above its adaptive enter level).
                 level: score / threshold (auto: / the adaptive enter level); >= 1 at or above it.
-                sender is the node name, None if the MAC is unknown
+                sender is the node name, None if the MAC is unknown; for a transceiver link (id "n1<-n5")
+                receiver and sender are the receiving and transmitting node, and mac is ""
     heatmap   {cols, rows, extents, cells, max, contributing}
                 cells: flat row-major floats in 0..1 (row 0 is the top edge, y = 0)
     track     {x, y, vx, vy, confidence} or None: the motion track, a Kalman-smoothed dot following the
                 heatmap's hot blob (csi/tracker.py). Where change is, like the heatmap; not a person count.
     status    {time_s, links_by_state, parameters, room}
                 room: {state, elevated (labels), mode}: room-level MOTION from link agreement (csi/adaptive.py)
+                broadcasts: {accepted, rejected {reason: n}, unknown_nodes {serial: n}, unplaced_reports}, the
+                round broadcasts ingested (all 0 in the line pipeline)
 
 Time is host time from the packets. ``snapshot()`` with no argument uses the newest packet time, so the
 payload is deterministic for simulated streams; pass ``now`` to advance the decay while packets stop.
@@ -28,9 +32,10 @@ import time
 from typing import Mapping, Optional
 
 from .heatmap import Heatmap
-from .links import LinkId, LinkMonitor, NO_SIGNAL, UNCALIBRATED, WARMUP
+from .links import LinkMonitor, NO_SIGNAL, UNCALIBRATED, WARMUP, room_link_ids
 from .parser import CSIPacket
 from .room import Room
+from .rounds import RoundIngest
 from .tracker import Tracker
 
 STATES = ("EMPTY", "MOTION", WARMUP, UNCALIBRATED, NO_SIGNAL)
@@ -41,8 +46,9 @@ class DashboardState:
     def __init__(self, room: Room, thresholds: Optional[Mapping[str, float]] = None, *, mode: str = "fixed",
                  **heatmap_params) -> None:
         self._room = room
-        expected = [LinkId(rx.name, tx.mac) for rx, tx in room.links()]
+        expected = [link_id for link_id, _, _ in room_link_ids(room)]
         self._monitor = LinkMonitor(thresholds or {}, mode=mode, expected=expected)
+        self._ingest = RoundIngest(room)
         self._heat = Heatmap(room, **heatmap_params)
         self._track = Tracker(room.width_m, room.depth_m, self._heat.centres)
         self._senders = {tx.mac: tx.name for tx in room.senders}
@@ -51,10 +57,19 @@ class DashboardState:
 
     def push(self, receiver: str, pkt: CSIPacket) -> None:
         self._monitor.push(receiver, pkt)
-        self._last_host = pkt.host_ts
-        if self._heat.due(pkt.host_ts):
-            self._heat.advance(pkt.host_ts, self._monitor.snapshot(pkt.host_ts))
-            self._track.update(pkt.host_ts, self._heat.target)  # unsmoothed: no double smoothing
+        self._advance(pkt.host_ts)
+
+    def push_broadcast(self, host_ts: float, data: bytes) -> None:
+        """One round broadcast heard at ``host_ts``: its link reports drive their links. Bytes that cannot be
+        used are counted in ``status.broadcasts``, never raised."""
+        self._monitor.push_reports(host_ts, self._ingest.place(data))
+        self._advance(host_ts)
+
+    def _advance(self, host_ts: float) -> None:
+        self._last_host = host_ts
+        if self._heat.due(host_ts):
+            self._heat.advance(host_ts, self._monitor.snapshot(host_ts))
+            self._track.update(host_ts, self._heat.target)  # unsmoothed: no double smoothing
 
     @property
     def thresholds(self) -> dict[str, float]:
@@ -111,7 +126,7 @@ class DashboardState:
         return {
             "id": row["id"],
             "receiver": row["receiver"],
-            "sender": self._senders.get(row["mac"]),
+            "sender": row.get("transmitter") or self._senders.get(row["mac"]),
             "mac": row["mac"],
             "state": row["state"],
             "mode": row["mode"],
@@ -131,7 +146,7 @@ class DashboardState:
         }
 
     def _nodes(self) -> list[dict]:
-        nodes = list(self._room.receivers) + list(self._room.senders)
+        nodes = list(self._room.receivers) + list(self._room.senders) + list(self._room.transceivers)
         return [{"name": n.name, "role": n.role, "chip": n.chip, "x": n.x, "y": n.y} for n in nodes]
 
     def _heatmap_payload(self) -> dict:
@@ -160,6 +175,7 @@ class DashboardState:
             "parameters": self.parameters(),
             "room": {"state": self._monitor.room_state, "elevated": list(self._monitor.room_elevated),
                      "mode": self._monitor.mode},
+            "broadcasts": self._ingest.counts(),
         }
 
 

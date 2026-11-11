@@ -41,7 +41,7 @@ from typing import Mapping, Optional, Sequence
 
 import numpy as np
 
-from .links import LinkId
+from .links import room_link_ids
 from .room import Room, point_segment_distance
 
 COLS = 28
@@ -143,9 +143,8 @@ class Heatmap:
         self.baselines: dict[str, Optional[float]] = {}
 
     def _build_falloff(self, falloff_m: float) -> None:
-        for rx, tx in self._room.links():
-            label = LinkId(rx.name, tx.mac).label
-            self._falloff[label] = segment_falloff(self.centres, (rx.x, rx.y), (tx.x, tx.y), falloff_m)
+        for link_id, rx, tx in room_link_ids(self._room):
+            self._falloff[link_id.label] = segment_falloff(self.centres, (rx.x, rx.y), (tx.x, tx.y), falloff_m)
 
     def set_params(self, **kwargs) -> None:
         """Change live tunables: sensitivity, rise_tau, decay_tau, falloff_m (attribute names).
