@@ -43,7 +43,7 @@ from dataclasses import asdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import BinaryIO, Iterator, Mapping, Optional, Sequence, TextIO, Union
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 from .dashboard import DashboardState
 from .live_calibration import CalibrationJob, RequestError, parse_request
@@ -237,6 +237,9 @@ class _Handler(BaseHTTPRequestHandler):
             self._send(200, "application/json; charset=utf-8", dash.state_json().encode())
         elif path == "/api/events":
             self._events(dash)
+        elif path == "/api/link":
+            ids = parse_qs(urlsplit(self.path).query).get("id")
+            self._json(*dash.link_detail(ids[0] if ids else None))
         elif path in ("/", "/index.html"):
             self._send(200, "text/html; charset=utf-8", dash.index_bytes())
         else:
@@ -402,6 +405,10 @@ class FrameServer:
     def view(self, path: str) -> Optional[dict]:
         """GET of a server-specific resource (none in the base server): None means not found."""
         return None
+
+    def link_detail(self, label: Optional[str]) -> tuple[int, dict]:
+        """GET /api/link?id=<label>: one link's full row on demand, as (HTTP status, JSON object)."""
+        return 404, {"error": f"per-link detail is {REPLAY_OFF}"}
 
     def __enter__(self) -> "FrameServer":
         return self
@@ -693,8 +700,19 @@ class DashboardServer(FrameServer):
 
     # ------------------------------------------------------------------ commands
 
+    def link_detail(self, label: Optional[str]) -> tuple[int, dict]:
+        if not label:
+            return 400, {"error": "name the link: /api/link?id=<link label>, for example id=n1%3C-n5 (n1<-n5)"}
+        with self._lock:
+            now = self._clock()
+            row = self._state.link_detail(label, now)
+        if row is None:
+            return 404, {"error": f"unknown link {label!r}"}
+        return 200, {"link": row, "time_s": now}
+
     def view(self, path: str) -> Optional[dict]:
         if path != "/api/thresholds" or self._replay:
+
             return None
         with self._lock:
             return {"thresholds": self._state.thresholds, "path": str(self._thresholds_path.resolve())}

@@ -29,7 +29,10 @@ payload is deterministic for simulated streams; pass ``now`` to advance the deca
 from __future__ import annotations
 
 import time
-from typing import Mapping, Optional
+from dataclasses import dataclass
+from typing import Any, Mapping, Optional
+
+import numpy as np
 
 from .coverage import coverage, link_health, link_matrix, node_health
 from .heatmap import Heatmap
@@ -108,32 +111,65 @@ class DashboardState:
             "step_s": self._heat.step,
         }
 
-    def snapshot(self, now: Optional[float] = None) -> dict:
+    def snapshot(self, now: Optional[float] = None, *, links: bool = True) -> dict:
+        """The payload at host time ``now``: ``render(capture(now))``. ``links=False`` leaves out the per-link rows."""
+        return self.render(self.capture(now), links=links)
+
+    def capture(self, now: Optional[float] = None) -> "Capture":
+        """Advance the heatmap and track to ``now`` and take what a payload needs, in one cheap step.
+
+        This is the only part of a payload that touches live state, so it is the only part that must run under the
+        server lock. ``render`` turns the capture into the payload, without the lock.
+        """
         if now is None:
             now = self._last_host if self._last_host is not None else time.time()
         rows = self._monitor.snapshot(now)
-        self._heat.advance(now, rows)
-        self._track.update(now, self._heat.target)
-        links = [self._link_payload(row) for row in rows]
-        health = node_health(self._room.transceivers, rows, self._heard_at, now)
-        return {
+        heat = self._heat
+        heat.advance(now, rows)
+        self._track.update(now, heat.target)
+        # every value below is a new object per advance or per call, never changed in place afterwards
+        return Capture(now=now, rows=rows, heat_values=heat.values, contributing=tuple(heat.contributing),
+                       evidence=heat.evidence, baselines=heat.baselines, track=self._track.state(now),
+                       room_state=self._monitor.room_state, room_elevated=tuple(self._monitor.room_elevated),
+                       mode=self._monitor.mode, broadcasts=self._ingest.counts(), parameters=self.parameters(),
+                       heard_at=dict(self._heard_at))
+
+    def render(self, cap: "Capture", *, links: bool = True) -> dict:
+        """The payload from a capture. Reads nothing that the pipeline changes, so it is safe off the lock."""
+        rows = cap.rows
+        health = node_health(self._room.transceivers, rows, cap.heard_at, cap.now)
+        payload = {
             "room": {"width_m": self._room.width_m, "depth_m": self._room.depth_m},
             "nodes": self._nodes(),
-            "links": links,
-            "heatmap": self._heatmap_payload(),
-            "track": self._track_payload(now),
-            "status": self._status_payload(now, rows),
+            "links": [self._link_payload(row, cap) for row in rows] if links else None,
+            "heatmap": self._heatmap_payload(cap),
+            "track": None if cap.track is None else {k: _round(v) for k, v in cap.track.items()},
+            "status": self._status_payload(cap),
             "node_health": [{**node, "last_heard_s": _round(node["last_heard_s"]),
                              "link_rate_hz": _round(node["link_rate_hz"])} for node in health],
-            "coverage": coverage(health, rows, self._ingest.counts()["unknown_nodes"]),
-            "link_health": {**(agg := link_health(rows)),
-                            "rate_hz": {k: _round(v) for k, v in agg["rate_hz"].items()}},
+            "coverage": coverage(health, rows, cap.broadcasts["unknown_nodes"]),
+            "link_health": self._link_health_payload(rows),
             "link_matrix": link_matrix(self._room.transceivers, rows),
-
         }
+        if not links:
+            del payload["links"]
+        return payload
 
+    def link_detail(self, label: str, now: Optional[float] = None) -> Optional[dict]:
+        """One link's payload row (as in ``links``) at host time ``now``, or None for an unknown label. It reads the
+        heatmap's baseline and evidence from its last advance and changes nothing."""
+        if now is None:
+            now = self._last_host if self._last_host is not None else time.time()
+        row = self._monitor.row(label, now)
+        if row is None:
+            return None
+        heat = self._heat
+        cap = Capture(now=now, rows=[row], heat_values=heat.values, contributing=tuple(heat.contributing),
+                      evidence=heat.evidence, baselines=heat.baselines, track=None, room_state="", room_elevated=(),
+                      mode=self._monitor.mode, broadcasts={}, parameters={}, heard_at={})
+        return self._link_payload(row, cap)
 
-    def _link_payload(self, row: Mapping) -> dict:
+    def _link_payload(self, row: Mapping, cap: "Capture") -> dict:
         score, threshold = row["score"], row["threshold"]
         normalised = None if score is None or not threshold else score / threshold
         return {
@@ -152,44 +188,62 @@ class DashboardState:
             "drops": row["drops"],
             "rssi": row["rssi"],
             "age_s": _round(row["age_s"]),
-            "baseline": _round(self._heat.baselines.get(row["id"])),
-            "evidence": _round(self._heat.evidence.get(row["id"], 0.0)),
+            "baseline": _round(cap.baselines.get(row["id"])),
+            "evidence": _round(cap.evidence.get(row["id"], 0.0)),
             "weight": self._room.link_weights.get(row["id"], 1.0),
-            "contributes": row["id"] in self._heat.contributing,
+            "contributes": row["id"] in cap.contributing,
         }
 
     def _nodes(self) -> list[dict]:
         nodes = list(self._room.receivers) + list(self._room.senders) + list(self._room.transceivers)
         return [{"name": n.name, "role": n.role, "chip": n.chip, "x": n.x, "y": n.y} for n in nodes]
 
-    def _heatmap_payload(self) -> dict:
+    def _heatmap_payload(self, cap: "Capture") -> dict:
         heat = self._heat
-        cells = [round(float(v), PAYLOAD_DECIMALS) for v in heat.values]
+        cells = np.round(np.asarray(cap.heat_values, dtype=float), PAYLOAD_DECIMALS).tolist()
         return {
             "cols": heat.cols,
             "rows": heat.rows,
             "extents": {"x_min": 0.0, "y_min": 0.0, "x_max": self._room.width_m, "y_max": self._room.depth_m},
             "cells": cells,
             "max": max(cells) if cells else 0.0,
-            "contributing": sorted(heat.contributing),
+            "contributing": sorted(cap.contributing),
         }
 
-    def _track_payload(self, now: float) -> Optional[dict]:
-        track = self._track.state(now)
-        return None if track is None else {k: _round(v) for k, v in track.items()}
+    @staticmethod
+    def _link_health_payload(rows: list[Mapping]) -> dict:
+        agg = link_health(rows)
+        return {**agg, "rate_hz": {k: _round(v) for k, v in agg["rate_hz"].items()}}
 
-    def _status_payload(self, now: float, rows: list[Mapping]) -> dict:
+    def _status_payload(self, cap: "Capture") -> dict:
         by_state = {state: 0 for state in STATES}
-        for row in rows:
+        for row in cap.rows:
             by_state[row["state"]] = by_state.get(row["state"], 0) + 1
         return {
-            "time_s": now,
+            "time_s": cap.now,
             "links_by_state": by_state,
-            "parameters": self.parameters(),
-            "room": {"state": self._monitor.room_state, "elevated": list(self._monitor.room_elevated),
-                     "mode": self._monitor.mode},
-            "broadcasts": self._ingest.counts(),
+            "parameters": cap.parameters,
+            "room": {"state": cap.room_state, "elevated": list(cap.room_elevated), "mode": cap.mode},
+            "broadcasts": cap.broadcasts,
         }
+
+
+@dataclass(frozen=True)
+class Capture:
+    """What one payload needs, taken under the lock by ``DashboardState.capture``; ``render`` reads only this."""
+    now: float
+    rows: list                        # LinkMonitor.snapshot rows (new dicts)
+    heat_values: Any                  # the smoothed grid (an array the heatmap replaces, never edits)
+    contributing: tuple
+    evidence: Mapping[str, float]
+    baselines: Mapping[str, Optional[float]]
+    track: Optional[dict]
+    room_state: str
+    room_elevated: tuple
+    mode: str
+    broadcasts: dict
+    parameters: dict
+    heard_at: dict
 
 
 def _round(value: Optional[float]) -> Optional[float]:

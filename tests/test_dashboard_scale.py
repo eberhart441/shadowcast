@@ -3,10 +3,18 @@
 Round broadcasts come from the simulated rig (csi.simulate.simulate_rounds) for the frozen 8-node and 30-node
 transceiver rooms; assertions are on DashboardState's payload and on the server's HTTP interface.
 """
+import json
+import urllib.error
+import urllib.request
 from pathlib import Path
+from urllib.parse import quote
+
+import pytest
 
 from csi.dashboard import DashboardState
 from csi.room import load_room
+from csi.server import DashboardServer
+
 from csi.simulate import simulate_rounds
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
@@ -75,3 +83,48 @@ def test_the_link_matrix_gives_every_link_state_in_one_character_by_node_pair():
     assert {row[n3] for k, row in enumerate(rows) if k != n3} == {"N"}   # and nobody hears it
     assert rows[0] == "-EN" + "E" * 5               # n1 hears everyone else, quiet room
     assert matrix["codes"]["E"] == "EMPTY" and matrix["codes"]["N"] == "NO_SIGNAL"
+
+
+# ---------------------------------------------------------------- per-link detail on demand (HTTP)
+
+def finished_server(room, seconds, **sim):
+    stream = simulate_rounds(room, duration_s=seconds, t0=T0, **sim)
+    server = DashboardServer(room, {"gateway": stream}, mode="auto", port=0)
+    server.start()
+    assert server.wait_finished(timeout=120)
+    return server
+
+
+def get(server, path):
+    try:
+        with urllib.request.urlopen(server.url + path, timeout=30) as response:
+            return response.status, json.loads(response.read())
+    except urllib.error.HTTPError as e:
+        return e.code, json.loads(e.read())
+
+
+def test_any_link_s_detail_is_served_on_demand():
+    server = finished_server(TR8, 3.0, dead_after={"n3": 1.0})
+    try:
+        status, body = get(server, "/api/link?id=" + quote("n8<-n4"))
+        assert status == 200
+        link = body["link"]
+        assert (link["id"], link["receiver"], link["sender"]) == ("n8<-n4", "n8", "n4")
+        assert link["state"] == "WARMUP" and link["pkt_rate"] > 15 and link["rssi"] is not None
+        assert {"score", "threshold", "level", "drops", "age_s", "baseline", "evidence", "mode"} <= set(link)
+        status, body = get(server, "/api/link?id=" + quote("n3<-n1"))
+        assert status == 200 and body["link"]["state"] == "NO_SIGNAL"
+        assert body["time_s"] == pytest.approx(T0 + 3.0, abs=0.1)
+    finally:
+        server.stop()
+
+
+def test_link_detail_refuses_an_unknown_or_missing_link_id():
+    server = finished_server(TR8, 0.5)
+    try:
+        status, body = get(server, "/api/link?id=" + quote("n9<-n1"))
+        assert status == 404 and "n9<-n1" in body["error"]
+        status, body = get(server, "/api/link")
+        assert status == 400 and "id" in body["error"]
+    finally:
+        server.stop()

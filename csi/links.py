@@ -10,7 +10,8 @@ Public API:
     NodeLinkId             (receiver, transmitter) node names, labelled "n1<-n5": a transceiver link
     room_link_ids(room)    [(link id, receiving Node, transmitting Node)] for every link of the room
     LinkMonitor            push(receiver, packet) -> state; push_reports(host_ts, [(NodeLinkId, LinkReport)]);
-                           snapshot(now) -> list of per-link dicts
+                           snapshot(now) -> list of per-link dicts; row(label, now) -> one of them
+
     calibrate_links        tagged empty-room packets -> {label: threshold}
     calibrate_links_report same, plus {label: reason} for links that were skipped
     save_thresholds / load_thresholds   links.json, a plain {label: threshold} object
@@ -195,6 +196,7 @@ class LinkMonitor:
         self._thresholds = {} if mode == AUTO else dict(thresholds or {})
         self._debounce_s, self._send_rate_hz, self._no_signal_s = debounce_s, send_rate_hz, no_signal_s
         self._links: dict[AnyLinkId, _Link] = {}
+        self._by_label: dict[str, AnyLinkId] = {}   # first link with each label, for row()
         self._room = RoomDecision()
         self.room_state = WARMUP
         self.room_elevated: list[str] = []
@@ -209,6 +211,7 @@ class LinkMonitor:
         if link_id not in self._links:
             self._links[link_id] = _Link(link_id, self._thresholds.get(link_id.label),
                                          self._debounce_s, self._send_rate_hz, auto=self._mode == AUTO)
+            self._by_label.setdefault(link_id.label, link_id)
         return self._links[link_id]
 
     @property
@@ -256,34 +259,42 @@ class LinkMonitor:
         ``level`` is score relative to that threshold (>= 1 at or above it); ``elevated`` is True in MOTION.
         """
         now = time.time() if now is None else now
-        rows = []
-        for link_id in sorted(self._links, key=lambda lid: lid.label):
-            link = self._links[link_id]
-            age = None if link.last_host is None else max(0.0, now - link.last_host)
-            silent = age is None or age > self._no_signal_s
-            threshold = link.shown_threshold
-            if link.mode == AUTO:
-                level = link.level
-            else:
-                level = None if link.score is None or not threshold else link.score / threshold
-            rows.append({
-                "id": link_id.label,
-                "receiver": link_id.receiver,
-                "mac": link_id.mac,
-                "transmitter": link_id.transmitter,
-                "state": NO_SIGNAL if silent else link.state,
-                "mode": link.mode,
-                "score": link.score,
-                "threshold": threshold,
-                "level": None if silent else level,
-                "elevated": (not silent) and link.elevated,
-                "pkt_rate": 0.0 if silent else link.health.packet_rate(),
-                "drops": link.health.drops,
-                "rssi": link.rssi,
-                "age_s": age,
-                "packets": link.health.packets,
-            })
-        return rows
+        return [self._row(link_id, self._links[link_id], now)
+                for link_id in sorted(self._links, key=lambda lid: lid.label)]
+
+    def row(self, label: str, now: Optional[float] = None) -> Optional[dict]:
+        """The snapshot row of the link labelled ``label`` (None if there is none): one link, not all of them."""
+        link_id = self._by_label.get(label)
+        if link_id is None:
+            return None
+        return self._row(link_id, self._links[link_id], time.time() if now is None else now)
+
+    def _row(self, link_id: AnyLinkId, link: _Link, now: float) -> dict:
+        age = None if link.last_host is None else max(0.0, now - link.last_host)
+        silent = age is None or age > self._no_signal_s
+        threshold = link.shown_threshold
+        if link.mode == AUTO:
+            level = link.level
+        else:
+            level = None if link.score is None or not threshold else link.score / threshold
+        return {
+            "id": link_id.label,
+            "receiver": link_id.receiver,
+            "mac": link_id.mac,
+            "transmitter": link_id.transmitter,
+            "state": NO_SIGNAL if silent else link.state,
+            "mode": link.mode,
+            "score": link.score,
+            "threshold": threshold,
+            "level": None if silent else level,
+            "elevated": (not silent) and link.elevated,
+            "pkt_rate": 0.0 if silent else link.health.packet_rate(),
+            "drops": link.health.drops,
+            "rssi": link.rssi,
+            "age_s": age,
+            "packets": link.health.packets,
+        }
+
 
 
 @dataclass(frozen=True)
