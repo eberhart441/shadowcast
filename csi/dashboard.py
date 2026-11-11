@@ -33,6 +33,10 @@ pipeline ``push_broadcast(host_ts, data)`` does the same from one round broadcas
     link_matrix {nodes [names], states [one string per receiving node], codes {char: state}}: states[r][t] is the
                 link from nodes[t] to nodes[r]: E M W U N for the five states, "-" on the diagonal
     (csi/coverage.py computes the last four.)
+    raw_mode    {budget_bytes, used_bytes, link_bytes, max_links_per_node, links [{id, state, wanted, blocks,
+                iq_bytes, last_s, rate_hz}]}: raw mode per link (csi/raw_mode.py); state "on", "requested",
+                "no answer", "stopping" or "off". ``raw_mode_request(label, on, now, sender_id)`` makes the request
+                frames a gateway sends.
 
 Time is host time from the packets. ``snapshot()`` with no argument uses the newest packet time, so the
 payload is deterministic for simulated streams; pass ``now`` to advance the decay while packets stop.
@@ -53,6 +57,7 @@ from .coverage import SlotLateness, coverage, link_health, link_matrix, node_hea
 from .heatmap import RTI, Heatmap
 from .links import LinkMonitor, NO_SIGNAL, UNCALIBRATED, WARMUP, room_link_ids
 from .parser import CSIPacket
+from .raw_mode import RawMode
 from .room import Room
 from .round_auth import TEST_KIT_KEY
 from .rounds import RoundIngest
@@ -69,6 +74,7 @@ class DashboardState:
         expected = [link_id for link_id, _, _ in room_link_ids(room)]
         self._monitor = LinkMonitor(thresholds or {}, mode=mode, expected=expected)
         self._ingest = RoundIngest(room, kit_key)
+        self._raw = RawMode(room, kit_key)
         self._heat = Heatmap(room, **heatmap_params)
         self._track = Tracker(room.width_m, room.depth_m, self._heat.centres)
         self._senders = {tx.mac: tx.name for tx in room.senders}
@@ -87,10 +93,20 @@ class DashboardState:
         ``status.broadcasts``, never raised."""
         placed = self._ingest.place(data, host_ts, source)
         self._monitor.push_reports(host_ts, placed)
+        self._raw.observe(host_ts, placed, self._ingest.last_raw)
         self._lateness.observe(host_ts, placed)
         if self._ingest.last_node is not None:
             self._heard_at[self._ingest.last_node] = max(host_ts, self._heard_at.get(self._ingest.last_node, host_ts))
         self._advance(host_ts)
+
+    def raw_mode_request(self, label: str, on: bool, now: float, sender_id: Optional[str]) -> list[bytes]:
+        """The signed raw mode request frames that turn raw mode on or off for link ``label``, for the gateway with
+        board serial ``sender_id`` to send. Raises csi.raw_mode.RawModeRefused (with a reason) instead."""
+        return self._raw.request(label, on, self._ingest.last_rounds, now, sender_id)
+
+    def last_source(self, label: str) -> Optional[str]:
+        """The source that delivered the latest round broadcast of link ``label``'s receiving node, if any."""
+        return self._ingest.last_source(label.partition("<-")[0])
 
     def count_dropped(self, source: str, n: int) -> None:
         """``n`` round broadcasts from ``source`` were dropped before ingest (a full queue): counted, not used."""
@@ -163,7 +179,8 @@ class DashboardState:
                        evidence=heat.evidence, baselines=heat.baselines, track=self._track.state(now),
                        room_state=self._monitor.room_state, room_elevated=tuple(self._monitor.room_elevated),
                        mode=self._monitor.mode, broadcasts=self._ingest.counts(), parameters=self.parameters(),
-                       heard_at=dict(self._heard_at), lateness=self._lateness.by_node(now))
+                       heard_at=dict(self._heard_at), lateness=self._lateness.by_node(now),
+                       raw_mode=self._raw.status(now))
 
     def render(self, cap: "Capture", *, links: bool = True) -> dict:
         """The payload from a capture. Reads nothing that the pipeline changes, so it is safe off the lock."""
@@ -181,6 +198,7 @@ class DashboardState:
             "coverage": coverage(health, rows, cap.broadcasts["unknown_nodes"]),
             "link_health": self._link_health_payload(rows),
             "link_matrix": link_matrix(self._room.transceivers, rows),
+            "raw_mode": cap.raw_mode,
         }
         if not links:
             del payload["links"]
@@ -197,7 +215,8 @@ class DashboardState:
         heat = self._heat
         cap = Capture(now=now, rows=[row], heat_values=heat.values, contributing=tuple(heat.contributing),
                       evidence=heat.evidence, baselines=heat.baselines, track=None, room_state="", room_elevated=(),
-                      mode=self._monitor.mode, broadcasts={}, parameters={}, heard_at={}, lateness={})
+                      mode=self._monitor.mode, broadcasts={}, parameters={}, heard_at={}, lateness={},
+                      raw_mode={})
         return self._link_payload(row, cap)
 
     def _link_payload(self, row: Mapping, cap: "Capture") -> dict:
@@ -276,6 +295,7 @@ class Capture:
     parameters: dict
     heard_at: dict
     lateness: dict
+    raw_mode: dict
 
 
 def _round(value: Optional[float]) -> Optional[float]:
