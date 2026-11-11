@@ -771,7 +771,10 @@ class DashboardServer(FrameServer):
         value = body.get("value")
         if not _finite_positive(value):
             raise RequestError(f"value must be a positive number, or null for auto, got {value!r}")
-        self._state.set_threshold(link, float(value))
+        try:
+            self._state.set_threshold(link, float(value))
+        except ValueError as e:   # a transceiver link takes no threshold: adaptive baseline only (ADR-0023)
+            raise RequestError(str(e)) from None
         self._commands.append(f"threshold {link} = {float(value):.4g}")
         return 200, {"link": link, "threshold": float(value)}
 

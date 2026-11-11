@@ -21,6 +21,11 @@ States: EMPTY and MOTION (from the detector), plus
     NO_SIGNAL     no packet (or link report) for more than NO_SIGNAL_S seconds (reported by snapshot); for a
                   transceiver link also a link report whose heard counter is 0
 A transceiver link is WARMUP while its link report carries the warming flag or no score yet.
+
+A transceiver link is always judged against its own adaptive baseline, whatever the monitor's mode: there are
+too many of them to calibrate one by one (docs/adr/0023-adaptive-baseline-only-and-a-room-state-from-zones.md). Given a
+room with transceivers, the monitor's room state for them is ``RoomState`` (csi/room_state.py: zones, and agreement
+among links that share no node); the hackathon links keep ``RoomDecision``.
 """
 from __future__ import annotations
 
@@ -37,6 +42,7 @@ from .broadcast import LinkReport
 from .health import LinkHealth, ReportHealth
 from .parser import CSIPacket
 from .room import Node, Room
+from .room_state import RoomState, ZoneMap
 
 NO_SIGNAL = "NO_SIGNAL"
 WARMUP = "WARMUP"
@@ -88,6 +94,9 @@ class _Link:
 
     def __init__(self, link_id: AnyLinkId, threshold: Optional[float], debounce_s: float,
                  send_rate_hz: Optional[float], auto: bool = False) -> None:
+        self.adaptive_only = isinstance(link_id, NodeLinkId)
+        if self.adaptive_only:
+            threshold, auto = None, True
         self.id, self.threshold = link_id, threshold
         self.auto_allowed = auto
         self.mode = FIXED
@@ -112,7 +121,13 @@ class _Link:
 
     def set_threshold(self, threshold: Optional[float]) -> None:
         """Change the threshold at runtime. A number makes the link fixed; None returns it to auto when the
-        monitor is in auto mode (else to UNCALIBRATED). The state follows at once, from the last score."""
+        monitor is in auto mode (else to UNCALIBRATED). The state follows at once, from the last score.
+        A transceiver link takes no threshold (ValueError): it is judged by its adaptive baseline only."""
+        if self.adaptive_only:
+            if threshold is not None:
+                raise ValueError(f"{self.id.label} is a transceiver link: it is judged against its own adaptive "
+                                 "baseline only and takes no threshold")
+            return
         if threshold is None and self.auto_allowed:
             self._enter_auto()
             self.state = WARMUP
@@ -188,7 +203,8 @@ class LinkMonitor:
 
     def __init__(self, thresholds: Optional[Mapping[str, float]] = None, *, mode: str = FIXED,
                  expected: Iterable[LinkId] = (), debounce_s: float = DEBOUNCE_S,
-                 send_rate_hz: Optional[float] = None, no_signal_s: float = NO_SIGNAL_S) -> None:
+                 send_rate_hz: Optional[float] = None, no_signal_s: float = NO_SIGNAL_S,
+                 room: Optional[Room] = None) -> None:
         if mode not in (FIXED, AUTO):
             raise ValueError(f"mode must be 'fixed' or 'auto', got {mode!r}")
         self._mode = mode
@@ -196,8 +212,12 @@ class LinkMonitor:
         self._debounce_s, self._send_rate_hz, self._no_signal_s = debounce_s, send_rate_hz, no_signal_s
         self._links: dict[AnyLinkId, _Link] = {}
         self._room = RoomDecision()
+        self._line_state = WARMUP
+        self._zones: Optional[RoomState] = None
+        if room is not None and room.transceivers:
+            self._zones = RoomState(ZoneMap(room, [(NodeLinkId(rx.name, tx.name).label, rx, tx)
+                                                   for rx, tx in room.transceiver_links()]), no_signal_s=no_signal_s)
         self.room_state = WARMUP
-        self.room_elevated: list[str] = []
         for link_id in expected:
             self._get(link_id)
 
@@ -220,7 +240,11 @@ class LinkMonitor:
         """Set one link's threshold (by label) on the live monitor, for every link with that label.
 
         A number makes those links fixed. None returns them to auto (in auto mode) or to UNCALIBRATED.
+        A transceiver link takes no threshold: a number for one raises ValueError and changes nothing.
         """
+        if threshold is not None and any(link.adaptive_only for lid, link in self._links.items() if lid.label == label):
+            raise ValueError(f"{label} is a transceiver link: it is judged against its own adaptive baseline only "
+                             "and takes no threshold")
         if threshold is None:
             self._thresholds.pop(label, None)
         else:
@@ -238,16 +262,42 @@ class LinkMonitor:
     def push_reports(self, host_ts: float, reports: Iterable[tuple[NodeLinkId, LinkReport]]) -> None:
         """Feed the link reports of one round broadcast, heard at ``host_ts``; the room decision follows once."""
         for link_id, report in reports:
-            self._get(link_id).push_report(host_ts, report)
-        self._update_room(host_ts)
+            link = self._get(link_id)
+            link.push_report(host_ts, report)
+            if self._zones is not None:
+                self._zones.observe(link_id.label, host_ts, link.reading)
+        if self._zones is None:
+            self._update_room(host_ts)
+        else:
+            self._zones.update(host_ts)
+            self.room_state = self._combined()
 
     def _update_room(self, now: float) -> None:
-        """Room decision at packet time ``now``, from the links heard within the NO_SIGNAL window."""
+        """Room decision at packet time ``now``, from the links heard within the NO_SIGNAL window.
+
+        With a transceiver room, the transceiver links are left to its RoomState and combined below."""
         readings = {lid.label: link.reading for lid, link in self._links.items()
                     if link.reading is not None and link.last_host is not None
-                    and now - link.last_host <= self._no_signal_s}
-        self.room_state = self._room.update(now, readings)
-        self.room_elevated = list(self._room.elevated)
+                    and now - link.last_host <= self._no_signal_s
+                    and not (self._zones is not None and link.adaptive_only)}
+        self._line_state = self._room.update(now, readings)
+        self.room_state = self._combined()
+
+    def _combined(self) -> str:
+        """MOTION if either room decision says so, else EMPTY if either is warm, else WARMUP."""
+        states = [self._line_state] if self._zones is None else [self._line_state, self._zones.state]
+        return MOTION if MOTION in states else ("EMPTY" if "EMPTY" in states else WARMUP)
+
+    @property
+    def room_elevated(self) -> list[str]:
+        """Labels of the links elevated at the last room decision."""
+        zones = self._zones.elevated if self._zones is not None else []
+        return sorted(set(self._room.elevated) | set(zones))
+
+    @property
+    def room_zones(self) -> Optional[RoomState]:
+        """The transceiver room state (zones, csi/room_state.py), or None for a room without transceivers."""
+        return self._zones
 
     def snapshot(self, now: Optional[float] = None) -> list[dict]:
         """One dict per link, sorted by label. ``now`` is host time (default: the wall clock).

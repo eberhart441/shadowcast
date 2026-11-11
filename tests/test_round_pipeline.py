@@ -76,15 +76,29 @@ def test_quiet_reports_warm_up_then_read_empty():
     assert late["status"]["room"]["state"] == "EMPTY"
 
 
+HOT = {"score_q": quantise_score(40 * QUIET)}
+
+
 def test_a_score_rising_on_links_reads_motion_on_those_links_only():
     state = auto_state()
     run(state, 12.0)
-    hot = {"n1": {"n5": {"score_q": quantise_score(40 * QUIET)}}, "n5": {"n1": {"score_q": quantise_score(40 * QUIET)}}}
+    hot = {"n1": {"n5": HOT}, "n5": {"n1": HOT}}
     payload = run(state, 2.0, start_s=12.0, reports=lambda round_no, sender: hot.get(sender))
     states = {label: row["state"] for label, row in links(payload).items()}
     assert states.pop("n1<-n5") == "MOTION" and states.pop("n5<-n1") == "MOTION"
     assert set(states.values()) == {"EMPTY"}
-    assert payload["status"]["room"]["state"] == "MOTION"
+    # both directions of one node pair are one witness, not two (csi/room_state.py): the room is not raised
+    assert payload["status"]["room"]["state"] == "EMPTY"
+
+
+def test_links_from_different_nodes_rising_where_they_cross_raise_the_room_state():
+    state = auto_state()
+    run(state, 12.0)
+    hot = {"n1": {"n5": HOT}, "n3": {"n7": HOT}, "n2": {"n6": HOT}, "n4": {"n8": HOT}}   # all cross the centre
+    payload = run(state, 2.0, start_s=12.0, reports=lambda round_no, sender: hot.get(sender))
+    room = payload["status"]["room"]
+    assert room["state"] == "MOTION"
+    assert room["elevated"] == ["n1<-n5", "n2<-n6", "n3<-n7", "n4<-n8"]
 
 
 def test_a_link_its_receiver_no_longer_hears_reads_no_signal_from_the_heard_counter():
@@ -143,3 +157,39 @@ def test_reports_about_a_node_not_yet_heard_are_counted_until_its_own_broadcast_
     state.push_broadcast(T0 + 0.01, broadcast("n2", 0))  # n2 places index 1 (and its report on n1 is placed)
     state.push_broadcast(T0 + 0.05, broadcast("n1", 1))
     assert links(state.snapshot(T0 + 0.05))["n1<-n2"]["state"] == "WARMUP"
+
+
+def test_transceiver_links_are_judged_by_their_adaptive_baseline_even_in_fixed_mode():
+    state = DashboardState(ROOM, {"n1<-n2": 5.0})            # fixed mode, with a threshold given for one link
+    payload = run(state, 13.0)
+    rows = links(payload)
+    assert {row["mode"] for row in rows.values()} == {"auto"}
+    assert {row["state"] for row in rows.values()} == {"EMPTY"}   # none UNCALIBRATED: no calibration is needed
+    assert rows["n1<-n2"]["threshold"] != 5.0
+
+
+def test_a_threshold_for_a_transceiver_link_is_refused():
+    state = auto_state()
+    run(state, 12.0)
+    with pytest.raises(ValueError, match="adaptive baseline"):
+        state.set_threshold("n1<-n2", 5.0)
+    assert state.thresholds == {}
+    state.set_threshold("n1<-n2", None)                       # back to auto: it already is, nothing changes
+    assert links(run(state, 1.0, start_s=12.0))["n1<-n2"]["mode"] == "auto"
+
+
+def test_the_payload_names_the_zones_and_which_of_them_read_motion():
+    state = auto_state()
+    run(state, 12.0)
+    hot = {"n1": {"n5": HOT}, "n3": {"n7": HOT}, "n2": {"n6": HOT}, "n4": {"n8": HOT}}   # all cross at (2, 1.5)
+    payload = run(state, 1.0, start_s=12.0, reports=lambda round_no, sender: hot.get(sender))
+    zones = payload["room"]["zones"]
+    assert len(zones) == 12                                    # 4 x 3 m in 1 m zones: A1 top-left .. D3
+    assert zones[0] == {"id": "A1", "x0": 0.0, "y0": 0.0, "x1": 1.0, "y1": 1.0}
+    assert {z["id"] for z in zones} == {f"{c}{r}" for c in "ABCD" for r in (1, 2, 3)}
+    states = payload["status"]["room"]["zones"]
+    assert {zone for zone, s in states.items() if s == "MOTION"} == {"B2", "C2"}   # either side of the crossing
+    assert {s for zone, s in states.items() if zone not in ("B2", "C2")} == {"EMPTY"}
+    later = run(state, 1.5, start_s=13.0)                      # the links fall back; the zones hold 1 s, then clear
+    assert set(later["status"]["room"]["zones"].values()) == {"EMPTY"}
+    assert later["status"]["room"]["state"] == "EMPTY"

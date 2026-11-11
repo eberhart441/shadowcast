@@ -5,6 +5,7 @@ HTTP interface (/api/state) and on the CLI contract.
 """
 import json
 import sys
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -102,3 +103,18 @@ def test_cli_simulate_needs_a_room_with_transceivers():
     with pytest.raises(SystemExit) as err:
         cli.build_server(args)
     assert "transceiver" in str(err.value)
+
+
+def test_setting_a_threshold_on_a_transceiver_link_is_a_bad_request():
+    server = DashboardServer(ROOM, {"gateway": simulate_rounds(ROOM, duration_s=1.0, t0=T0)}, mode="auto", port=0)
+    server.start()
+    try:
+        request = urllib.request.Request(server.url + "/api/threshold", method="POST",
+                                         data=json.dumps({"link": "n1<-n2", "value": 2.0}).encode(),
+                                         headers={"Content-Type": "application/json"})
+        with pytest.raises(urllib.error.HTTPError) as err:
+            urllib.request.urlopen(request, timeout=10)
+        assert err.value.code == 400
+        assert "adaptive baseline" in json.loads(err.value.read())["error"]
+    finally:
+        server.stop()
