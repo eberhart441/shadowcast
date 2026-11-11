@@ -33,3 +33,17 @@ jobs:
 
       - name: Test (full suite, parallel)
         run: python -m pytest -q -n auto
+
+  node-core:
+    # Portable C cores of the node firmware (firmware/core), built and run on the PC with gcc, plain and with
+    # AddressSanitizer + UndefinedBehaviorSanitizer.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build and test (gcc)
+        run: CC=gcc bash firmware/core/test.sh
+
+      - name: Build and test (gcc, sanitizers)
+        run: CC=gcc EXTRA_CFLAGS="-fsanitize=address,undefined -fno-sanitize-recover=all -g" bash firmware/core/test.sh

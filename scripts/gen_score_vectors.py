@@ -24,7 +24,6 @@ both sides see the same input. Scores are written with 17 significant digits.
 from __future__ import annotations
 
 import argparse
-import math
 import sys
 from pathlib import Path
 from typing import Iterator

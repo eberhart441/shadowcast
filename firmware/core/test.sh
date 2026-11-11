@@ -2,6 +2,7 @@
 # Build and run the node-core C tests on this machine (portable C11; CI uses gcc on Ubuntu).
 #   firmware/core/test.sh            compiler from $CC, else the first of cc, gcc, clang on PATH
 #   CC=gcc firmware/core/test.sh
+#   EXTRA_CFLAGS="-fsanitize=address,undefined" firmware/core/test.sh
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")"
@@ -24,5 +25,5 @@ case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) EXE=.exe ;; esac
 mkdir -p build
 CFLAGS=(-std=c11 -O2 -Wall -Wextra -Werror -pedantic -Wshadow -Wconversion -Wno-sign-conversion)
 # shellcheck disable=SC2086
-"$CC" "${CFLAGS[@]}" -o "build/test_motion_score$EXE" motion_score.c tests/test_motion_score.c $LIBM
+"$CC" "${CFLAGS[@]}" ${EXTRA_CFLAGS:-} -o "build/test_motion_score$EXE" motion_score.c tests/test_motion_score.c $LIBM
 "./build/test_motion_score$EXE" tests/vectors/motion_score.txt
