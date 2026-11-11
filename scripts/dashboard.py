@@ -3,6 +3,7 @@
 
     dashboard.py --simulate-room                                   # a simulated person walks the room, no hardware
     dashboard.py --simulate --room config/room_tr8.json            # simulated transceiver rig: round broadcasts
+    dashboard.py --node-gateway COM7 --room config/room_tr2.json   # real transceivers, heard by a gateway node
     dashboard.py --simulate-room --http-port 8000 --host 0.0.0.0   # reachable from the network (opt-in)
     dashboard.py --port rx1=/dev/cu.usbmodem2101 --port rx2=/dev/cu.usbmodem101   # fixed: links UNCALIBRATED until set
     dashboard.py --auto-ports                                      # each receiver's port found by its serial (scripts/ports.py)
@@ -21,7 +22,8 @@ see csi/adaptive.py) and ignores any thresholds file. A Set on a link makes it f
 Ctrl+C (or SIGTERM) stops the server and releases every port.
 A replay needs no serial port; when it has finished, the final state stays up (status.finished is true).
 --simulate runs the transceiver pipeline: the room's transceivers send round broadcasts (docs/round-broadcast.md)
-and every link is judged by its own adaptive baseline (WARMUP for its first 10 s or so).
+and every link is judged by its own adaptive baseline (WARMUP for its first 10 s or so). --node-gateway runs the same
+pipeline on real transceivers (firmware/node), from the binary records of a gateway node (docs/gateway-record.md).
 """
 from __future__ import annotations
 
@@ -40,6 +42,7 @@ from csi.detect import DEFAULT_MARGIN  # noqa: E402
 from csi.links import load_thresholds  # noqa: E402
 from csi.multisource import parse_port_specs  # noqa: E402
 from csi.gateway import gateway_streams  # noqa: E402
+from csi.gateway_records import gateway_source  # noqa: E402
 from csi.rawlog import tee_sources  # noqa: E402
 from csi.ports import PortResolutionError, resolve_receiver_ports  # noqa: E402
 from csi.parser import Stream, serial_stream  # noqa: E402
@@ -93,6 +96,10 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--gateway", metavar="PATH",
                    help="serial port of the gateway board for wireless receivers (csi_recv built with CSI_GATEWAY=1); "
                         "receivers are told apart by their \"serial\" in config/room.json")
+    g.add_argument("--node-gateway", metavar="PATH",
+                   help="serial port of a gateway node of the transceiver rig (firmware/node, role gateway): it hands "
+                        "on every round broadcast it hears (every link in auto mode). Needs a room with transceivers "
+                        "whose \"serial\" is each board's, for example --room config/room_tr2.json")
     g.add_argument("--baud", type=int, default=921600)
     g.add_argument("--seed", type=int, default=0, help="simulator seed")
     g.add_argument("--sim-quiet-first", type=quiet_seconds, default=0.0, metavar="SECONDS",
@@ -146,23 +153,26 @@ def check_source(args: argparse.Namespace) -> None:
                                     ("--port", bool(args.port)),
                                     ("--auto-ports", args.auto_ports),
                                     ("--gateway", args.gateway is not None),
+                                    ("--node-gateway", args.node_gateway is not None),
                                     ("--replay", args.replay is not None),
                                     ("--replay-session", args.replay_session is not None)) if on]
     if len(chosen) > 1:
         raise SystemExit(f"error: use one source, not {' and '.join(chosen)}")
     if not chosen:
         raise SystemExit("error: pass a source: --simulate-room, --simulate, --port [NAME=]PATH (repeat for each receiver), "
-                         "--auto-ports, --replay run.jsonl or --replay-session DIR")
+                         "--auto-ports, --gateway PATH, --node-gateway PATH, --replay run.jsonl or --replay-session DIR")
     replaying = args.replay is not None or args.replay_session is not None
     if args.speed is not None and not replaying:
         raise SystemExit("error: --speed applies to --replay and --replay-session only")
     if args.sim_quiet_first and not (args.simulate_room or args.simulate):
         raise SystemExit("error: --sim-quiet-first applies to --simulate-room and --simulate only")
-    if args.simulate and args.thresholds is not None:
-        raise SystemExit("error: --thresholds does not apply to --simulate: every transceiver link is judged by its "
+    rounds = "--simulate" if args.simulate else "--node-gateway" if args.node_gateway is not None else None
+    if rounds and args.thresholds is not None:
+        raise SystemExit(f"error: --thresholds does not apply to {rounds}: every transceiver link is judged by its "
                          "own adaptive baseline")
-    if args.simulate and args.raw_log is not None:
-        raise SystemExit("error: --raw-log records CSI lines; --simulate sends round broadcasts, which it cannot record")
+    if rounds and args.raw_log is not None:
+        raise SystemExit(f"error: --raw-log records CSI lines; {rounds} carries round broadcasts, which it cannot "
+                         "record")
     if args.margin is not None and args.replay_session is None:
         raise SystemExit("error: --margin applies to --replay-session only")
     if args.replay is not None and args.log is not None:
@@ -210,7 +220,7 @@ def server_mode(args: argparse.Namespace) -> str:
     """
     if args.replay is not None or args.replay_session is not None:
         return "fixed"
-    return "auto" if args.auto_threshold or args.simulate else "fixed"
+    return "auto" if args.auto_threshold or args.simulate or args.node_gateway is not None else "fixed"
 
 
 def build_sources(args: argparse.Namespace, room: Room) -> tuple[dict[str, Stream], Optional[Mapping[str, float]]]:
@@ -222,6 +232,11 @@ def build_sources(args: argparse.Namespace, room: Room) -> tuple[dict[str, Strea
             raise SystemExit(f"error: --simulate needs a room with at least two transceivers; {args.room} has "
                              f"{len(room.transceivers)} (try --room config/room_tr8.json)")
         return simulated_rig_streams(room, seed=args.seed, quiet_first_s=args.sim_quiet_first), None
+    if args.node_gateway is not None:
+        if len(room.transceivers) < 2:
+            raise SystemExit(f"error: --node-gateway needs a room with at least two transceivers; {args.room} has "
+                             f"{len(room.transceivers)} (try --room config/room_tr2.json)")
+        return {"gateway": gateway_source(args.node_gateway, args.baud)}, None
     if args.simulate_room:
         thresholds = None
         if fixed:
@@ -266,6 +281,8 @@ def build_server(args: argparse.Namespace) -> FrameServer:
         source = "simulate-room"
     elif args.gateway is not None:
         source = f"gateway {args.gateway}"
+    elif args.node_gateway is not None:
+        source = f"node gateway {args.node_gateway}"
     else:
         source = "ports " + ", ".join(n for n, _ in parse_port_specs(args.port))
     save_to = args.save_thresholds or args.thresholds
