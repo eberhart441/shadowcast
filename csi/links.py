@@ -10,7 +10,8 @@ Public API:
     NodeLinkId             (receiver, transmitter) node names, labelled "n1<-n5": a transceiver link
     room_link_ids(room)    [(link id, receiving Node, transmitting Node)] for every link of the room
     LinkMonitor            push(receiver, packet) -> state; push_reports(host_ts, [(NodeLinkId, LinkReport)]);
-                           snapshot(now) -> list of per-link dicts
+                           snapshot(now) -> list of per-link dicts; row(label, now) -> one of them
+
     calibrate_links        tagged empty-room packets -> {label: threshold}
     calibrate_links_report same, plus {label: reason} for links that were skipped
     save_thresholds / load_thresholds   links.json, a plain {label: threshold} object
@@ -23,7 +24,7 @@ States: EMPTY and MOTION (from the detector), plus
 A transceiver link is WARMUP while its link report carries the warming flag or no score yet.
 
 A transceiver link is always judged against its own adaptive baseline, whatever the monitor's mode: there are
-too many of them to calibrate one by one (ADR-0025). Given a room with transceivers, the monitor's room state for
+too many of them to calibrate one by one (ADR-0027). Given a room with transceivers, the monitor's room state for
 them is ``RoomState`` (csi/room_state.py: zones, and agreement among links that share no node); the hackathon links
 keep ``RoomDecision``.
 """
@@ -48,6 +49,7 @@ NO_SIGNAL = "NO_SIGNAL"
 WARMUP = "WARMUP"
 UNCALIBRATED = "UNCALIBRATED"
 NO_SIGNAL_S = 2.0
+ROOM_STEP_S = 0.05     # link reports update the room decision at most this often (host time): once per 20 Hz round
 FIXED = "fixed"        # a link judged against a threshold
 AUTO = "auto"          # a link judged against its own adaptive baseline (csi/adaptive.py)
 
@@ -98,6 +100,7 @@ class _Link:
         if self.adaptive_only:
             threshold, auto = None, True
         self.id, self.threshold = link_id, threshold
+        self.label = link_id.label   # computed once: the room decision reads it for every link many times a second
         self.auto_allowed = auto
         self.mode = FIXED
         self.detector: Optional[AdaptiveDetector] = None
@@ -198,7 +201,8 @@ class LinkMonitor:
     ``mode="auto"``: each link is judged by its own AdaptiveDetector (csi/adaptive.py); ``thresholds`` is
     not used for state, and a link given a number by ``set_threshold`` becomes fixed.
     ``expected`` lists links to show from the start, so a link that never transmits appears as NO_SIGNAL
-    instead of being absent. The room decision (``room_state``) is updated on every packet, at its time.
+    instead of being absent. The room decision (``room_state``) is updated on every packet, at its time; from link
+    reports at most once per ``room_step_s`` of host time (a round), and brought up to date by ``snapshot``.
     """
 
     def __init__(self, thresholds: Optional[Mapping[str, float]] = None, *, mode: str = FIXED,
@@ -211,13 +215,17 @@ class LinkMonitor:
         self._thresholds = {} if mode == AUTO else dict(thresholds or {})
         self._debounce_s, self._send_rate_hz, self._no_signal_s = debounce_s, send_rate_hz, no_signal_s
         self._links: dict[AnyLinkId, _Link] = {}
+        self._by_label: dict[str, AnyLinkId] = {}   # first link with each label, for row()
         self._room = RoomDecision()
-        self._line_state = WARMUP
-        self._zones: Optional[RoomState] = None
+        self._room_t: Optional[float] = None        # host time of the last room decision
+        self._room_due: Optional[float] = None      # host time of reports not in the room decision yet
+        self.room_step_s = ROOM_STEP_S
+        self._room_state = WARMUP                   # the hackathon links' decision (RoomDecision)
+        self._room_elevated: list[str] = []
+        self._zones: Optional[RoomState] = None     # the transceiver links' room state (csi/room_state.py)
         if room is not None and room.transceivers:
             self._zones = RoomState(ZoneMap(room, [(NodeLinkId(rx.name, tx.name).label, rx, tx)
                                                    for rx, tx in room.transceiver_links()]), no_signal_s=no_signal_s)
-        self.room_state = WARMUP
         for link_id in expected:
             self._get(link_id)
 
@@ -229,6 +237,7 @@ class LinkMonitor:
         if link_id not in self._links:
             self._links[link_id] = _Link(link_id, self._thresholds.get(link_id.label),
                                          self._debounce_s, self._send_rate_hz, auto=self._mode == AUTO)
+            self._by_label.setdefault(link_id.label, link_id)
         return self._links[link_id]
 
     @property
@@ -265,34 +274,47 @@ class LinkMonitor:
             link = self._get(link_id)
             link.push_report(host_ts, report)
             if self._zones is not None:
-                self._zones.observe(link_id.label, host_ts, link.reading)
-        if self._zones is None:
+                self._zones.observe(link.label, host_ts, link.reading)
+        if self._zones is not None:
+            self._zones.update(host_ts)   # incremental; it re-judges its points at most once a round itself
+            return
+        # one decision per round, not per round broadcast: each looks at every link (870 at 30 nodes)
+        if self._room_t is None or not 0 <= host_ts - self._room_t < self.room_step_s:
             self._update_room(host_ts)
         else:
-            self._zones.update(host_ts)
-            self.room_state = self._combined()
+            self._room_due = host_ts
 
     def _update_room(self, now: float) -> None:
         """Room decision at packet time ``now``, from the links heard within the NO_SIGNAL window.
 
-        With a transceiver room, the transceiver links are left to its RoomState and combined below."""
-        readings = {lid.label: link.reading for lid, link in self._links.items()
+        With a transceiver room, the transceiver links are left to its RoomState and combined in ``room_state``."""
+        self._room_t, self._room_due = now, None
+        zoned = self._zones is not None
+        readings = {link.label: link.reading for link in self._links.values()
                     if link.reading is not None and link.last_host is not None
-                    and now - link.last_host <= self._no_signal_s
-                    and not (self._zones is not None and link.adaptive_only)}
-        self._line_state = self._room.update(now, readings)
-        self.room_state = self._combined()
+                    and now - link.last_host <= self._no_signal_s and not (zoned and link.adaptive_only)}
+        self._room_state = self._room.update(now, readings)
+        self._room_elevated = list(self._room.elevated)
 
-    def _combined(self) -> str:
-        """MOTION if either room decision says so, else EMPTY if either is warm, else WARMUP."""
-        states = [self._line_state] if self._zones is None else [self._line_state, self._zones.state]
+    def _settle_room(self) -> None:
+        if self._room_due is not None:
+            self._update_room(self._room_due)
+
+    @property
+    def room_state(self) -> str:
+        """Room-level state, up to date with every report pushed so far: MOTION if the hackathon links' decision or
+        the transceiver room state says so, else EMPTY if either is warm, else WARMUP."""
+        self._settle_room()
+        states = [self._room_state] if self._zones is None else [self._room_state, self._zones.state]
         return MOTION if MOTION in states else ("EMPTY" if "EMPTY" in states else WARMUP)
 
     @property
     def room_elevated(self) -> list[str]:
-        """Labels of the links elevated at the last room decision."""
-        zones = self._zones.elevated if self._zones is not None else []
-        return sorted(set(self._room.elevated) | set(zones))
+        """Labels of the links elevated in the latest room decision (both kinds of link)."""
+        self._settle_room()
+        if self._zones is None:
+            return self._room_elevated
+        return sorted(set(self._room_elevated) | set(self._zones.elevated))
 
     @property
     def room_zones(self) -> Optional[RoomState]:
@@ -306,34 +328,45 @@ class LinkMonitor:
         ``level`` is score relative to that threshold (>= 1 at or above it); ``elevated`` is True in MOTION.
         """
         now = time.time() if now is None else now
-        rows = []
-        for link_id in sorted(self._links, key=lambda lid: lid.label):
-            link = self._links[link_id]
-            age = None if link.last_host is None else max(0.0, now - link.last_host)
-            silent = age is None or age > self._no_signal_s
-            threshold = link.shown_threshold
-            if link.mode == AUTO:
-                level = link.level
-            else:
-                level = None if link.score is None or not threshold else link.score / threshold
-            rows.append({
-                "id": link_id.label,
-                "receiver": link_id.receiver,
-                "mac": link_id.mac,
-                "transmitter": link_id.transmitter,
-                "state": NO_SIGNAL if silent else link.state,
-                "mode": link.mode,
-                "score": link.score,
-                "threshold": threshold,
-                "level": None if silent else level,
-                "elevated": (not silent) and link.elevated,
-                "pkt_rate": 0.0 if silent else link.health.packet_rate(),
-                "drops": link.health.drops,
-                "rssi": link.rssi,
-                "age_s": age,
-                "packets": link.health.packets,
-            })
-        return rows
+        self._settle_room()
+        return [self._row(
+link_id, self._links[link_id], now)
+
+                for link_id in sorted(self._links, key=lambda lid: lid.label)]
+
+    def row(self, label: str, now: Optional[float] = None) -> Optional[dict]:
+        """The snapshot row of the link labelled ``label`` (None if there is none): one link, not all of them."""
+        link_id = self._by_label.get(label)
+        if link_id is None:
+            return None
+        return self._row(link_id, self._links[link_id], time.time() if now is None else now)
+
+    def _row(self, link_id: AnyLinkId, link: _Link, now: float) -> dict:
+        age = None if link.last_host is None else max(0.0, now - link.last_host)
+        silent = age is None or age > self._no_signal_s
+        threshold = link.shown_threshold
+        if link.mode == AUTO:
+            level = link.level
+        else:
+            level = None if link.score is None or not threshold else link.score / threshold
+        return {
+            "id": link_id.label,
+            "receiver": link_id.receiver,
+            "mac": link_id.mac,
+            "transmitter": link_id.transmitter,
+            "state": NO_SIGNAL if silent else link.state,
+            "mode": link.mode,
+            "score": link.score,
+            "threshold": threshold,
+            "level": None if silent else level,
+            "elevated": (not silent) and link.elevated,
+            "pkt_rate": 0.0 if silent else link.health.packet_rate(),
+            "drops": link.health.drops,
+            "rssi": link.rssi,
+            "age_s": age,
+            "packets": link.health.packets,
+        }
+
 
 
 @dataclass(frozen=True)

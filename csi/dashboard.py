@@ -27,15 +27,32 @@ pipeline ``push_broadcast(host_ts, data)`` does the same from one round broadcas
                 broadcasts: {heard, accepted, rejected {reason: n}, unknown_nodes {serial: n}, unplaced_reports,
                 sources {name: {heard, accepted, duplicate, queue_overflow}}}, the round broadcasts ingested
                 (all 0 in the line pipeline); reasons are csi.rounds.REJECT_REASONS, each always present
+    node_health [{name, state, heard_by, hears, peers, last_heard_s, link_rate_hz, slot_lateness}] per transceiver
+                state "ok" or "missing" (no round broadcast reached the host for > 2 s); slot_lateness is the
+                string "unknown" until the nodes report it (ticket #14), then microseconds
+    coverage    {state "ok" | "degraded", reasons [text], missing_nodes, unknown_nodes, silent_links,
+                unexplained_silent_links}
+    link_health {links, heard, silent, rate_hz {min, median, max}}: every link at once
+    link_matrix {nodes [names], states [one string per receiving node], codes {char: state}}: states[r][t] is the
+                link from nodes[t] to nodes[r]: E M W U N for the five states, "-" on the diagonal
+    (csi/coverage.py computes the last four.)
 
 Time is host time from the packets. ``snapshot()`` with no argument uses the newest packet time, so the
 payload is deterministic for simulated streams; pass ``now`` to advance the decay while packets stop.
+``snapshot(now, links=False)`` leaves ``links`` out (frames of a large room, ADR-0024), and
+``link_detail(label)`` gives one link's row. ``snapshot`` is ``render(capture(now))``: ``capture`` is the only
+part that touches live state (the server runs it under its lock), ``render`` reads only the capture.
+
 """
 from __future__ import annotations
 
 import time
-from typing import Mapping, Optional
+from dataclasses import dataclass
+from typing import Any, Mapping, Optional
 
+import numpy as np
+
+from .coverage import coverage, link_health, link_matrix, node_health
 from .heatmap import Heatmap
 from .links import LinkMonitor, NO_SIGNAL, UNCALIBRATED, WARMUP, room_link_ids
 from .parser import CSIPacket
@@ -59,6 +76,7 @@ class DashboardState:
         self._senders = {tx.mac: tx.name for tx in room.senders}
         self._receivers = {rx.name for rx in room.receivers}
         self._last_host: Optional[float] = None
+        self._heard_at: dict[str, float] = {}   # transceiver name -> host time its last round broadcast arrived
 
     def push(self, receiver: str, pkt: CSIPacket) -> None:
         self._monitor.push(receiver, pkt)
@@ -69,6 +87,8 @@ class DashboardState:
         Bytes that cannot be used, and copies another gateway already delivered, are counted in
         ``status.broadcasts``, never raised."""
         self._monitor.push_reports(host_ts, self._ingest.place(data, host_ts, source))
+        if self._ingest.last_node is not None:
+            self._heard_at[self._ingest.last_node] = max(host_ts, self._heard_at.get(self._ingest.last_node, host_ts))
         self._advance(host_ts)
 
     def count_dropped(self, source: str, n: int) -> None:
@@ -114,23 +134,66 @@ class DashboardState:
             "step_s": self._heat.step,
         }
 
-    def snapshot(self, now: Optional[float] = None) -> dict:
+    def snapshot(self, now: Optional[float] = None, *, links: bool = True) -> dict:
+        """The payload at host time ``now``: ``render(capture(now))``. ``links=False`` leaves out the per-link rows."""
+        return self.render(self.capture(now), links=links)
+
+    def capture(self, now: Optional[float] = None) -> "Capture":
+        """Advance the heatmap and track to ``now`` and take what a payload needs, in one cheap step.
+
+        This is the only part of a payload that touches live state, so it is the only part that must run under the
+        server lock. ``render`` turns the capture into the payload, without the lock.
+        """
         if now is None:
             now = self._last_host if self._last_host is not None else time.time()
         rows = self._monitor.snapshot(now)
-        self._heat.advance(now, rows)
-        self._track.update(now, self._heat.target)
-        links = [self._link_payload(row) for row in rows]
-        return {
+        heat = self._heat
+        heat.advance(now, rows)
+        self._track.update(now, heat.target)
+        # every value below is a new object per advance or per call, never changed in place afterwards
+        return Capture(now=now, rows=rows, heat_values=heat.values, contributing=tuple(heat.contributing),
+                       evidence=heat.evidence, baselines=heat.baselines, track=self._track.state(now),
+                       room_state=self._monitor.room_state, room_elevated=tuple(self._monitor.room_elevated),
+                       mode=self._monitor.mode, broadcasts=self._ingest.counts(), parameters=self.parameters(),
+                       heard_at=dict(self._heard_at),
+                       room_zones=None if self._monitor.room_zones is None else self._monitor.room_zones.zone_states)
+
+    def render(self, cap: "Capture", *, links: bool = True) -> dict:
+        """The payload from a capture. Reads nothing that the pipeline changes, so it is safe off the lock."""
+        rows = cap.rows
+        health = node_health(self._room.transceivers, rows, cap.heard_at, cap.now)
+        payload = {
             "room": self._room_payload(),
             "nodes": self._nodes(),
-            "links": links,
-            "heatmap": self._heatmap_payload(),
-            "track": self._track_payload(now),
-            "status": self._status_payload(now, rows),
+            "links": [self._link_payload(row, cap) for row in rows] if links else None,
+            "heatmap": self._heatmap_payload(cap),
+            "track": None if cap.track is None else {k: _round(v) for k, v in cap.track.items()},
+            "status": self._status_payload(cap),
+            "node_health": [{**node, "last_heard_s": _round(node["last_heard_s"]),
+                             "link_rate_hz": _round(node["link_rate_hz"])} for node in health],
+            "coverage": coverage(health, rows, cap.broadcasts["unknown_nodes"]),
+            "link_health": self._link_health_payload(rows),
+            "link_matrix": link_matrix(self._room.transceivers, rows),
         }
+        if not links:
+            del payload["links"]
+        return payload
 
-    def _link_payload(self, row: Mapping) -> dict:
+    def link_detail(self, label: str, now: Optional[float] = None) -> Optional[dict]:
+        """One link's payload row (as in ``links``) at host time ``now``, or None for an unknown label. It reads the
+        heatmap's baseline and evidence from its last advance and changes nothing."""
+        if now is None:
+            now = self._last_host if self._last_host is not None else time.time()
+        row = self._monitor.row(label, now)
+        if row is None:
+            return None
+        heat = self._heat
+        cap = Capture(now=now, rows=[row], heat_values=heat.values, contributing=tuple(heat.contributing),
+                      evidence=heat.evidence, baselines=heat.baselines, track=None, room_state="", room_elevated=(),
+                      mode=self._monitor.mode, broadcasts={}, parameters={}, heard_at={})
+        return self._link_payload(row, cap)
+
+    def _link_payload(self, row: Mapping, cap: "Capture") -> dict:
         score, threshold = row["score"], row["threshold"]
         normalised = None if score is None or not threshold else score / threshold
         return {
@@ -149,13 +212,14 @@ class DashboardState:
             "drops": row["drops"],
             "rssi": row["rssi"],
             "age_s": _round(row["age_s"]),
-            "baseline": _round(self._heat.baselines.get(row["id"])),
-            "evidence": _round(self._heat.evidence.get(row["id"], 0.0)),
+            "baseline": _round(cap.baselines.get(row["id"])),
+            "evidence": _round(cap.evidence.get(row["id"], 0.0)),
             "weight": self._room.link_weights.get(row["id"], 1.0),
-            "contributes": row["id"] in self._heat.contributing,
+            "contributes": row["id"] in cap.contributing,
         }
 
     def _room_payload(self) -> dict:
+        """Room size, and the zones of a transceiver room (fixed per layout, so safe to read off the lock)."""
         out = {"width_m": self._room.width_m, "depth_m": self._room.depth_m}
         zones = self._monitor.room_zones
         if zones is not None:
@@ -167,37 +231,56 @@ class DashboardState:
         nodes = list(self._room.receivers) + list(self._room.senders) + list(self._room.transceivers)
         return [{"name": n.name, "role": n.role, "chip": n.chip, "x": n.x, "y": n.y} for n in nodes]
 
-    def _heatmap_payload(self) -> dict:
+    def _heatmap_payload(self, cap: "Capture") -> dict:
         heat = self._heat
-        cells = [round(float(v), PAYLOAD_DECIMALS) for v in heat.values]
+        cells = np.round(np.asarray(cap.heat_values, dtype=float), PAYLOAD_DECIMALS).tolist()
         return {
             "cols": heat.cols,
             "rows": heat.rows,
             "extents": {"x_min": 0.0, "y_min": 0.0, "x_max": self._room.width_m, "y_max": self._room.depth_m},
             "cells": cells,
             "max": max(cells) if cells else 0.0,
-            "contributing": sorted(heat.contributing),
+            "contributing": sorted(cap.contributing),
         }
 
-    def _track_payload(self, now: float) -> Optional[dict]:
-        track = self._track.state(now)
-        return None if track is None else {k: _round(v) for k, v in track.items()}
+    @staticmethod
+    def _link_health_payload(rows: list[Mapping]) -> dict:
+        agg = link_health(rows)
+        return {**agg, "rate_hz": {k: _round(v) for k, v in agg["rate_hz"].items()}}
 
-    def _status_payload(self, now: float, rows: list[Mapping]) -> dict:
+    def _status_payload(self, cap: "Capture") -> dict:
         by_state = {state: 0 for state in STATES}
-        for row in rows:
+        for row in cap.rows:
             by_state[row["state"]] = by_state.get(row["state"], 0) + 1
-        room = {"state": self._monitor.room_state, "elevated": list(self._monitor.room_elevated),
-                "mode": self._monitor.mode}
-        if self._monitor.room_zones is not None:
-            room["zones"] = self._monitor.room_zones.zone_states
+        room = {"state": cap.room_state, "elevated": list(cap.room_elevated), "mode": cap.mode}
+        if cap.room_zones is not None:
+            room["zones"] = dict(cap.room_zones)
         return {
-            "time_s": now,
+            "time_s": cap.now,
             "links_by_state": by_state,
-            "parameters": self.parameters(),
+            "parameters": cap.parameters,
             "room": room,
-            "broadcasts": self._ingest.counts(),
+            "broadcasts": cap.broadcasts,
         }
+
+
+@dataclass(frozen=True)
+class Capture:
+    """What one payload needs, taken under the lock by ``DashboardState.capture``; ``render`` reads only this."""
+    now: float
+    rows: list                        # LinkMonitor.snapshot rows (new dicts)
+    heat_values: Any                  # the smoothed grid (an array the heatmap replaces, never edits)
+    contributing: tuple
+    evidence: Mapping[str, float]
+    baselines: Mapping[str, Optional[float]]
+    track: Optional[dict]
+    room_state: str
+    room_elevated: tuple
+    mode: str
+    broadcasts: dict
+    parameters: dict
+    heard_at: dict
+    room_zones: Optional[dict] = None   # {zone id: state} of a transceiver room (a new dict per capture), else None
 
 
 def _round(value: Optional[float]) -> Optional[float]:

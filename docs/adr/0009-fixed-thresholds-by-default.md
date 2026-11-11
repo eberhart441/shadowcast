@@ -1,6 +1,6 @@
 # 0009. Fixed per-link thresholds by default; adaptive mode is experimental
 
-- **Status:** Accepted (`--auto-threshold` is Experimental) for the line pipeline; superseded by [0025](0025-adaptive-baseline-only-and-a-room-state-from-zones.md) for the transceiver pipeline
+- **Status:** Accepted (`--auto-threshold` is Experimental) for the line pipeline; superseded by [0027](0027-adaptive-baseline-only-and-a-room-state-from-zones.md) for the transceiver pipeline
 - **Date:** 2026-11-07
 - **Recorded in:** `bd1cb61` ("Fixed thresholds are the default; --auto-threshold is experimental"), after `f90cbcd` had briefly made auto mode the default
 - **Related:** [0001](0001-a-miss-costs-more-than-a-false-alarm.md), [0007](0007-amplitude-only-motion-score.md), [0010](0010-two-noisy-room-calibration-methods.md)

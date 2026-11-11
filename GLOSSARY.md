@@ -170,7 +170,7 @@ _See_: `csi/breathing.py`, `csi/detect.py`, [ADR-0008](docs/adr/0008-motion-only
 
 **Room state**:
 The room-level decision in the payload's `status.room`. It is not any one link's state. With transceivers: MOTION while any zone is MOTION; a zone is MOTION while, at one of its probe points, the elevated links covering the point hold enough independent links, and for 1 s after. Enough is a third of the independent links that could cover the point, and at least two (three where three exist). For the hackathon links: MOTION when at least two links are elevated together, or one link is strongly elevated (auto mode only), held for 1 s.
-_See_: `csi/room_state.py` (`RoomState`), `csi/adaptive.py` (`RoomDecision`), [ADR-0025](docs/adr/0025-adaptive-baseline-only-and-a-room-state-from-zones.md)
+_See_: `csi/room_state.py` (`RoomState`), `csi/adaptive.py` (`RoomDecision`), [ADR-0027](docs/adr/0027-adaptive-baseline-only-and-a-room-state-from-zones.md)
 
 **Zone**:
 A square of the room, about 1 m on a side, that the room state reports on: `A1` is the top-left zone, letters run along x and numbers down y. Each zone holds a grid of probe points 0.25 m apart; a link covers a probe point when its segment passes within 0.3 m of it.
@@ -351,7 +351,7 @@ _See_: `csi/evaluate.py`, [ADR-0018](docs/adr/0018-evaluate-by-recording.md)
 **Round recording**:
 One binary file of a transceiver run: every round broadcast as its source delivered it, with its host time and source name, labels that each hold from a host time on, and the room config. Written by `dashboard.py --record`, replayed by `--replay-rounds`.
 _Avoid_: recording (alone; that is a CSV file of packets)
-_See_: `csi/round_recording.py`, [docs/round-recording.md](docs/round-recording.md), [ADR-0025](docs/adr/0023-round-recordings.md)
+_See_: `csi/round_recording.py`, [docs/round-recording.md](docs/round-recording.md), [ADR-0027](docs/adr/0023-round-recordings.md)
 
 **Run log**:
 A `--log` file: one header line, then one dashboard payload per line.
@@ -372,8 +372,22 @@ The single JSON state the page renders from: room, nodes, links, heatmap and sta
 _See_: `csi/dashboard.py`, `csi/server.py`
 
 **Frame**:
-One payload in the event stream, produced every 0.2 s of packet time. A browser receives at most about 5 per second.
-_See_: `csi/server.py` (`FRAME_INTERVAL_S`, `MIN_EVENT_GAP_S`)
+One payload in the event stream, produced every 0.2 s of packet time. A browser receives at most about 5 per second. In a room with more than 64 links a frame carries no per-link rows: the page gets one link's detail on demand from `GET /api/link`.
+_See_: `csi/server.py` (`FRAME_INTERVAL_S`, `MIN_EVENT_GAP_S`, `FRAME_LINKS_MAX`), [ADR-0024](docs/adr/0024-link-detail-on-demand-frames-off-the-lock.md)
+
+**Node health**:
+Per transceiver, in the payload's `node_health`: by how many others it is heard, how many it hears, when its last round broadcast reached the host, the mean packet rate of its links and its slot lateness (`"unknown"` until the nodes report it). A node is **missing** when none of its round broadcasts reached the host for more than 2 s.
+_See_: `csi/coverage.py` (`node_health`)
+
+**Coverage degraded**:
+The rig cannot see the whole room: a node is missing, a board not in the room config is broadcasting, or more than 5 % of the links between live nodes are NO_SIGNAL. The page then shows a COVERAGE DEGRADED banner, because a quiet reading from such a rig does not mean nobody is there.
+_Avoid_: offline, fault
+_See_: `csi/coverage.py` (`coverage`, `SILENT_SHARE`)
+
+**Link matrix**:
+Every transceiver link's state as one character, row the receiving node and column the transmitting node (`E`, `M`, `W`, `U`, `N`, and `-` on the diagonal). The page draws it as a grid of cells instead of one card per link.
+_See_: `csi/coverage.py` (`link_matrix`)
+
 
 **Commands**:
 The five POST endpoints that calibrate, set or save thresholds, and tune the heatmap. They run only when the server is bound to a loopback address or started with `--allow-control`.

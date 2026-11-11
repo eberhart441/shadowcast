@@ -77,10 +77,14 @@ def _json_line(path: Path, n: int, line: str):
 def _payload(path: Path, n: int, line: str) -> dict:
     obj = _json_line(path, n, line)
     status = obj.get("status") if isinstance(obj, dict) else None
-    if (not isinstance(obj, dict) or not isinstance(obj.get("links"), list)
+    # a frame of a room over 64 links carries the link matrix instead of per-link rows (ADR-0024)
+    if (not isinstance(obj, dict)
+            or not (isinstance(obj.get("links"), list) or isinstance(obj.get("link_matrix"), dict))
             or not isinstance(obj.get("heatmap"), dict) or not isinstance(status, dict)
             or not isinstance(status.get("time_s"), (int, float))):
-        raise ReplayError(f"{path} line {n} is not a state payload (needs links, heatmap and status.time_s)")
+        raise ReplayError(f"{path} line {n} is not a state payload (needs links or link_matrix, heatmap and "
+                          "status.time_s)")
+
     return obj
 
 

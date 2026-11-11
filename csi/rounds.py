@@ -8,6 +8,7 @@ link, ``NodeLinkId(receiving node, transmitting node)``:
     ingest = RoundIngest(room)
     for link_id, report in ingest.place(data, host_ts, source="gw1"): ...
     ingest.count_dropped("gw1", n)   # records the source's queue dropped before they got here
+    ingest.last_node    # the sender of the round broadcast just placed, None if it was not placed
     ingest.counts()     # see counts()
 
 Several gateways may hear the same round broadcast. The first copy of (node serial, schedule version, round
@@ -61,12 +62,14 @@ class RoundIngest:
         self._unknown: Counter[str] = Counter()
         self._unplaced = 0
         self._sources: dict[str, Counter[str]] = {}
+        self.last_node: Optional[str] = None   # sender of the round broadcast just placed (None: not placed)
 
     def place(self, data: bytes, host_ts: float = 0.0, source: str = "") -> list[tuple[NodeLinkId, LinkReport]]:
         """The link reports of one round broadcast heard by ``source`` at ``host_ts``, each on its link.
 
         Rejected bytes, a copy of a round broadcast already placed (another gateway heard it too) and unknown
         senders give [] and are counted."""
+        self.last_node = None
         tally = self._source(source)
         self._heard += 1
         tally["heard"] += 1
@@ -87,6 +90,7 @@ class RoundIngest:
             return []
         self._accepted += 1
         tally["accepted"] += 1
+        self.last_node = receiver
         indices = self._index.setdefault(broadcast.schedule_version, {})
         indices[broadcast.node_index] = receiver
         while len(self._index) > SCHEDULES_KEPT:

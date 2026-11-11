@@ -426,7 +426,7 @@ vote**. The result is in the payload as `status.room` and is used by the redesig
 
 The transceiver pipeline does not use this rule: at 870 links a 2-of-N vote fires by chance, and the links of one
 node fail together. Its room state (`csi/room_state.py`) asks for agreement at one place among links that share no
-node, scaled to the links that cross there; [ADR-0025](adr/0025-adaptive-baseline-only-and-a-room-state-from-zones.md)
+node, scaled to the links that cross there; [ADR-0027](adr/0027-adaptive-baseline-only-and-a-room-state-from-zones.md)
 gives the rule and its numbers.
 
 ---
