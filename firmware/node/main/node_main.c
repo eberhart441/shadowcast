@@ -11,8 +11,15 @@
  *                member's round broadcast whose tag and round number check out, and scores each link with the C
  *                scorer. It needs no settings (the defaults join any round on channel 6 at 40 Hz), only the kit key:
  *                without it (scripts/node.py PORT key FILE) it only listens.
- *   gateway      Listens on the channel and sends nothing. Every ESP-NOW frame it hears goes to USB as a binary
- *                heard record with its receive time (docs/gateway-record.md).
+ *   gateway      Listens on the channel. Every ESP-NOW frame it hears goes to USB as a binary heard record with
+ *                its receive time (docs/gateway-record.md). The only thing it sends is a frame the host hands it
+ *                (`send <hex>`: a raw mode request the host signed), in the join slot of a round the scheduler
+ *                numbers even (firmware/core/gateway_tx.h).
+ *
+ * Raw mode (ticket #17): a transceiver that takes a raw mode request for itself (firmware/core/raw_mode.h) flags
+ * those links raw in its link reports and appends the last CSI heard on them (int8 I/Q) to its round broadcasts,
+ * as much as fits its slot (rs_frame_cap). Those frames are up to 416 bytes: ESP-NOW v2, which the CSI callback
+ * hands over in several vendor elements (espnow_gather).
  *
  * The USB Serial/JTAG port carries only gateway records: status once a second, text (log lines and command
  * replies), and on a gateway the heard records. Nothing is printed on the UART and no CSI is ever formatted as text.
@@ -48,9 +55,11 @@
 #include "csi_layout.h"
 #include "espnow_frame.h"
 #include "gateway_record.h"
+#include "gateway_tx.h"
 #include "link_table.h"
 #include "node_auth.h"
 #include "node_settings.h"
+#include "raw_mode.h"
 #include "round_broadcast.h"
 #include "round_scheduler.h"
 
@@ -59,8 +68,9 @@
 #endif
 
 #define QUEUE_DEPTH 32
-#define PAYLOAD_COPY (ESPNOW_BODY_OFFSET + RB_MAX_BYTES + 16)
-#define HEARD_MAX 250               /* ESP-NOW v1 payload limit; round broadcasts are at most 150 bytes */
+#define PAYLOAD_COPY (8 + RB_MAX_FRAME_BYTES + 7 * 2 + 16)   /* our longest frame in two ESP-NOW v2 elements */
+#define HEARD_MAX RB_MAX_FRAME_BYTES   /* a round broadcast with two raw CSI blocks; anything longer is not ours */
+#define RAW_LOG_PERIOD_US 10000000  /* while raw mode is on, a log line this often */
 #define GAIN_RECORD_FRAMES 100      /* as csi_recv: record 100 frames, then force their median gain */
 #define REARM_TOLERANCE_US 100
 #define STATUS_PERIOD_US 1000000
@@ -198,9 +208,15 @@ static esp_err_t save_settings(const node_settings_t *s)
     return err;
 }
 
+static bool gateway_send_command(const char *line, char *reply, size_t n);
+
 static void run_command(const char *line)
 {
     char reply[200];
+    if (s_settings.role == NODE_ROLE_GATEWAY && gateway_send_command(line, reply, sizeof reply)) {
+        usb_text("%s", reply);
+        return;
+    }
     node_settings_t next = s_settings;
     node_cmd_t action;
     if (!node_auth_command(line, reply, sizeof reply, &action)) {
@@ -279,6 +295,17 @@ static void wifi_start(uint8_t channel)
     ESP_ERROR_CHECK(esp_wifi_get_mac(WIFI_IF_STA, s_sta_mac));
 }
 
+/* Unacknowledged ESP-NOW broadcasts at HT20 MCS0, as round broadcasts go. */
+static void add_broadcast_peer(void)
+{
+    esp_now_peer_info_t peer = {.channel = 0, .ifidx = WIFI_IF_STA, .encrypt = false};
+    memcpy(peer.peer_addr, BROADCAST_MAC, 6);
+    ESP_ERROR_CHECK(esp_now_add_peer(&peer));
+    esp_now_rate_config_t rate = {.phymode = WIFI_PHY_MODE_HT20, .rate = WIFI_PHY_RATE_MCS0_LGI, .ersu = false,
+                                  .dcm = false};
+    ESP_ERROR_CHECK(esp_now_set_peer_rate_config(BROADCAST_MAC, &rate));
+}
+
 /* ---------------------------------------------------------------- transceiver */
 
 enum { ITEM_HEARD = 1, ITEM_SLOT = 2, ITEM_SENT = 3 };
@@ -305,6 +332,7 @@ static bool s_armed;
 static int64_t s_sent_slot_at;          /* the last frame sent: its planned time and length, for rs_sent */
 static size_t s_sent_len;
 static uint32_t s_gain_frames;
+static raw_mode_t s_raw;                /* raw mode: the links that stream CSI, and what was kept for them */
 
 /* Wi-Fi task: copy and queue, nothing else. */
 static void on_csi(void *ctx, wifi_csi_info_t *info)
@@ -407,14 +435,23 @@ static void arm_next_slot(bool force)
 static void send_slot(const rs_tx_t *tx)
 {
     static rb_broadcast_t b;
-    static uint8_t bytes[RB_MAX_BYTES];
+    static uint8_t bytes[RB_MAX_FRAME_BYTES];
     if (!rs_take(&s_sched, tx, esp_timer_get_time(), &b)) {
         return;   /* the plan changed, or the slot came more than the guard late (rs_t count.late_slots) */
     }
     if (b.frame_type == RB_FRAME_ROUND) {
         b.n_reports = link_table_close_round(&s_links, b.membership, b.node_index, b.reports);
+        uint32_t raw = raw_mode_flags(&s_raw, s_sched.member_id, s_sched.id_known);
         for (uint8_t k = 0; k < b.n_reports; k++) {
             b.reports[k].lateness = rs_take_lateness(&s_sched, b.reports[k].transmitter_index);
+            if (raw >> b.reports[k].transmitter_index & 1u) {
+                b.reports[k].flags |= RB_FLAG_RAW_MODE;   /* the host's acknowledgement */
+            }
+        }
+        size_t base = rb_size(b.membership), cap = rs_frame_cap(&s_sched);
+        b.n_raw = raw_mode_take(&s_raw, b.membership, b.node_index, cap > base ? cap - base : 0, b.raw);
+        if (b.n_raw) {
+            b.frame_type = RB_FRAME_ROUND_RAW;
         }
     }
     size_t n = rb_encode(&b, bytes, sizeof bytes);
@@ -445,21 +482,40 @@ static float gain_compensation(const wifi_pkt_rx_ctrl_t *rx_ctrl)
     return compensate;
 }
 
+/* One log line whenever this node's raw mode changes, and every RAW_LOG_PERIOD_US while it is on. */
+static void log_raw(bool changed)
+{
+    static int64_t next;
+    int64_t now = esp_timer_get_time();
+    if (!changed && (s_raw.n == 0 || now < next)) {
+        return;
+    }
+    next = now + RAW_LOG_PERIOD_US;
+    ESP_LOGI(TAG, "raw mode: %u link(s) (requests %lu applied %lu ignored; blocks %lu sent %lu skipped)",
+             s_raw.n, (unsigned long)s_raw.count.applied, (unsigned long)s_raw.count.ignored,
+             (unsigned long)s_raw.count.sent, (unsigned long)s_raw.count.skipped);
+}
+
 static void on_heard(const node_item_t *item)
 {
     static rb_broadcast_t b;
     static float amp[CSI_LAYOUT_MAX_RAW / 2];
-    const uint8_t *body;
+    static uint8_t body[RB_MAX_FRAME_BYTES];
     size_t body_len;
-    if (!espnow_body(item->payload, item->payload_len, &body, &body_len) || rb_decode(body, body_len, &b) != RB_OK
-            || !node_auth_accept(body, body_len, item->t_us)) {
-        count(GR_COUNT_REJECTED);   /* not a v2 round broadcast or join frame, forged or replayed */
+    if (!espnow_gather(item->payload, item->payload_len, body, sizeof body, &body_len)
+            || rb_decode(body, body_len, &b) != RB_OK || !node_auth_accept(body, body_len, item->t_us)) {
+        count(GR_COUNT_REJECTED);   /* not a v2 frame of ours, forged or replayed */
+        return;
+    }
+    if (b.frame_type == RB_FRAME_RAW_REQUEST) {
+        log_raw(raw_mode_apply(&s_raw, &b.request, s_serial, s_sched.last_sent_round) == RAW_APPLIED);
         return;
     }
     if (!s_sched_ok || rs_heard(&s_sched, item->t_us, &b) != RS_HEARD_MEMBER) {
         return;   /* a join frame, or a round broadcast from outside this node's schedule: no link to score */
     }
     count(GR_COUNT_HEARD);
+    raw_mode_heard(&s_raw, b.node_id, b.node_index, b.round, (int8_t)item->rx_ctrl.rssi, item->csi, item->csi_len);
     float gain = gain_compensation(&item->rx_ctrl);
     int n = item->csi_len ? csi_layout_amplitudes(&s_layout, item->csi, item->csi_len, gain, amp) : 0;
     if (n == 0) {
@@ -487,6 +543,7 @@ static void node_task(void *arg)
         }
         apply_restarts();
         log_schedule();
+        log_raw(false);
     }
 }
 
@@ -494,6 +551,7 @@ static void start_transceiver(void)
 {
     link_table_init(&s_links);
     csi_layout_init(&s_layout);
+    raw_mode_init(&s_raw);
     uint32_t seed = esp_random();
     s_sched_ok = rs_init(&s_sched, s_serial, s_settings.round_hz, s_settings.guard_us, seed, esp_timer_get_time());
     if (!s_sched_ok) {
@@ -503,12 +561,7 @@ static void start_transceiver(void)
     s_queue = xQueueCreate(QUEUE_DEPTH, sizeof(node_item_t));
     configASSERT(s_queue);
 
-    esp_now_peer_info_t peer = {.channel = 0, .ifidx = WIFI_IF_STA, .encrypt = false};
-    memcpy(peer.peer_addr, BROADCAST_MAC, 6);
-    ESP_ERROR_CHECK(esp_now_add_peer(&peer));
-    esp_now_rate_config_t rate = {.phymode = WIFI_PHY_MODE_HT20, .rate = WIFI_PHY_RATE_MCS0_LGI, .ersu = false,
-                                  .dcm = false};
-    ESP_ERROR_CHECK(esp_now_set_peer_rate_config(BROADCAST_MAC, &rate));
+    add_broadcast_peer();
     ESP_ERROR_CHECK(esp_now_register_send_cb(on_sent));
 
     const esp_timer_create_args_t slot_args = {.callback = on_slot, .name = "slot"};
@@ -539,7 +592,10 @@ static void start_transceiver(void)
 
 /* ---------------------------------------------------------------- gateway */
 
+enum { GW_HEARD = 1, GW_SEND = 2, GW_TIMER = 3 };
+
 typedef struct {
+    uint8_t kind;               /* GW_HEARD: a frame heard; GW_SEND: one to send (from USB); GW_TIMER: send now */
     int64_t t_us;
     int8_t rssi;
     uint16_t len;
@@ -547,6 +603,42 @@ typedef struct {
 } heard_item_t;
 
 static QueueHandle_t s_heard_queue;
+static gt_t s_gt;                       /* the gateway's sending side; only gateway_task touches it */
+static esp_timer_handle_t s_gt_timer;
+static int64_t s_gt_armed = -1;
+
+/* USB task: "send <hex>" queues a frame for the gateway task. */
+static bool gateway_send_command(const char *line, char *reply, size_t n)
+{
+    static heard_item_t item;
+    size_t len = 0;
+    if (strncmp(line, "send", 4) != 0) {
+        return false;
+    }
+    if (!gt_parse_send(line, item.data, GT_FRAME_MAX, &len)) {
+        snprintf(reply, n, "error send takes one frame of 1 to %d bytes in hex", GT_FRAME_MAX);
+        return true;
+    }
+    item.kind = GW_SEND;
+    item.t_us = esp_timer_get_time();
+    item.len = (uint16_t)len;
+    bool queued = xQueueSend(s_heard_queue, &item, pdMS_TO_TICKS(20)) == pdTRUE;
+    snprintf(reply, n, queued ? "ok send %u bytes queued" : "error send: the gateway is busy", (unsigned)len);
+    return true;
+}
+
+/* esp_timer task: the planned join slot is due. */
+static void on_gt_timer(void *arg)
+{
+    static heard_item_t item;
+    item.kind = GW_TIMER;
+    xQueueSendToFront(s_heard_queue, &item, 0);
+}
+
+static void on_gateway_sent(const esp_now_send_info_t *info, esp_now_send_status_t status)
+{
+    count(status == ESP_NOW_SEND_SUCCESS ? GR_COUNT_SENT : GR_COUNT_SEND_ERRORS);
+}
 
 /* Wi-Fi task: copy and queue, nothing else. */
 static void on_gateway_recv(const esp_now_recv_info_t *info, const uint8_t *data, int len)
@@ -556,6 +648,7 @@ static void on_gateway_recv(const esp_now_recv_info_t *info, const uint8_t *data
         count(GR_COUNT_REJECTED);
         return;
     }
+    item.kind = GW_HEARD;
     item.t_us = esp_timer_get_time();
     item.rssi = info && info->rx_ctrl ? (int8_t)info->rx_ctrl->rssi : RB_RSSI_NONE;
     item.len = (uint16_t)len;
@@ -570,18 +663,47 @@ static void gateway_task(void *arg)
 {
     static heard_item_t item;
     static uint8_t record[GR_HEARD_HEAD + HEARD_MAX + GR_FRAME_BYTES];
+    static rb_broadcast_t b;
+    static uint8_t frame[GT_FRAME_MAX];
     for (;;) {
-        if (xQueueReceive(s_heard_queue, &item, portMAX_DELAY) == pdTRUE) {
+        if (xQueueReceive(s_heard_queue, &item, portMAX_DELAY) != pdTRUE) {
+            continue;
+        }
+        int64_t now = esp_timer_get_time();
+        if (item.kind == GW_HEARD) {
             usb_write(record, gr_encode_heard(record, sizeof record, (uint64_t)item.t_us, item.rssi, item.data,
                                               item.len), pdMS_TO_TICKS(10));
+            if (rb_decode(item.data, item.len, &b) == RB_OK) {
+                gt_heard(&s_gt, item.t_us, &b);   /* slot 0 gives the schedule's timing (tag not checked) */
+            }
+        } else if (item.kind == GW_SEND) {
+            if (!gt_queue(&s_gt, item.data, item.len, now)) {
+                ESP_LOGW(TAG, "send: queue full, frame dropped (%lu dropped)", (unsigned long)s_gt.count.dropped);
+            }
+        } else {
+            s_gt_armed = -1;
+            size_t n = gt_take(&s_gt, now, frame, sizeof frame);
+            if (n && esp_now_send(BROADCAST_MAC, frame, n) != ESP_OK) {
+                count(GR_COUNT_SEND_ERRORS);
+            }
+        }
+        int64_t at = gt_next(&s_gt, now + 200);
+        if (at > 0 && at != s_gt_armed) {
+            esp_timer_stop(s_gt_timer);
+            s_gt_armed = esp_timer_start_once(s_gt_timer, (uint64_t)(at - now)) == ESP_OK ? at : -1;
         }
     }
 }
 
 static void start_gateway(void)
 {
+    gt_init(&s_gt);
     s_heard_queue = xQueueCreate(64, sizeof(heard_item_t));
     configASSERT(s_heard_queue);
+    add_broadcast_peer();
+    ESP_ERROR_CHECK(esp_now_register_send_cb(on_gateway_sent));
+    const esp_timer_create_args_t gt_args = {.callback = on_gt_timer, .name = "gw_send"};
+    ESP_ERROR_CHECK(esp_timer_create(&gt_args, &s_gt_timer));
     xTaskCreate(gateway_task, "gateway", 4096, NULL, NODE_TASK_PRIORITY, NULL);
     ESP_ERROR_CHECK(esp_now_register_recv_cb(on_gateway_recv));
 }
@@ -621,6 +743,12 @@ void app_main(void)
     }
     xTaskCreate(usb_task, "usb", 4096, NULL, USB_TASK_PRIORITY, NULL);
 
+    uint32_t espnow_version = 0;
+    esp_now_get_version(&espnow_version);
+    if (espnow_version < 2) {
+        ESP_LOGW(TAG, "ESP-NOW v%lu: round broadcasts with raw CSI over 250 bytes cannot be sent or heard",
+                 (unsigned long)espnow_version);
+    }
     char text[96];
     node_settings_format(&s_settings, text, sizeof text);
     ESP_LOGI(TAG, "node %s: %s%s%s (HT20 MCS0)", s_serial_text, text, s_configured ? "" : " configured=no",
