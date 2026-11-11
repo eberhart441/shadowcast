@@ -239,12 +239,12 @@ def join_frame(frame_type, joiner, index, membership, *, schedule=1, round_no=0,
                                                           membership, SERIAL[joiner], bytes(8), ())), key)
 
 
-def test_join_frames_are_counted_apart_and_never_placed_or_rejected():
+def test_join_frames_are_counted_apart_and_never_placed():
     without_n8 = ALL & ~(1 << 7)
     state = DashboardState(ROOM, mode="auto")
-    state.push_broadcast(T0, join_frame(2, "n8", 7, without_n8), "gw1")              # n8 asks to join
+    state.push_broadcast(T0, join_frame(2, "n8", 7, without_n8), "gw1")              # n8 asks to join (even round)
     state.push_broadcast(T0 + 0.002, join_frame(2, "n8", 7, without_n8), "gw2")      # a second gateway's copy
-    state.push_broadcast(T0 + 0.05, join_frame(3, "n8", 7, ALL, schedule=2), "gw1")  # the scheduler admits it
+    state.push_broadcast(T0 + 0.05, join_frame(3, "n8", 7, ALL, schedule=2, round_no=1), "gw1")  # admitted (odd)
     counts = state.snapshot(T0 + 0.1)["status"]["broadcasts"]
     assert counts["join_frames"] == {"request": 2, "grant": 1}
     assert counts["accepted"] == 0 and sum(counts["rejected"].values()) == 0 and counts["heard"] == 3
@@ -258,6 +258,23 @@ def test_a_join_grant_names_the_joiner_so_reports_about_it_place_before_its_own_
     payload = state.snapshot(T0 + 0.01)
     assert payload["status"]["broadcasts"]["unplaced_reports"] == 6       # n2..n7 not heard yet; n8 is named
     assert links(payload)["n1<-n8"]["rssi"] == -50
+
+
+def test_a_stale_join_frame_is_rejected_like_a_stale_round_broadcast():
+    """The host's freshness rule covers join frames as the node's does (rb_auth_check on every frame): a join grant
+    recorded and sent again once its node has moved on is stale and counted as such, not as a join frame."""
+    from csi.rounds import RoundIngest
+
+    ingest = RoundIngest(ROOM)
+    grant = join_frame(3, "n8", 7, ALL, schedule=2, round_no=100)
+    ingest.place(grant, T0, "gw1")
+    for k in range(60):                                        # n8 in the round for 3 s: rounds 101..160
+        ingest.place(broadcast("n8", 101 + k, schedule=2), T0 + 0.05 * (k + 1), "gw1")
+    ingest.place(grant, T0 + 3.1, "gw1")                    # the recorded grant, sent again
+    counts = ingest.counts()
+    assert counts["join_frames"] == {"request": 0, "grant": 1}
+    assert counts["rejected"]["replay"] == 1
+    assert counts["heard"] == counts["accepted"] + sum(counts["rejected"].values()) + 1
 
 
 def test_a_forged_join_frame_is_rejected_as_auth():

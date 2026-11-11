@@ -131,10 +131,11 @@ length is reason `length`), with these meanings:
 | node index | the index it asks for (the lowest free one; the scheduler may give another). 0 to 31, else reason `membership` | the index given to the joiner; it must be in the membership (reason `membership`) |
 | node id | the joining node's board serial | the joining node's board serial (not the scheduler's) |
 
-Join frames are signed like round broadcasts and a forged one is rejected as `auth`. The host counts the others
-(`status.broadcasts.join_frames`, every copy) and never places, de-duplicates or checks them for freshness; a
-grant tells it the joiner's index in the new schedule version. A node checks join frames for freshness like any
-frame (both carry the joiner's round numbers, so they count on with its own) and never takes its timing from one.
+Join frames are signed like round broadcasts and a forged one is rejected as `auth`. Host and node check a join
+frame for freshness like any frame (both carry the joiner's round numbers, so they count on with its own): one that
+names a room node and is stale for it is rejected as `replay`. The host counts the others
+(`status.broadcasts.join_frames`, every copy; a second gateway's copy is not checked again) and never places them;
+a grant tells it the joiner's index in the new schedule version. A node never takes its timing from a join frame.
 
 ## Raw mode
 

@@ -27,10 +27,11 @@ round broadcasts, per schedule version, so a report about a node the host has no
 version) cannot be placed: it is counted as unplaced. A join grant from the round scheduler (ticket #14) names
 the joining node and its index in the new schedule version, so reports about a joiner place from the start.
 Join frames (requests and grants) carry no link reports: each copy is counted in ``join_frames`` and never
-placed, de-duplicated or rejected. A round broadcast with raw CSI (frame type 5) is placed like any round
-broadcast, and its raw CSI blocks are placed on their links too (``last_raw``, counted in ``raw_csi``). A raw mode
-request (frame type 4) that a gateway heard from another gateway is counted in ``raw_requests`` and not used, and
-so is an authenticated maintenance command (frame type 8, OTA) in ``maintenance_commands``.
+placed; one that names a room node and is stale for it is rejected as ``replay``, as a round broadcast is. A
+round broadcast with raw CSI (frame type 5) is placed like any round broadcast, and its raw CSI blocks are placed
+on their links too (``last_raw``, counted in ``raw_csi``). A raw mode request (frame type 4) that a gateway heard
+from another gateway is counted in ``raw_requests`` and not used, and so is an authenticated maintenance command
+(frame type 8, OTA) in ``maintenance_commands``.
 Nothing is dropped without being counted: every record a source delivered is accepted, rejected for one of
 ``REJECT_REASONS``, from an unknown node, a join frame, a raw mode request or a maintenance command, so
 ``heard == accepted + sum(rejected) + sum(unknown_nodes) + sum(join_frames) + raw_requests + maintenance_commands``. Memory is bounded: the de-duplication memory by
@@ -110,7 +111,7 @@ class RoundIngest:
             self._rejected[AUTH] += 1
             return []
         if broadcast.frame_type in JOIN_FRAMES:
-            self._join(broadcast)
+            self._join(broadcast, host_ts)
             return []
         if broadcast.frame_type == FRAME_RAW_REQUEST:
             self._raw_requests += 1    # another gateway's request to a node: nothing for the host to use
@@ -159,11 +160,21 @@ class RoundIngest:
         """The source that delivered node ``name``'s latest accepted round broadcast (None: never heard)."""
         return self._last_source.get(name)
 
-    def _join(self, frame) -> None:
-        """A join request or grant: counted; a grant for a known node teaches its index in the new schedule."""
+    def _join(self, frame, host_ts: float) -> None:
+        """A join request or grant: counted; a grant for a known node teaches its index in the new schedule.
+
+        Like a round broadcast, a join frame naming a room node must be fresh for that node (the node applies the
+        same rule to every frame); a stale one is rejected as ``replay``. Another gateway's copy (same node,
+        schedule version, round and frame type within DEDUP_WINDOW_S) is counted as a join frame again but not
+        checked twice, so a second gateway never turns a join frame stale."""
+        serial = frame.node_id.upper()
+        name = self._names.get(serial)
+        copy = self._duplicate((serial, frame.schedule_version, frame.round, frame.frame_type), host_ts)
+        if name is not None and not copy and self._fresh.check(serial, frame.round, host_ts) == REPLAY:
+            self._rejected[REPLAY] += 1
+            return
         grant = frame.frame_type == FRAME_JOIN_GRANT
         self._joins["grant" if grant else "request"] += 1
-        name = self._names.get(frame.node_id.upper())
         if grant and name is not None:
             self._indices(frame.schedule_version)[frame.node_index] = name
 
