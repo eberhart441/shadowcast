@@ -53,10 +53,12 @@ that 15 means "heard every round" exactly instead of saturating.
 
 ### Score quantisation
 
-**Provisional.** The C scorer ticket owns the u8 scale and will replace `quantise_score` and `dequantise_score`
-in `csi/broadcast.py`, and this paragraph, with its documented scale. Until then: `0` is no score; 1 to 255 are
-log-spaced from 10⁻⁴ (1) to 10⁴ (255), a step of about 7.5 %, so a dequantised score is within about 4 % of the
-score. Scores below the range read as 1, above it as 255. Nothing else on the host depends on the scale.
+The score byte is the **score code** defined by the C scorer ticket (issue #12: `csi/score_code.py` and
+`firmware/core/motion_score.h`): 10 codes per octave. Code `0` is no score yet; code *c* from 1 to 255 stands for
+the score 2^((*c* − 1)/10 − 10), from 2⁻¹⁰ ≈ 0.001 (code 1) to 2¹⁵·⁴ ≈ 43,000 (code 255). A score *s* encodes as
+round(10 × (log₂ *s* + 10)) + 1, clamped to 1 to 255 (*s* ≤ 0 gives 1), so a decoded score is within about
+3.5 % of the score. `csi/broadcast.py` (`quantise_score`, `dequantise_score`) reproduces it until that module
+is merged.
 
 ## How the host reads it
 

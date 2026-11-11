@@ -10,8 +10,9 @@ three together and bump ``FORMAT_VERSION`` when the layout changes.
 A round broadcast is a 26-byte round header and one 4-byte link report per other member of the round, in
 ascending node index. Little-endian throughout.
 
-Score quantisation (``quantise_score`` / ``dequantise_score``) is PROVISIONAL: the C scorer ticket owns the
-u8 scale and replaces these two functions; nothing else in the host depends on the scale.
+The score byte is the C scorer ticket's score code (``csi/score_code.py`` and ``firmware/core/motion_score.h``
+on that branch): 0 is no score, code c >= 1 is 2 ** ((c - 1) / 10 - 10). ``quantise_score`` and
+``dequantise_score`` reproduce it here until that module is merged; then they should delegate to it.
 """
 from __future__ import annotations
 
@@ -39,13 +40,11 @@ FLAG_POSSIBLE_MOVE = 0x02        # the receiving node suspects a node moved (its
 FLAG_RAW_MODE = 0x04             # raw mode is active on this link
 FLAGS_KNOWN = FLAG_WARMING | FLAG_POSSIBLE_MOVE | FLAG_RAW_MODE
 
-# PROVISIONAL score scale (see the module doc): u8 0 is "no score yet", 1..255 are log-spaced from SCORE_MIN to
-# SCORE_MAX, a step of about 7.5 %, so a dequantised score is within about 4 % of the score.
-SCORE_MIN = 1e-4
-SCORE_MAX = 1e4
-_SCORE_STEPS = 254
-_LOG_MIN = math.log10(SCORE_MIN)
-_LOG_STEP = (math.log10(SCORE_MAX) - _LOG_MIN) / _SCORE_STEPS
+# the score code (see the module doc): 10 codes per octave from 2 ** -10 (code 1) to 2 ** 15.4 (code 255)
+NO_SCORE = 0
+STEPS_PER_OCTAVE = 10
+MIN_LOG2 = -10
+MAX_CODE = 255
 
 
 class BroadcastError(ValueError):
@@ -145,19 +144,19 @@ def encode_broadcast(broadcast: RoundBroadcast) -> bytes:
 
 
 def quantise_score(score: Optional[float]) -> int:
-    """PROVISIONAL. A score as the link report's u8: 0 for no score, else 1..255 on a log scale (saturating)."""
+    """A score as the link report's score code: 0 for no score, else 1..255, saturating at both ends."""
     if score is None:
-        return 0
-    if not score > SCORE_MIN:
+        return NO_SCORE
+    if not score > 0:
         return 1
-    return int(min(_SCORE_STEPS, max(0, round((math.log10(score) - _LOG_MIN) / _LOG_STEP)))) + 1
+    return int(min(MAX_CODE, max(1, round(STEPS_PER_OCTAVE * (math.log2(score) - MIN_LOG2)) + 1)))
 
 
-def dequantise_score(q: int) -> Optional[float]:
-    """PROVISIONAL. The score a u8 stands for (None for 0, no score yet)."""
-    if q == 0:
+def dequantise_score(code: int) -> Optional[float]:
+    """The score a score code stands for (None for 0, no score yet)."""
+    if code == NO_SCORE:
         return None
-    return 10 ** (_LOG_MIN + (q - 1) * _LOG_STEP)
+    return 2.0 ** ((code - 1) / STEPS_PER_OCTAVE + MIN_LOG2)
 
 
 def _format_id(raw: bytes) -> str:

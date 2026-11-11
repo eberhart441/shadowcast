@@ -88,6 +88,14 @@ def test_a_score_survives_quantisation_within_a_few_percent(score):
     assert dequantise_score(q) == pytest.approx(score, rel=0.05)
 
 
+def test_the_score_code_is_ten_steps_per_octave_from_two_to_the_minus_ten():
+    # the C scorer ticket's score code: score = 2 ** ((code - 1) / 10 - 10)
+    assert quantise_score(1.0) == 101 and dequantise_score(101) == 1.0
+    assert quantise_score(2.0) == 111 and dequantise_score(111) == 2.0
+    assert quantise_score(2.0 ** -10) == 1 and dequantise_score(1) == 2.0 ** -10
+    assert dequantise_score(255) == pytest.approx(2.0 ** 15.4)
+
+
 def test_quantisation_keeps_the_order_of_scores_and_saturates_at_the_ends():
     assert quantise_score(1.0) < quantise_score(2.0) < quantise_score(4.0)
     assert quantise_score(0.0) == 1          # a real but tiny score is not "no score"
