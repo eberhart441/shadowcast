@@ -116,7 +116,7 @@ The diagram has two seams.
 
 ## 2. Module map
 
-`csi/` holds 36 modules plus an empty `__init__.py`. Each responsibility below comes from the module's docstring.
+`csi/` holds 37 modules plus an empty `__init__.py`. Each responsibility below comes from the module's docstring.
 
 | Layer | Module | Responsibility | Key public types and functions |
 |---|---|---|---|
@@ -125,6 +125,7 @@ The diagram has two seams.
 | Ingest | [`ports.py`](../csi/ports.py) | Finds each board by its USB serial (its base MAC address), not by its port name. Never opens a port | `resolve_receiver_ports`, `match_ports`, `PortReport`, `PortResolutionError`, `normalise_serial` |
 | Ingest | [`gateway.py`](../csi/gateway.py) | Wireless receivers: splits the gateway board's one serial stream back into one stream per receiver, named by its serial in `config/room.json` | `split_gateway`, `gateway_streams` |
 | Ingest | [`gateway_records.py`](../csi/gateway_records.py) | The node gateway's USB byte stream (gateway records, [`docs/gateway-record.md`](gateway-record.md)) as a transceiver source of `(host time, round broadcast)`; sends raw mode requests through the gateway; counts what the gateway lost | `GatewaySource` (`counts`, `losses`, `gateway_serial`, `send_frame`), `gateway_source`, `RecordReader`, `decode_record`, `encode_heard`, `encode_status`, `encode_text`, `SerialChunks` |
+| Ingest | [`errors.py`](../csi/errors.py) | The one error type for what the host refuses with a reason it counts or reports: decode rejections, gateway record errors, refused images and commands, raw mode refusals | `ReasonError` (`reason`); subclasses `BroadcastError`, `RecordError`, `ImageError`, `CommandError`, `RawModeRefused` |
 | Ingest | [`broadcast.py`](../csi/broadcast.py) | The round broadcast format v2, the host's copy of [`docs/round-broadcast.md`](round-broadcast.md): encode and decode every frame type, pinned to the golden fixtures | `RoundBroadcast`, `LinkReport`, `RawCsi`, `RawModeRequest`, `decode_broadcast`, `encode_broadcast`, `BroadcastError`, `FORMAT_VERSION`, `HEADER_BYTES` |
 | Ingest | [`round_auth.py`](../csi/round_auth.py) | The authentication tag (HMAC-SHA256 under the kit key), the freshness rule and the kit key file ([ADR-0028](adr/0028-hmac-sha256-tag-and-round-number-freshness.md)) | `sign_broadcast`, `tag_ok`, `Freshness`, `load_kit_key`, `write_kit_key`, `kit_key_check`, `TEST_KIT_KEY` |
 | Ingest | [`rounds.py`](../csi/rounds.py) | The transceiver ingest: decodes, authenticates, de-duplicates across gateways and places each link report on its link; counts every record it does not use | `RoundIngest` (`place`, `count_dropped`, `counts`), `BroadcastStream`, `HeardBroadcast`, `REJECT_REASONS` |

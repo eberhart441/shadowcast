@@ -28,6 +28,7 @@ from __future__ import annotations
 import struct
 from typing import NamedTuple, Optional
 
+from .errors import ReasonError
 from .score_code import decode_score
 
 FORMAT_VERSION = 2               # v1 had the same layout with an unchecked, zero tag
@@ -73,13 +74,9 @@ DECODE_REASONS = ("short", "version", "frame_type", "length", "membership")   # 
 
 
 
-class BroadcastError(ValueError):
+class BroadcastError(ReasonError):
     """Bytes that are not a v2 round broadcast. ``reason`` names why, for the rejection counters:
     short, version, frame_type, length or membership."""
-
-    def __init__(self, reason: str, message: str) -> None:
-        super().__init__(message)
-        self.reason = reason
 
 
 class LinkReport(NamedTuple):

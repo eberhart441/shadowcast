@@ -40,6 +40,7 @@ from typing import Iterable, Mapping, Optional, Protocol, Sequence
 from .broadcast import (FORMAT_VERSION, FRAME_RAW_REQUEST, RAW_BLOCK_MAX_BYTES, RAW_MAX_LINKS, LinkReport, RawCsi,
                         RawModeRequest, RoundBroadcast, encode_broadcast)
 from .links import NodeLinkId
+from .errors import ReasonError
 from .room import Room
 from .round_auth import TEST_KIT_KEY, sign_broadcast
 
@@ -59,12 +60,8 @@ class SendingGateway(Protocol):
     def send_frame(self, frame: bytes) -> None: ...
 
 
-class RawModeRefused(ValueError):
+class RawModeRefused(ReasonError):
     """A raw mode request the host will not send. ``reason`` is one of REFUSALS."""
-
-    def __init__(self, reason: str, message: str) -> None:
-        super().__init__(message)
-        self.reason = reason
 
 
 def espnow_frame_bytes(payload: int) -> int:

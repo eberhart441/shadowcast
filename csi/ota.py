@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Optional
 
 from .round_auth import kit_key_check, sign_broadcast
+from .errors import ReasonError
 
 # ---------------------------------------------------------------- the image
 
@@ -42,12 +43,8 @@ APP_DESC_MAGIC = 0xABCD5432
 IMAGE_REASONS = ("format", "chip", "digest", "unsigned", "signature", "signer")
 
 
-class ImageError(ValueError):
+class ImageError(ReasonError):
     """An image the nodes must not get. ``reason`` is one of IMAGE_REASONS."""
-
-    def __init__(self, reason: str, message: str) -> None:
-        super().__init__(message)
-        self.reason = reason
 
 
 @dataclass(frozen=True)
@@ -177,12 +174,8 @@ _COMMAND_HEAD = 26 + _BODY.size        # 72
 COMMAND_REASONS = ("short", "version", "frame_type", "length", "targets", "command", "field")
 
 
-class CommandError(ValueError):
+class CommandError(ReasonError):
     """Bytes that are not a maintenance command a node would take. ``reason`` is one of COMMAND_REASONS."""
-
-    def __init__(self, reason: str, message: str) -> None:
-        super().__init__(message)
-        self.reason = reason
 
 
 @dataclass(frozen=True)

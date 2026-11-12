@@ -29,6 +29,8 @@ import time
 from collections import Counter, deque
 from typing import Iterable, Iterator, NamedTuple, Optional, Union
 
+from .errors import ReasonError
+
 SYNC = b"SC"
 VERSION = 1
 TYPE_HEARD, TYPE_STATUS, TYPE_TEXT = 1, 2, 3
@@ -48,12 +50,8 @@ WRITE_TIMEOUT_S = 1.0             # a command line to the gateway that cannot be
 Chunks = Iterable[tuple[float, Optional[bytes]]]
 
 
-class RecordError(ValueError):
+class RecordError(ReasonError):
     """Bytes that are not a v1 gateway record. ``reason``: truncated, sync, version, too_long, crc, type, short_body."""
-
-    def __init__(self, reason: str, message: str) -> None:
-        super().__init__(message)
-        self.reason = reason
 
 
 class Heard(NamedTuple):
