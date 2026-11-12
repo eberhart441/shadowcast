@@ -23,6 +23,7 @@ from .broadcast import HEARD_WINDOW_ROUNDS, LinkReport
 from .clock import RESET, WRAP, DeviceClock
 from .parser import CSIPacket, CSIParser, Stream, parse_stream
 
+NO_SIGNAL_S = 2.0        # a link with no packet or link report for longer is silent (NO_SIGNAL, not warm)
 AUTO_INTERVALS = 200     # recent device-time intervals kept for the estimated send period
 MIN_AUTO_INTERVALS = 50  # estimate (and drop counting) starts once this many intervals exist
 

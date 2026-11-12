@@ -39,7 +39,7 @@ from .adaptive import AdaptiveDetector, Reading, RoomDecision
 from .detect import (DEBOUNCE_S, DEFAULT_MARGIN, MIN_CLEAN_FRACTION, MOTION, Calibration, CalibrationError,
                      MotionScorer, _Debouncer, calibrate_clips, classify, validate_margin)
 from .broadcast import LinkReport
-from .health import LinkHealth, ReportHealth
+from .health import NO_SIGNAL_S, LinkHealth, ReportHealth
 from .parser import CSIPacket
 from .room import Node, Room
 from .room_state import POSSIBLY_OCCUPIED, POSSIBLY_OCCUPIED_S, RoomState, ZoneMap
@@ -47,7 +47,6 @@ from .room_state import POSSIBLY_OCCUPIED, POSSIBLY_OCCUPIED_S, RoomState, ZoneM
 NO_SIGNAL = "NO_SIGNAL"
 WARMUP = "WARMUP"
 UNCALIBRATED = "UNCALIBRATED"
-NO_SIGNAL_S = 2.0
 ROOM_STEP_S = 0.05     # link reports update the room decision at most this often (host time): once per 20 Hz round
 FIXED = "fixed"        # a link judged against a threshold
 AUTO = "auto"          # a link judged against its own adaptive baseline (csi/adaptive.py)
