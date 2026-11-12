@@ -47,8 +47,9 @@ python scripts/dashboard.py --node-gateway <GATEWAY PORT> --room config/room_tr2
   (`scripts/ota.py`). A board running an unsigned image refuses every update. The update code is
   `node/main/node_ota.c` over `core/ota_core.c`; with it the image is 0x110000 B (padded to 64 KB for signing), 43 %
   of a slot free, and the bootloader 19 % free (ESP-IDF 6.0).
-- The logic that does not need ESP-IDF is in `core/` and tested on the PC; `node/main/node_main.c` is only the glue
-  (Wi-Fi, ESP-NOW, CSI callback, timer, NVS, USB).
+- The logic that does not need ESP-IDF is in `core/` and tested on the PC; `node/main/` is only the glue (Wi-Fi,
+  ESP-NOW, CSI callback, timer, NVS, USB): `node_main.c` (USB, settings, radio, start), `node_transceiver.c` and
+  `node_gateway.c` (one per role, sharing `node_common.h`), `node_auth.c` and `node_ota.c`.
 - The two-board rig check is [`docs/rig-checks/two-nodes.md`](../docs/rig-checks/two-nodes.md); the round
   scheduler's (unplug and replug with 3+ boards) is [`docs/rig-checks/round-scheduler.md`](../docs/rig-checks/round-scheduler.md).
 
