@@ -135,9 +135,11 @@ static void the_raw_set_flags_its_links_by_member_index(void)
     memcpy(member_id[0], N1, 6);
     memcpy(member_id[5], N3, 6);
     memcpy(member_id[9], N4, 6);
-    CHECK(raw_mode_flags(&r, member_id, (1u << 0) | (1u << 5) | (1u << 9)) == ((1u << 5) | (1u << 9)),
+    /* ISO C before C23 does not convert T (*)[N] to const T (*)[N] implicitly. */
+    const uint8_t (*members)[RB_NODE_ID_BYTES] = (const uint8_t (*)[RB_NODE_ID_BYTES])member_id;
+    CHECK(raw_mode_flags(&r, members, (1u << 0) | (1u << 5) | (1u << 9)) == ((1u << 5) | (1u << 9)),
           "the members whose serials are in the raw set");
-    CHECK(raw_mode_flags(&r, member_id, (1u << 0) | (1u << 5)) == (1u << 5), "only members whose serial is known");
+    CHECK(raw_mode_flags(&r, members, (1u << 0) | (1u << 5)) == (1u << 5), "only members whose serial is known");
 }
 
 int main(void)
