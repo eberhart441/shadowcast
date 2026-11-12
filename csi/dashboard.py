@@ -213,7 +213,8 @@ class DashboardState:
         payload = {
             "room": self._room_payload(),
             "nodes": self._nodes(),
-            "links": [self._link_payload(row, cap) for row in rows] if links else None,
+            "links": [self._link_payload(row, cap.baselines, cap.evidence, cap.contributing) for row in rows]
+            if links else None,
             "heatmap": self._heatmap_payload(cap),
             "track": None if cap.track is None else {k: _round(v) for k, v in cap.track.items()},
             "status": self._status_payload(cap),
@@ -237,13 +238,11 @@ class DashboardState:
         if row is None:
             return None
         heat = self._heat
-        cap = Capture(now=now, rows=[row], heat_values=heat.values, contributing=tuple(heat.contributing),
-                      evidence=heat.evidence, baselines=heat.baselines, track=None, room_state="", room_elevated=(),
-                      mode=self._monitor.mode, broadcasts={}, parameters={}, heard_at={}, lateness={},
-                      raw_mode={})
-        return self._link_payload(row, cap)
+        return self._link_payload(row, heat.baselines, heat.evidence, tuple(heat.contributing))
 
-    def _link_payload(self, row: Mapping, cap: "Capture") -> dict:
+    def _link_payload(self, row: Mapping, baselines: Mapping[str, Optional[float]], evidence: Mapping[str, float],
+                      contributing) -> dict:
+        """One link's payload row from its monitor row and the heatmap's baseline, evidence and contributing links."""
         score, threshold = row["score"], row["threshold"]
         normalised = None if score is None or not threshold else score / threshold
         return {
@@ -263,10 +262,10 @@ class DashboardState:
             "drops": row["drops"],
             "rssi": row["rssi"],
             "age_s": _round(row["age_s"]),
-            "baseline": _round(cap.baselines.get(row["id"])),
-            "evidence": _round(cap.evidence.get(row["id"], 0.0)),
+            "baseline": _round(baselines.get(row["id"])),
+            "evidence": _round(evidence.get(row["id"], 0.0)),
             "weight": self._room.link_weights.get(row["id"], 1.0),
-            "contributes": row["id"] in cap.contributing,
+            "contributes": row["id"] in contributing,
         }
 
     def _room_payload(self) -> dict:
