@@ -159,9 +159,11 @@ class RawMode:
         if round_no is None:
             round_no = self._rng.randrange(65536)
         self._rounds[gateway_serial] = (round_no + 1) % 65536
-        header = RoundBroadcast(FORMAT_VERSION, FRAME_RAW_REQUEST, round_no, 0, 0, 0, 0, 0, gateway_serial, bytes(8), (),
-                                (), body)
-        return sign_broadcast(encode_broadcast(header), self._key)
+        # a request's slot, slots per round, schedule version, node index and membership are 0 and unchecked
+        frame = RoundBroadcast(version=FORMAT_VERSION, frame_type=FRAME_RAW_REQUEST, round=round_no, slot=0,
+                               slots_per_round=0, schedule_version=0, node_index=0, membership=0,
+                               node_id=gateway_serial, tag=bytes(8), reports=(), request=body)
+        return sign_broadcast(encode_broadcast(frame), self._key)
 
     def _costing(self, now: float) -> list[str]:
         """Links that use the budget: asked for here, or flagged raw by their node (it streams them)."""
