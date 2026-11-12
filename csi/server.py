@@ -23,7 +23,7 @@ HTTP:
                        heard yet, no gateway that can send, a replayed run). A command like the others: loopback only
                        unless --allow-control (ADR-0015)
     POST /api/ota {"image": path, "nodes": [names or serials], "ap_channel": n, "port": n, "channel": n,
-                       "bind": address, "checkin": bool}: start a staged rollout of a signed node image (csi/ota.py)
+                       "bind": address, "checkin": bool}: start a staged rollout of a signed node image (csi/ota)
                        through the gateway this dashboard holds, without stopping it; every field but image is
                        optional (nodes: every transceiver; port 8070; channel: the gateway's own). 202 {ota}, 400 for
                        a bad body, unknown node or unreadable image, 409 {error, reason} when refused (running,

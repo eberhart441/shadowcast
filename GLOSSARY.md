@@ -121,7 +121,7 @@ _See_: `firmware/core/node_settings.h`, `scripts/node.py`
 **Maintenance command**:
 The signed frame (frame type 8) that tells up to 13 named nodes to update their firmware to one image (named by its size and SHA-256) or to report what they run. The host builds it, the gateway sends it on the sensing channel; a node runs each one at most once.
 _Avoid_: OTA packet, update frame
-_See_: [`docs/round-broadcast.md`](docs/round-broadcast.md) (maintenance command), `csi/ota.py`, `firmware/core/ota_core.h`
+_See_: [`docs/round-broadcast.md`](docs/round-broadcast.md) (maintenance command), `csi/ota/command.py`, `firmware/core/ota_core.h`
 
 **Maintenance mode**:
 What a node runs instead of the transceiver for one job after a maintenance command: off the round and off the sensing channel, it joins the maintenance network, fetches and checks an image (or only reports), then restarts. At most 240 s.
@@ -134,7 +134,7 @@ _Avoid_: hotspot (that is one way to provide it), backhaul
 **Signing key**:
 The RSA-3072 key pair whose private half signs node images (`espsecure sign-data`) and stays on the user's machine; a node takes a new image only if it is signed by the same key as the image it runs. Not the kit key, which every node holds.
 _Avoid_: kit key (a different, symmetric key), secure boot key (hardware secure boot is not enabled)
-_See_: [ADR-0031](docs/adr/0031-ota-maintenance-network-signed-images.md), `csi/ota.py` (`check_image`)
+_See_: [ADR-0031](docs/adr/0031-ota-maintenance-network-signed-images.md), `csi/ota/image.py` (`check_image`)
 
 **Health check**:
 The test a newly updated image must pass to stay: within 120 s of its first boot, a member of a round that has heard and sent 20 round broadcasts. Failing it, or crashing before it passes, rolls the node back to its old app slot.

@@ -195,7 +195,7 @@ airtime model of report 03 (HT20 MCS0, ESP-NOW framing), one raw link adds 172 Â
 ## Maintenance command
 
 Frame type 8 tells chosen nodes to update their firmware or to report it ([ADR-0031](adr/0031-ota-maintenance-network-signed-images.md),
-[`docs/ota.md`](ota.md)). The host builds and signs it (`csi/ota.py` `maintenance_command`) and the gateway sends it
+[`docs/ota.md`](ota.md)). The host builds and signs it (`csi/ota/command.py` `maintenance_command`) and the gateway sends it
 (`ota send <hex>` on its USB port), three copies 0.2 s apart; nodes decode it with `firmware/core/ota_core.h`, not
 with the round broadcast decoder. The golden cases are
 [`tests/fixtures/ota_command.json`](../tests/fixtures/ota_command.json). The round header's slot, slots per round,

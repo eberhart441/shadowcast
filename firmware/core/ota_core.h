@@ -4,7 +4,7 @@
  *   maintenance command   frame type 8 on the sensing channel (docs/round-broadcast.md "Maintenance command"):
  *                         the 26-byte header (signed with the kit key, round_auth.h), then what to do, the image's
  *                         size and SHA-256, where to fetch it, and up to OTA_MAX_TARGETS target serials.
- *                         csi/ota.py is the host's copy; both are pinned to tests/fixtures/ota_command.json.
+ *                         csi/ota/command.py is the host's copy; both are pinned to tests/fixtures/ota_command.json.
  *   action                what a node does with a command that verified: nothing, update, or report.
  *   record                what the node keeps in NVS across the restarts of an update (a job to run in maintenance
  *                         mode, an attempt waiting for its health check, the outcome to report).
@@ -107,7 +107,7 @@ ota_action_t ota_command_action(const ota_command_t *c, const uint8_t serial[OTA
 
 typedef enum { OTA_JOB_NONE = 0, OTA_JOB_UPDATE = 1, OTA_JOB_REPORT = 2 } ota_job_t;
 
-/* Outcomes reported to the host. The names (ota_outcome_name) are the report's words; csi/ota.py has them too. */
+/* Outcomes reported to the host. The names (ota_outcome_name) are the report's words; csi/ota/report.py has them too. */
 typedef enum {
     OTA_OUT_NONE = 0,
     OTA_OUT_COMMITTED,          /* the new image passed its health check and runs */

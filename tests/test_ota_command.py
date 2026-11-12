@@ -1,4 +1,4 @@
-"""The host's side of the maintenance command, the maintenance network and the node's report (csi/ota.py).
+"""The host's side of the maintenance command, the maintenance network and the node's report (csi/ota: command, network, report).
 
 The commands are pinned to tests/fixtures/ota_command.json, which the node's decoder (firmware/core/ota_core.c)
 replays too; the derived network passphrase and the report tag were computed with openssl.

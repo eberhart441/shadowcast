@@ -77,7 +77,7 @@ The kit key (ADR-0028) is symmetric and sits in every node's flash, so anyone wh
 - **Maintenance network credentials provisioned per node over USB:** one more step per board and per kit. Derived
   from the kit key instead; the passphrase is no more secret than the kit key, which already lets its holder
   command a node into maintenance mode (a node off the round, not new firmware).
-- **An OTA button on the dashboard (spec "Commands"):** the rollout is a library (`csi/ota.py`) with the gateway
+- **An OTA button on the dashboard (spec "Commands"):** the rollout is a library (`csi/ota/`) with the gateway
   write as a parameter, so the dashboard can drive it later; for now `scripts/ota.py` runs with the dashboard
   stopped, because both need the gateway port.
 

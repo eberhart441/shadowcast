@@ -116,7 +116,7 @@ The diagram has two seams.
 
 ## 2. Module map
 
-`csi/` holds 37 modules plus an empty `__init__.py`. Each responsibility below comes from the module's docstring.
+`csi/` holds 36 modules, the `ota/` package of seven, and an empty `__init__.py`. Each responsibility below comes from the module's docstring.
 
 | Layer | Module | Responsibility | Key public types and functions |
 |---|---|---|---|
@@ -147,7 +147,7 @@ The diagram has two seams.
 | Serving | [`live_calibration.py`](../csi/live_calibration.py) | Calibration inside the dashboard, run on the live stream: countdown, recording, processing, then done or failed | `CalibrationJob`, `parse_request`, `RequestError` |
 | Serving | [`replay.py`](../csi/replay.py) | Serves a logged run, or a recorded session, through the dashboard's HTTP interface | `load_log`, `ReplayLog`, `ReplayServer`, `session_dashboard`, `ReplayError` |
 | Serving | [`raw_mode.py`](../csi/raw_mode.py) | Raw mode for one link: signed raw mode requests within a per-round byte budget, and each raw link's state ([ADR-0032](adr/0032-raw-mode-in-the-join-slot-within-a-byte-budget.md)) | `RawMode` (`request`, `observe`, `status`), `RawModeRefused`, `SendingGateway`, `raw_messages`, `ppdu_us` |
-| Serving | [`ota.py`](../csi/ota.py) | Over-the-air updates: the host's check of a signed image, the maintenance command (frame type 8), the maintenance network, the nodes' reports, the staged rollout and the image server ([ADR-0031](adr/0031-ota-maintenance-network-signed-images.md)) | `check_image`, `maintenance_command`, `decode_command`, `maintenance_network`, `parse_report`, `plan_stages`, `Rollout`, `ImageServer` |
+| Serving | [`ota/`](../csi/ota/__init__.py) | Over-the-air updates ([ADR-0031](adr/0031-ota-maintenance-network-signed-images.md)), one module per concern: `image` (the host's check of a signed image), `command` (the maintenance command, frame type 8), `network` (the maintenance network), `report` (the nodes' reports), `rollout` (the staged rollout), `server` (the image server), `job` (a rollout run by the dashboard) | `check_image`, `load_signer`, `maintenance_command`, `decode_command`, `channels_clear`, `maintenance_network`, `parse_report`, `plan_stages`, `Rollout`, `ImageServer`, `RolloutJob` (all from `csi.ota`) |
 | Offline | [`noisy_calibration.py`](../csi/noisy_calibration.py) | Thresholds for a room that is never empty: a pure, standard-library function of each link's live scores | `noisy_room_thresholds`, `link_threshold`, `LinkThreshold` |
 | Offline | [`recording.py`](../csi/recording.py) | Writes labelled session folders (one CSV per label, plus `session.json`) and loads them back | `record_session`, `RecordingReport`, `load_session`, `load_recording`, `Session`, `Recording`, `LABELS` |
 | Offline | [`round_recording.py`](../csi/round_recording.py) | Round recordings: every round broadcast a run's sources delivered, with labels and the room config, in one binary file ([ADR-0023](adr/0023-round-recordings.md)) | `RoundRecorder` (`tee`, `label`), `RoundRecording` (`raw_csi`), `load_rounds`, `RecordingFormatError` |

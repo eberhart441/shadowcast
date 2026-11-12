@@ -1,4 +1,4 @@
-"""The staged rollout (csi/ota.py Rollout): which nodes get the command when, and when a rollout stops.
+"""The staged rollout (csi/ota/rollout.py Rollout): which nodes get the command when, and when a rollout stops.
 
 Driven with a fake clock: the test plays the nodes, answering with reports (what the image server receives) and
 round broadcasts heard again (what the gateway hears). The commands it sends are read back with decode_command.

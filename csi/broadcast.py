@@ -18,7 +18,7 @@ reports are followed by one or two raw CSI blocks (``RoundBroadcast.raw``): the 
 broadcast the sender heard from that transmitter. A **raw mode request** (4) is the round header (sent by a
 gateway, signed by the host) followed by the target node, the target's round number and the transmitters whose
 links it is to stream (``RoundBroadcast.request``); it carries no link reports. A **maintenance command** (8, OTA,
-``csi/ota.py``) decodes here to its header alone, so the host can count one a gateway hears.
+``csi/ota``) decodes here to its header alone, so the host can count one a gateway hears.
 
 The score byte is the score code of ``csi/score_code.py`` (ADR-0021; ``firmware/core/motion_score.h`` on the node):
 0 is no score, code c >= 1 is 2 ** ((c - 1) / 10 - 10): ``encode_score`` makes one, ``LinkReport.score`` reads it.
@@ -38,7 +38,7 @@ FRAME_JOIN_REQUEST = 2           # a node asking to join the round, in the join 
 FRAME_JOIN_GRANT = 3             # the scheduler admitting it, in the join slot (header only)
 FRAME_RAW_REQUEST = 4           # the host asking one node to stream raw CSI for some of its links (sent by a gateway)
 FRAME_ROUND_RAW = 5             # a round broadcast with raw CSI blocks after its link reports
-FRAME_MAINTENANCE = 8           # a maintenance command (OTA, csi/ota.py decodes its body); the host only counts it
+FRAME_MAINTENANCE = 8           # a maintenance command (OTA, csi/ota decodes its body); the host only counts it
 FRAME_TYPES = frozenset({FRAME_ROUND, FRAME_JOIN_REQUEST, FRAME_JOIN_GRANT, FRAME_RAW_REQUEST, FRAME_ROUND_RAW,
                          FRAME_MAINTENANCE})
 JOIN_FRAMES = frozenset({FRAME_JOIN_REQUEST, FRAME_JOIN_GRANT})

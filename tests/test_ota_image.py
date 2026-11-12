@@ -1,4 +1,4 @@
-"""The host's check of a node image before it serves it over the air (csi/ota.py, docs/ota.md).
+"""The host's check of a node image before it serves it over the air (csi/ota/image.py, docs/ota.md).
 
 Pinned to a tiny ESP32-C5 image made by esptool 5.6.0 and signed by espsecure 5.6.0 (tests/fixtures/ota/): the
 image ESP-IDF itself would take must pass, and an unsigned, corrupt or foreign-signed one must be refused with a
