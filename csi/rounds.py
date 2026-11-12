@@ -46,7 +46,7 @@ from typing import Iterable, Optional
 from .broadcast import (DECODE_REASONS, FRAME_JOIN_GRANT, FRAME_MAINTENANCE, FRAME_RAW_REQUEST, JOIN_FRAMES, BroadcastError, LinkReport,
                         RawCsi, decode_broadcast)
 from .links import NodeLinkId
-from .room import Room
+from .room import Room, board_serial
 from .round_auth import STALE, TEST_KIT_KEY, Freshness, tag_ok
 
 # A stream of (host time, round broadcast bytes); a quiet source may yield (host_ts, None) as a heartbeat.
@@ -74,7 +74,7 @@ class RoundIngest:
     def __init__(self, room: Room, kit_key: bytes = TEST_KIT_KEY) -> None:
         self._key = bytes(kit_key)
         self._fresh = Freshness()
-        self._names = {node.serial.upper(): node.name for node in room.transceivers if node.serial}
+        self._names = room.transceiver_names()
         self._index: dict[int, dict[int, str]] = {}   # schedule version -> {node index: node name}
         self._seen: OrderedDict[tuple[str, int, int], float] = OrderedDict()  # (serial, schedule, round) -> host_ts
         self._heard = 0
@@ -119,7 +119,7 @@ class RoundIngest:
         if broadcast.frame_type == FRAME_MAINTENANCE:
             self._maintenance += 1     # an OTA maintenance command a gateway sent: counted, not used
             return []
-        serial = broadcast.node_id.upper()
+        serial = board_serial(broadcast.node_id)
         if self._duplicate((serial, broadcast.schedule_version, broadcast.round), host_ts):
             self._rejected[DUPLICATE] += 1
             tally[DUPLICATE] += 1
@@ -167,7 +167,7 @@ class RoundIngest:
         same rule to every frame); a stale one is rejected as ``stale``. Another gateway's copy (same node,
         schedule version, round and frame type within DEDUP_WINDOW_S) is counted as a join frame again but not
         checked twice, so a second gateway never turns a join frame stale."""
-        serial = frame.node_id.upper()
+        serial = board_serial(frame.node_id)
         name = self._names.get(serial)
         copy = self._duplicate((serial, frame.schedule_version, frame.round, frame.frame_type), host_ts)
         if name is not None and not copy and self._fresh.check(serial, frame.round, host_ts) == STALE:

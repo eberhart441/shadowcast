@@ -134,3 +134,15 @@ def test_ports_script_exits_zero_with_nothing_connected(monkeypatch, capsys):
     ports_cli = load_ports_script()
     assert ports_cli.main(["--room", str(FIXTURE)]) == 0
     assert "no usb serial" in capsys.readouterr().out.lower()
+
+
+def test_one_form_of_a_board_serial_and_one_serial_to_name_map():
+    from csi.ports import normalise_serial
+    from csi.room import board_serial
+
+    assert board_serial("38:44:be:a5:33:9c") == board_serial("3844BEA5339C") == "38:44:BE:A5:33:9C"
+    assert normalise_serial("38:44:be:a5:33:9c") == "3844BEA5339C"
+    room = load_room(Path(__file__).parent / "fixtures" / "room_tr8.json")
+    names = room.transceiver_names()
+    assert names[board_serial("02:00:00:00:01:5c")] == "n1"
+    assert {v: k for k, v in names.items()} == room.transceiver_serials()

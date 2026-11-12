@@ -32,7 +32,7 @@ from .score_code import encode_score
 from .round_auth import STALE, TEST_KIT_KEY, Freshness, sign_broadcast, tag_ok
 from .links import LinkId
 from .parser import DEFAULT_HEADER, CSIPacket, CSIParser, parse_stream
-from .room import FALLOFF_SIGMA_M, Person, Room, link_responses, load_room, movement
+from .room import FALLOFF_SIGMA_M, Person, Room, board_serial, link_responses, load_room, movement
 
 N_SUBCARRIERS = 64
 NULL_SUBCARRIERS = tuple(range(0, 6)) + (32,) + tuple(range(59, 64))  # 12 nulls (LLTF-like)
@@ -510,7 +510,7 @@ class _SchedulePlan:
         n = len(nodes)
         index = {node.name: i for i, node in enumerate(nodes)}
         self._n = n
-        lowest = min(range(n), key=lambda i: nodes[i].serial.replace(":", "").upper())
+        lowest = min(range(n), key=lambda i: board_serial(nodes[i].serial))
         in_split = np.array([node.name in split for node in nodes])
         if split and (in_split.all() or merge_after is None):
             raise ValueError("split needs merge_after and must leave some nodes in the other schedule")
@@ -567,14 +567,14 @@ def _take_request(frame: bytes, nodes: Sequence, raw_sets: list, round_no: int, 
         return
     if request.frame_type != FRAME_RAW_REQUEST or not tag_ok(frame, kit_key):
         return
-    if fresh.check(request.node_id.upper(), request.round, host_ts) == STALE:
+    if fresh.check(request.node_id, request.round, host_ts) == STALE:
         return
-    serials = {node.serial.upper(): i for i, node in enumerate(nodes)}
-    target = serials.get(request.request.target.upper())
+    serials = {board_serial(node.serial): i for i, node in enumerate(nodes)}
+    target = serials.get(board_serial(request.request.target))
     if target is None or (round_no - request.request.target_round) % 65536 > RAW_REQUEST_MAX_AGE_ROUNDS:
         return
-    raw_sets[target] = {serials[s.upper()] for s in request.request.transmitters
-                        if s.upper() in serials and serials[s.upper()] != target}
+    raw_sets[target] = {serials[board_serial(s)] for s in request.request.transmitters
+                        if board_serial(s) in serials and serials[board_serial(s)] != target}
 
 
 def _raw_iq(rng: np.random.Generator, response: float) -> bytes:
@@ -648,7 +648,7 @@ def simulate_gateways(
         unknown = sorted(set(heard) - names)
         if unknown:
             raise ValueError(f"gateway {gateway} hears no such transceiver: {', '.join(unknown)}")
-    serials = {node.serial.upper(): node.name for node in room.transceivers}
+    serials = room.transceiver_names()
     return {gateway: _gateway_view(simulate_rounds(room, person, seed=seed, **kwargs), set(heard), serials,
                                    (loss or {}).get(gateway, 0.0), np.random.default_rng([seed, k]))
             for k, (gateway, heard) in enumerate(hears.items())}
@@ -657,5 +657,5 @@ def simulate_gateways(
 def _gateway_view(stream: Iterator[tuple[float, bytes]], heard: set[str], serials: Mapping[str, str], loss: float,
                   rng: np.random.Generator) -> Iterator[tuple[float, bytes]]:
     for host_ts, data in stream:
-        if serials.get(decode_broadcast(data).node_id.upper()) in heard and rng.random() >= loss:
+        if serials.get(board_serial(decode_broadcast(data).node_id)) in heard and rng.random() >= loss:
             yield host_ts + float(rng.uniform(0.0, GATEWAY_LATENCY_S)), data

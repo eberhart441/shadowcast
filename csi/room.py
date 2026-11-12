@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Mapping, Optional, Sequence, Union
@@ -42,6 +43,14 @@ WALL_INSET_M = 0.25     # how far inside the wall a person stands for "near a wa
 WALLS = ("left", "right", "top", "bottom")
 TRANSCEIVER = "transceiver"
 ROLES = ("receiver", "sender", TRANSCEIVER)
+
+
+def board_serial(value: Optional[str]) -> str:
+    """A board serial (base MAC) in its one form, upper-case hex in colon pairs: ``38:44:be:a5:33:9c``,
+    ``3844BEA5339C`` and ``38:44:BE:A5:33:9C`` are the same board. Anything not 6 bytes long keeps its hex digits
+    only (``csi.ports.normalise_serial`` is this without the colons)."""
+    digits = re.sub(r"[^0-9A-F]", "", (value or "").upper())
+    return ":".join(digits[i:i + 2] for i in range(0, 12, 2)) if len(digits) == 12 else digits
 
 
 @dataclass(frozen=True)
@@ -67,6 +76,15 @@ class Room:
 
     def links(self) -> list[tuple[Node, Node]]:
         return [(rx, tx) for rx in self.receivers for tx in self.senders]
+
+    def transceiver_serials(self) -> dict[str, str]:
+        """{transceiver name: board serial (``board_serial`` form)} for every transceiver with a serial."""
+        return {node.name: board_serial(node.serial) for node in self.transceivers if node.serial}
+
+    def transceiver_names(self) -> dict[str, str]:
+        """{board serial: transceiver name}: the one way to name a node from a serial a frame or a report carries
+        (look it up with ``board_serial``)."""
+        return {serial: name for name, serial in self.transceiver_serials().items()}
 
     def transceiver_links(self) -> list[tuple[Node, Node]]:
         """(receiving node, transmitting node) for every ordered pair of distinct transceivers: N(N-1) links."""

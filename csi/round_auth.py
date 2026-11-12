@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Union
 
 from .broadcast import HEADER_BYTES, TAG_BYTES, TAG_OFFSET
+from .room import board_serial
 
 KIT_KEY_BYTES = 16
 TEST_KIT_KEY = bytes(range(KIT_KEY_BYTES))   # 000102..0f: fixtures and simulator only, never a real kit
@@ -79,7 +80,7 @@ class Freshness:
 
     def check(self, node_id: str, round_no: int, t: float) -> str:
         """FRESH (and remembered) or STALE for an authenticated broadcast from ``node_id`` heard at ``t`` seconds."""
-        node = node_id.upper()
+        node = board_serial(node_id)
         last = self._last.get(node)
         if last is not None and t - last[1] <= RESYNC_S:
             ahead = (round_no - last[0] + 32768) % 65536 - 32768

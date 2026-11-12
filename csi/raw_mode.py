@@ -41,7 +41,7 @@ from .broadcast import (FORMAT_VERSION, FRAME_RAW_REQUEST, RAW_BLOCK_MAX_BYTES, 
                         RawModeRequest, RoundBroadcast, encode_broadcast)
 from .links import NodeLinkId
 from .errors import ReasonError
-from .room import Room
+from .room import Room, board_serial
 from .round_auth import TEST_KIT_KEY, sign_broadcast
 
 RAW_BUDGET_BYTES = 400        # raw CSI per round over the whole rig: 3 links of RAW_BLOCK_MAX_BYTES
@@ -107,7 +107,7 @@ def _parse(label: str) -> Optional[NodeLinkId]:
 class RawMode:
     def __init__(self, room: Room, kit_key: bytes = TEST_KIT_KEY, seed: Optional[int] = None) -> None:
         self._key = bytes(kit_key)
-        self._serial = {node.name: node.serial.upper() for node in room.transceivers if node.serial}
+        self._serial = room.transceiver_serials()
         self._links: dict[str, _Link] = {}
         self._rounds: dict[str, int] = {}      # gateway serial -> the round number of its next request
         self._rng = random.Random(seed)
@@ -149,7 +149,7 @@ class RawMode:
         transmitters = tuple(self._serial[_parse(lbl).transmitter] for lbl in sorted(after)
                              if _parse(lbl).receiver == link.receiver)
         body = RawModeRequest(target, last_round[target] % 65536, transmitters)
-        frames = [self._frame(gateway_serial.upper(), body) for _ in range(REQUEST_COPIES)]
+        frames = [self._frame(board_serial(gateway_serial), body) for _ in range(REQUEST_COPIES)]
         state = self._links.setdefault(label, _Link())
         state.wanted, state.asked_at = on, now
         return frames

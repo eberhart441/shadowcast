@@ -519,7 +519,7 @@ class DashboardServer(FrameServer):
         self._ota_signer = Path(ota_signer) if ota_signer is not None else DEFAULT_OTA_SIGNER
         self._ota: Optional[RolloutJob] = None
         self._ota_starting = False
-        self._serials = {node.name: node.serial.upper() for node in room.transceivers if node.serial}
+        self._serials = room.transceiver_serials()
         # sources that count what they lost before the host (a node gateway): status.broadcasts.gateways
         self._lossy = {name: obj for name, obj in {**dict(sources), **self._gateways}.items()
                        if callable(getattr(obj, "losses", None))}

@@ -31,6 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from csi import ota  # noqa: E402
 from csi.broadcast import FRAME_ROUND, BroadcastError, decode_broadcast  # noqa: E402
 from csi.gateway_records import Heard, RecordReader, Text  # noqa: E402
+from csi.room import board_serial  # noqa: E402
 from csi.round_auth import KitKeyError, load_kit_key, tag_ok  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -64,7 +65,7 @@ def heard_serials(records, kit_key: bytes) -> list[str]:
         except BroadcastError:
             continue
         if b.frame_type == FRAME_ROUND and tag_ok(record.payload, kit_key):
-            out.append(b.node_id.upper())
+            out.append(board_serial(b.node_id))
     return out
 
 

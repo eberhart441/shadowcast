@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+from .room import board_serial
 from .round_auth import kit_key_check, sign_broadcast
 from .errors import ReasonError
 
@@ -331,7 +332,7 @@ def parse_report(line: str, kit_key: bytes) -> Report:
         issued = int(fields["issued"])
     except ValueError:
         raise ReportError(f"issued is not a number: {fields['issued']!r}") from None
-    return Report(fields["serial"].upper(), issued, fields["outcome"], fields["slot"], fields["image"],
+    return Report(board_serial(fields["serial"]), issued, fields["outcome"], fields["slot"], fields["image"],
                   fields["version"])
 
 
@@ -403,7 +404,7 @@ class Rollout:
     # -- the caller's events
 
     def report(self, r: Report, now: float) -> None:
-        serial = r.serial.upper()
+        serial = board_serial(r.serial)
         if self.state != "running" or self._stage < 0 or r.issued != self._issued or serial not in self._targets:
             return
         self.results[serial] = r.outcome
@@ -413,7 +414,7 @@ class Rollout:
             self._fail(f"{serial} reported {r.outcome}")
 
     def heard(self, serial: str, now: float) -> None:
-        serial = serial.upper()
+        serial = board_serial(serial)
         if self.state == "running" and self._stage >= 0 and serial in self._reported and now >= self._reported[serial]:
             self._rejoined.add(serial)
 
@@ -439,7 +440,7 @@ class Rollout:
 
     def _start(self, stage: int, now: float) -> None:
         self._stage = stage
-        self._targets = [s.upper() for s in self._stages[stage]]
+        self._targets = [board_serial(s) for s in self._stages[stage]]
         self._issued = max(int(self._wall()), self._issued + 1)
         image = self._image
         self._frame = maintenance_command(
@@ -499,7 +500,7 @@ class ImageServer:
                 parts = urlsplit(self.path)
                 if parts.path != "/node.bin":
                     return self._reply(404, b"not found\n")
-                serial = parse_qs(parts.query).get("serial", ["?"])[0].upper()
+                serial = board_serial(parse_qs(parts.query).get("serial", [""])[0]) or "?"
                 with outer._lock:
                     outer.fetches.append(serial)
                 if log:
@@ -576,17 +577,16 @@ def load_signer(path) -> bytes:
 def target_serials(room, names) -> list[str]:
     """Board serials (upper case) of ``names`` (transceiver names of ``room`` or board serials), or of every
     transceiver with a serial, in room order, when ``names`` is empty. ValueError for a name that is neither."""
-    nodes = [n for n in room.transceivers if n.serial]
+    by_name = room.transceiver_serials()
     if not names:
-        return [n.serial.upper() for n in nodes]
-    by_name = {n.name: n.serial.upper() for n in nodes}
+        return list(by_name.values())
     serials = []
     for name in names:
         name = str(name).strip()
         if name in by_name:
             serials.append(by_name[name])
-        elif len(name.replace(":", "")) == 12:
-            serials.append(name.upper())
+        elif len(board_serial(name)) == 17:
+            serials.append(board_serial(name))
         else:
             raise ValueError(f"{name!r} is neither a transceiver of the room nor a board serial")
     return serials
