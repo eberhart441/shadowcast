@@ -262,7 +262,8 @@ def test_cli_node_gateway_records_the_real_rigs_round_broadcasts(monkeypatch, tm
     args = cli.build_parser().parse_args(["--node-gateway", "COM7", "--room", str(TR8), "--http-port", "0",
                                           "--record", str(out), "--label", "empty", "--kit-key", str(key_path)])
     cli.check_source(args)
-    server = cli.build_server(args)
+    built = cli.build(args)
+    server = built.server
     server.start()
     try:
         for _ in range(200):
@@ -271,7 +272,7 @@ def test_cli_node_gateway_records_the_real_rigs_round_broadcasts(monkeypatch, tm
             server.wait_finished(timeout=0.05)
     finally:
         server.stop()
-        args.recorder.close()
+        built.recorder.close()
     recording = load_rounds(out)
     assert [b.data for b in recording.broadcasts] == [data for _, data in broadcasts]
     assert {b.source for b in recording.broadcasts} == {"gateway"}

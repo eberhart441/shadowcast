@@ -152,10 +152,11 @@ def test_cli_auto_only_with_the_auto_threshold_flag():
 
 def test_cli_simulate_room_without_a_file_is_calibrated_fixed_not_auto():
     args = cli.build_parser().parse_args(["--simulate-room"])
-    streams, thresholds = cli.build_sources(args, ROOM)
+    thresholds = cli.build_sources(args, ROOM).thresholds
     assert thresholds is not None and set(thresholds) == LABELS  # the simulated empty-room calibration
     assert all(value > 0 for value in thresholds.values())
-    _, auto_thresholds = cli.build_sources(cli.build_parser().parse_args(["--simulate-room", "--auto-threshold"]), ROOM)
+    auto_thresholds = cli.build_sources(cli.build_parser().parse_args(["--simulate-room", "--auto-threshold"]),
+                                        ROOM).thresholds
     assert auto_thresholds is None
 
 
