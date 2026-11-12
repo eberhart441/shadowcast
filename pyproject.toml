@@ -9,7 +9,7 @@ description = "WiFi CSI presence/motion/breathing detection from ESP32 nodes"
 requires-python = ">=3.10"
 
 [tool.setuptools]
-packages = ["csi"]
+packages = ["csi", "csi.ota"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -21,6 +21,8 @@ markers = [
 
 [tool.ruff]
 line-length = 120
+# Research scripts are kept as the record that produced the reports, not maintained code.
+extend-exclude = ["docs/research"]
 
 [tool.ruff.lint]
 # Pyflakes plus syntax errors. E/I were left out: with them the repo has 18 long lines and 20 unsorted import

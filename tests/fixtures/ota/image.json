@@ -1,0 +1,9 @@
+{
+  "description": "A tiny ESP32-C5 app image (esptool 5.6.0 ESP32C5FirmwareImage, two segments, SHA-256 appended), signed with espsecure 5.6.0 sign-data --version 2 (RSA-3072) by a test key and by another key (neither private key is kept). Digests from espsecure digest-sbv2-public-key. Test key only: never a kit's.",
+  "unsigned_length": 2608,
+  "signed_length": 8192,
+  "test_key_digest": "1a4cbcb4317fc5faba763c97c50d0100efdd230fa63a0b939274db92ed5ea894",
+  "other_key_digest": "a5aea169913aad71cbecccb495595943c1a24e308cac8ea3055c1c5d1ed80051",
+  "signed_sha256": "6d24b833feed06696ec1eda1906fcca354c09e6054520c867dd44a779e23250f",
+  "chip_id": 23
+}

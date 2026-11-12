@@ -335,6 +335,11 @@ The page is `web/index.html`, one static file with no network assets.
 - **Room.** The nodes at their configured positions (receivers and senders drawn differently; a node
   outside the room is drawn with a dashed leader), the links coloured by state, and the heatmap. A caption
   says it is a rough motion-likelihood estimate, not a position track.
+- **Room state and zones** (transceiver rigs). A line above the map gives the room state, and the map draws
+  each zone: MOTION filled red, POSSIBLY OCCUPIED dashed and hatched orange, EMPTY a faint outline. A zone
+  reads possibly occupied for 60 s (`--possibly-occupied-s`) after its motion stops, because a person who
+  stands still fades from the score ([ADR-0030](adr/0030-possibly-occupied-hold.md)). After that a still
+  person is not shown: decision support, not a guarantee.
 - **Links.** One card per link: state, score against threshold, packet rate, drops, RSSI, whether it
   contributes heat, and a 30 s score sparkline.
 - **Status bar.** Receivers (connected, finished or failed), link counts by state, calibration state,
@@ -427,6 +432,8 @@ Exactly one packet source is required:
 | `--auto-ports` | Find each enabled receiver's port by its USB serial (`"serial"` in the room file). Fails, naming them, if any enabled receiver is not connected, has no serial, or matches more than one port. |
 | `--port [NAME=]PATH` | A receiver's serial port; repeat for each receiver. A value is named when the part before the first `=` contains no `/`. Unnamed values become `rx1`, `rx2`, ... skipping names already given. A port named after a disabled node is never opened. |
 | `--simulate-room` | A simulated person walks a loop through the room in real time. No hardware. |
+| `--simulate` | A simulated transceiver rig: the room's transceivers send [round broadcasts](round-broadcast.md) while a person walks a loop, in real time. No hardware. Needs a room with at least two transceivers, for example `--room config/room_tr8.json` (8 nodes, 56 links). Every link is in auto mode. |
+| `--node-gateway PATH` | The serial port of a gateway node of the transceiver rig (`firmware/node`, role `gateway`): every round broadcast it hears is read from its binary [gateway records](gateway-record.md). Needs a room with at least two transceivers whose `serial` is each board's, for example `--room config/room_tr2.json`. Every link is in auto mode. See [the two-node rig check](rig-checks/two-nodes.md). |
 | `--replay run.jsonl` | Serve a run written with `--log`. See [Logging and replay](#logging-and-replay). |
 | `--replay-session DIR` | Feed a recorded session through the live pipeline. See [Logging and replay](#logging-and-replay). |
 
@@ -440,7 +447,9 @@ Other options:
 | `--room PATH` | `config/room.json`, or `$CSI_ROOM` when set | Room configuration. |
 | `--baud N` | 921600 | Serial baud rate. |
 | `--seed N` | 0 | Simulator seed. |
-| `--sim-quiet-first SECONDS` | 0 | With `--simulate-room`: the simulated room stays empty this long before the walk starts, so Calibrate can be tried. 60 is a good value; a default calibration takes about 45 s. |
+| `--sim-quiet-first SECONDS` | 0 | With `--simulate-room` or `--simulate`: the simulated room stays empty this long before the walk starts, so Calibrate can be tried. 60 is a good value; a default calibration takes about 45 s. |
+| `--possibly-occupied-s SECONDS` | 60 | With `--simulate`, `--node-gateway` or `--replay-rounds`: how long a zone that stops moving reads POSSIBLY_OCCUPIED before EMPTY ([ADR-0030](adr/0030-possibly-occupied-hold.md)); 0 turns the hold off. |
+| `--kit-key PATH` | see right | The kit key round broadcasts are verified with ([`round-broadcast.md`](round-broadcast.md) "Kit key"). `--node-gateway` reads `data/kit.key` by default and will not start without it; `--replay-rounds` defaults to the simulator's published test key, so pass the recorded kit's key to replay a real rig. |
 | `--log run.jsonl` | none | Append the state stream to a file. |
 | `--speed 1\|N\|max` | 1 | Replay speed. |
 | `--margin X` | 1.25 | With `--replay-session` and no `--thresholds`: the calibration margin. |
@@ -453,7 +462,12 @@ The server checks the combination at start and exits with an error when:
 
 - more than one source, or none, is given;
 - `--speed` is given without `--replay` or `--replay-session`;
-- `--sim-quiet-first` is given without `--simulate-room`;
+- `--sim-quiet-first` is given without `--simulate-room` or `--simulate`;
+- `--possibly-occupied-s` is given without `--simulate`, `--node-gateway` or `--replay-rounds`;
+- `--thresholds` or `--raw-log` is combined with `--simulate` or `--node-gateway`;
+- `--simulate` or `--node-gateway` is given a room with fewer than two transceivers;
+- `--kit-key` is given without `--node-gateway` or `--replay-rounds`, or the kit key file is missing, malformed or
+  holds the published test key;
 - `--margin` is given without `--replay-session`;
 - `--log` or `--thresholds` is combined with `--replay` (a log already holds its states);
 - `--auto-threshold` is combined with a replay;
@@ -472,6 +486,8 @@ The server checks the combination at start and exits with an error when:
 | `POST /api/threshold` | Body `{link, value}` sets one link's threshold. `value` is a positive number, or `null` to return the link to auto in auto mode. |
 | `POST /api/thresholds/save` | Writes all thresholds as `{label: number}` to the save path and returns `{path, thresholds}`. 409 when there is nothing to save. |
 | `POST /api/params` | Body with any of `{sensitivity, decay, rise, falloff}` changes the heatmap live. Ranges: `sensitivity` 0.01 to 10, `decay` 0.05 to 60 s, `rise` 0.01 to 10 s, `falloff` 0.05 to 2 m. |
+| `POST /api/ota` | Body `{image, nodes?, ap_channel?, port?, channel?, bind?}` or `{checkin: true}`: starts a staged OTA rollout through the dashboard's node gateway without stopping the dashboard ([`docs/ota.md`](ota.md)); 202 `{ota}`, progress in `status.ota`. 409 with a `reason`: `running`, `no_gateway`, `no_channel`, `no_signer`, `channel` (the maintenance network would overlap the sensing channel) or the image check's reason. |
+| `POST /api/raw-mode` | Body `{link, on}` turns raw mode on or off for one transceiver link (`n1<-n5`): the gateway (or the simulated rig) sends the request; returns `{raw_mode, sent, via}`. 409 with a `reason` when refused: `budget` (400 B of raw CSI per round in the rig), `node_limit` (2 per node), `not_heard`, `no_gateway`. 400 for an unknown link. See `docs/round-broadcast.md` "Raw mode". |
 
 Status codes for the commands (the `POST` endpoints):
 
@@ -498,8 +514,8 @@ The server binds to `127.0.0.1` by default, so only this machine can reach it.
 - `--host 0.0.0.0` listens on the network with **no authentication**. Anyone who can reach the port can
   read the state, and the commands are refused unless you also pass `--allow-control`. Use it only on a
   network you trust.
-- The five command endpoints (`/api/calibrate`, `/api/calibrate/cancel`, `/api/threshold`,
-  `/api/thresholds/save`, `/api/params`) are enabled only when `--host` is a loopback address
+- The seven command endpoints (`/api/calibrate`, `/api/calibrate/cancel`, `/api/threshold`,
+  `/api/thresholds/save`, `/api/params`, `/api/raw-mode`, `/api/ota`) are enabled only when `--host` is a loopback address
   (`localhost`, `127.0.0.0/8` or `::1`), or when you pass `--allow-control`. Otherwise they return 403.
   The page's controls and `scripts/calibrate.py` use the same endpoints.
 - Every command must also pass these checks, which the server makes before it runs anything:

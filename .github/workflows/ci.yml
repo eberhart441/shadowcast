@@ -33,3 +33,46 @@ jobs:
 
       - name: Test (full suite, parallel)
         run: python -m pytest -q -n auto
+
+  node-core:
+    # Portable C cores of the node firmware (firmware/core), built and run on the PC with gcc, plain and with
+    # AddressSanitizer + UndefinedBehaviorSanitizer.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build and test (gcc)
+        run: CC=gcc bash firmware/core/test.sh
+
+      - name: Build and test (gcc, sanitizers)
+        run: CC=gcc EXTRA_CFLAGS="-fsanitize=address,undefined -fno-sanitize-recover=all -g" bash firmware/core/test.sh
+
+  node-image:
+    # The node image (firmware/node) for ESP32-C5: one build for every board. Built in Espressif's ESP-IDF v6.0
+    # container, pinned by digest (the same release as the local C:\esp\v6.0 tree), so every run uses one toolchain.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    container:
+      image: espressif/idf:v6.0@sha256:59df146f64aa0b13886a13a74682ad157482b446f5cc16582500803c95c71401
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build for esp32c5
+        shell: bash
+        run: |
+          . "$IDF_PATH/export.sh"
+          cd firmware/node
+          idf.py -B build set-target esp32c5
+          idf.py -B build build
+          idf.py -B build size
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: node-image-esp32c5
+          path: |
+            firmware/node/build/node.bin
+            firmware/node/build/bootloader/bootloader.bin
+            firmware/node/build/partition_table/partition-table.bin
+            firmware/node/build/ota_data_initial.bin
+            firmware/node/build/flash_args

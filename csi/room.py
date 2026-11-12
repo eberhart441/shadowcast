@@ -1,8 +1,10 @@
 """Room geometry and a simulated person's position.
 
 The room comes from ``config/room.json``: metres, origin at the top-left corner, x to the right and
-y down. Receivers (role ``receiver``) and senders (role ``sender``, with a MAC) are the nodes. Each
-(receiver, sender) pair is a link, and its motion response to a person is a Gaussian falloff of the
+y down. Receivers (role ``receiver``) and senders (role ``sender``, with a MAC) are the nodes of the
+hackathon rig; transceivers (role ``transceiver``, the default when a node gives no role) both send and
+receive round broadcasts and are told apart by their board serial. Each (receiver, sender) pair is a link,
+and so is each ordered pair of distinct transceivers (``Room.transceiver_links``), and its motion response to a person is a Gaussian falloff of the
 person's distance to the link's segment (clamped to the segment ends).
 
 A node may carry ``"enabled": false``; it is then left out of the room altogether (no receiver or
@@ -11,7 +13,9 @@ default is ``true``. Its name is kept in ``Room.disabled``.
 
 Public API:
     load_room(path)                  -> Room (receivers and senders by name; optional link_weights)
+    room_from_config(obj) / room_config(room)   Room from / to a parsed room.json object (round recordings keep one)
     Room.links()                     -> [(receiver Node, sender Node)] for every pair
+    Room.transceiver_links()         -> [(receiving Node, transmitting Node)] for every ordered transceiver pair
     Room.wall_point(side, inset)     -> (x, y) just inside a wall: "left" | "right" | "top" | "bottom"
     Walk(waypoints, speed_mps, loop) position(t) over time (metres)
     Stand(x, y)                      fixed position
@@ -23,6 +27,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Mapping, Optional, Sequence, Union
@@ -33,8 +38,19 @@ import numpy as np
 # in config/room.json never changes test outcomes).
 DEFAULT_ROOM_PATH = Path(os.environ.get("CSI_ROOM") or Path(__file__).resolve().parent.parent / "config" / "room.json")
 FALLOFF_SIGMA_M = 0.25  # response is exp(-1/2) (about 60 %) at this distance from the segment
+STOP_FADE_S = 1.5       # a person who stops dead leaves the score within this (high-pass plus 1 s window)
 WALL_INSET_M = 0.25     # how far inside the wall a person stands for "near a wall"
 WALLS = ("left", "right", "top", "bottom")
+TRANSCEIVER = "transceiver"
+ROLES = ("receiver", "sender", TRANSCEIVER)
+
+
+def board_serial(value: Optional[str]) -> str:
+    """A board serial (base MAC) in its one form, upper-case hex in colon pairs: ``38:44:be:a5:33:9c``,
+    ``3844BEA5339C`` and ``38:44:BE:A5:33:9C`` are the same board. Anything not 6 bytes long keeps its hex digits
+    only (``csi.ports.normalise_serial`` is this without the colons)."""
+    digits = re.sub(r"[^0-9A-F]", "", (value or "").upper())
+    return ":".join(digits[i:i + 2] for i in range(0, 12, 2)) if len(digits) == 12 else digits
 
 
 @dataclass(frozen=True)
@@ -56,9 +72,23 @@ class Room:
     senders: tuple[Node, ...]
     link_weights: Mapping[str, float] = field(default_factory=dict)  # link label -> weight (default 1.0)
     disabled: tuple[str, ...] = ()  # names of nodes with "enabled": false (not in receivers or senders)
+    transceivers: tuple[Node, ...] = ()  # nodes that both send and receive round broadcasts
 
     def links(self) -> list[tuple[Node, Node]]:
         return [(rx, tx) for rx in self.receivers for tx in self.senders]
+
+    def transceiver_serials(self) -> dict[str, str]:
+        """{transceiver name: board serial (``board_serial`` form)} for every transceiver with a serial."""
+        return {node.name: board_serial(node.serial) for node in self.transceivers if node.serial}
+
+    def transceiver_names(self) -> dict[str, str]:
+        """{board serial: transceiver name}: the one way to name a node from a serial a frame or a report carries
+        (look it up with ``board_serial``)."""
+        return {serial: name for name, serial in self.transceiver_serials().items()}
+
+    def transceiver_links(self) -> list[tuple[Node, Node]]:
+        """(receiving node, transmitting node) for every ordered pair of distinct transceivers: N(N-1) links."""
+        return [(rx, tx) for rx in self.transceivers for tx in self.transceivers if rx is not tx]
 
     def wall_point(self, side: str, inset: float = WALL_INSET_M) -> tuple[float, float]:
         if side == "left":
@@ -73,7 +103,11 @@ class Room:
 
 
 def load_room(path: Union[str, Path] = DEFAULT_ROOM_PATH) -> Room:
-    config = json.loads(Path(path).read_text())
+    return room_from_config(json.loads(Path(path).read_text()))
+
+
+def room_from_config(config: Mapping) -> Room:
+    """A Room from a parsed ``config/room.json`` object."""
     nodes, disabled = [], []
     for name, spec in sorted(config["nodes"].items()):
         enabled = spec.get("enabled", True)
@@ -82,7 +116,10 @@ def load_room(path: Union[str, Path] = DEFAULT_ROOM_PATH) -> Room:
         if not enabled:
             disabled.append(name)
             continue
-        nodes.append(Node(name, spec["role"], float(spec["x"]), float(spec["y"]), spec.get("mac", ""),
+        role = spec.get("role", TRANSCEIVER)
+        if role not in ROLES:
+            raise ValueError(f"node {name}: role must be one of {', '.join(ROLES)}, not {role!r}")
+        nodes.append(Node(name, role, float(spec["x"]), float(spec["y"]), spec.get("mac", ""),
                           spec.get("chip", ""), spec.get("serial", "")))
     return Room(
         width_m=float(config["room"]["width_m"]),
@@ -91,7 +128,26 @@ def load_room(path: Union[str, Path] = DEFAULT_ROOM_PATH) -> Room:
         senders=tuple(n for n in nodes if n.role == "sender"),
         link_weights={k: float(v) for k, v in config.get("link_weights", {}).items()},
         disabled=tuple(disabled),
+        transceivers=tuple(n for n in nodes if n.role == TRANSCEIVER),
     )
+
+
+def room_config(room: Room) -> dict:
+    """``room`` as a ``config/room.json`` object: ``room_from_config(room_config(room)) == room``.
+
+    A disabled node keeps only its name (``"enabled": false``); its position is not in the Room.
+    """
+    nodes: dict[str, dict] = {}
+    for node in (*room.receivers, *room.senders, *room.transceivers):
+        spec: dict = {"role": node.role, "x": node.x, "y": node.y}
+        spec.update((key, value) for key, value in (("mac", node.mac), ("chip", node.chip), ("serial", node.serial))
+                    if value)
+        nodes[node.name] = spec
+    nodes.update((name, {"enabled": False}) for name in room.disabled)
+    config: dict = {"room": {"width_m": room.width_m, "depth_m": room.depth_m}, "nodes": nodes}
+    if room.link_weights:
+        config["link_weights"] = dict(room.link_weights)
+    return config
 
 
 def point_segment_distance(points: np.ndarray, a: Sequence[float], b: Sequence[float]) -> np.ndarray:
@@ -109,11 +165,11 @@ def link_responses(room: Room, person: Optional["Person"], t: np.ndarray,
     n = len(t)
     if person is None:
         return {(rx.name, tx.mac): np.zeros(n) for rx, tx in room.links()}
-    positions = person.position(t)
+    positions, moving = person.position(t), movement(person, t)
     out = {}
     for rx, tx in room.links():
         d = point_segment_distance(positions, (rx.x, rx.y), (tx.x, tx.y))
-        out[(rx.name, tx.mac)] = gain * np.exp(-d ** 2 / (2 * FALLOFF_SIGMA_M ** 2))
+        out[(rx.name, tx.mac)] = gain * moving * np.exp(-d ** 2 / (2 * FALLOFF_SIGMA_M ** 2))
     return out
 
 
@@ -154,7 +210,39 @@ class Stand:
         return np.tile([self.x, self.y], (len(t), 1)).astype(float)
 
 
-Person = Union[Walk, Stand]
+@dataclass(frozen=True)
+class WalkAndStop:
+    """Walk through ``waypoints`` at ``speed_mps``, then stand still at the last one, raising no link.
+
+    ``Walk`` and ``Stand`` raise the links near them for as long as they are there, like a person who keeps moving
+    slightly in place; the adaptive baseline absorbs that in about 30 s. This person instead stops dead: a still
+    body is static to the score's high-pass, so the links' response fades out over ``STOP_FADE_S`` after the stop
+    (docs/theory.md, section 11: one to two seconds). The simulators scale the response by ``moving(t)``.
+    """
+    waypoints: tuple[tuple[float, float], ...]
+    speed_mps: float = 0.5
+
+    @property
+    def stop_s(self) -> float:
+        """Time the person reaches the last waypoint and stops."""
+        pts = np.asarray(self.waypoints, dtype=float)
+        return float(np.linalg.norm(np.diff(pts, axis=0), axis=1).sum()) / self.speed_mps
+
+    def position(self, t: np.ndarray) -> np.ndarray:
+        return Walk(self.waypoints, self.speed_mps).position(t)
+
+    def moving(self, t: np.ndarray) -> np.ndarray:
+        """How much the person still moves at each time, 1 (walking) to 0 (still): falls linearly after the stop."""
+        return np.clip(1.0 - (np.asarray(t, dtype=float) - self.stop_s) / STOP_FADE_S, 0.0, 1.0)
+
+
+Person = Union[Walk, Stand, WalkAndStop]
+
+
+def movement(person: "Person", t: np.ndarray) -> np.ndarray:
+    """How much ``person`` moves at each time, 0..1: their ``moving(t)``, else 1 (the response follows position)."""
+    moving = getattr(person, "moving", None)
+    return np.ones(len(t)) if moving is None else moving(t)
 
 
 def stand_near_wall(room: Room, side: str, inset: float = WALL_INSET_M) -> Stand:

@@ -5,7 +5,8 @@
     server.wait_finished()  # for finite sources: True once every source is exhausted
     server.stop()           # closes the sources and the HTTP server
 
-``sources`` maps receiver name to a (host_ts, line) stream, the same seam as ``serial_stream``. A
+``sources`` maps receiver name to a (host_ts, line) stream, the same seam as ``serial_stream``, or, for the
+transceiver pipeline, a source name (a gateway) to a (host_ts, round broadcast bytes) stream. A
 source that raises is reported in ``status.receivers`` / ``status.errors`` and the others keep running.
 Without ``thresholds`` every link is UNCALIBRATED (reported in ``status.messages``), not an error.
 
@@ -13,7 +14,21 @@ HTTP:
     GET /              the static page (web/index.html)
     GET /api/state     one payload: DashboardState.snapshot() plus the ``status`` extension below
     GET /api/events    text/event-stream; ``data: <payload json>`` at most ~5 Hz and a last event
-                       (``status.finished`` true) when the sources finish; then the stream closes
+                       (``status.finished`` true) when the sources finish; then the stream closes. A room with
+                       more than FRAME_LINKS_MAX links sends payloads without ``links`` (ADR-0024)
+    GET /api/link?id=<label>   {link, time_s}: one link's full row on demand; 400 without id, 404 if unknown
+    POST /api/raw-mode {"link": "n1<-n5", "on": true|false}: raw mode for one transceiver link (csi/raw_mode.py),
+                       sent through a gateway in ``gateways``; 200 {raw_mode, sent, via}, 400 for a bad body
+                       or unknown link, 409 {error, reason} when refused (byte budget, a node's limit, the node not
+                       heard yet, no gateway that can send, a replayed run). A command like the others: loopback only
+                       unless --allow-control (ADR-0015)
+    POST /api/ota {"image": path, "nodes": [names or serials], "ap_channel": n, "port": n, "channel": n,
+                       "bind": address, "checkin": bool}: start a staged rollout of a signed node image (csi/ota)
+                       through the gateway this dashboard holds, without stopping it; every field but image is
+                       optional (nodes: every transceiver; port 8070; channel: the gateway's own). 202 {ota}, 400 for
+                       a bad body, unknown node or unreadable image, 409 {error, reason} when refused (running,
+                       no_gateway, no_channel, no_signer, channel, or the image check's reason). A command
+                       like the others (ADR-0015); progress is in status.ota
     anything else      404
 
 ``status`` extension (added to DashboardState's status block):
@@ -22,9 +37,13 @@ HTTP:
     finished           True once every source has ended and its packets are drained
     calibrated_links   link labels with a threshold
     uncalibrated_links link labels without one
-    messages           human-readable notes (uncalibrated links, failed receivers)
+    messages           human-readable notes (uncalibrated links, failed receivers, unknown nodes, rejected or
+                       dropped round broadcasts)
+    links_in_frames    False when event-stream frames leave out the per-link rows
+    ota                the rollout started by POST /api/ota (csi.ota.RolloutJob.status), None before one
 
-Frames: the pump emits a frame every ``frame_interval_s`` of packet time, so a fast finite stream still
+Frames are captured under the lock (``DashboardState.capture``) and rendered to JSON after the pump releases it.
+The pump emits a frame every ``frame_interval_s`` of packet time, so a fast finite stream still
 yields intermediate events. Frames are kept in a bounded log; an event stream opened after the sources
 finished replays the retained run from its oldest frame, one whose live counterpart sends the latest.
 """
@@ -42,15 +61,23 @@ from dataclasses import asdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import BinaryIO, Iterator, Mapping, Optional, Sequence, TextIO, Union
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
-from .dashboard import DashboardState
+from .dashboard import Capture, DashboardState
+from .gateway_records import LOSS_COUNTERS
+
 from .live_calibration import CalibrationJob, RequestError, parse_request
-from .links import LinkId, calibrate_links, save_thresholds
+from .links import calibrate_links, room_link_ids, save_thresholds
 from .multisource import MultiSource
 from .parser import CSIPacket, Stream
+from .raw_mode import RawModeRefused, SendingGateway, raw_messages
 from .room import Room, Walk
-from .simulate import simulate_room, simulate_room_links
+from .room_state import POSSIBLY_OCCUPIED_S
+from .round_auth import TEST_KIT_KEY
+from . import ota
+from .ota import RolloutJob
+from .rounds import AUTH, DUPLICATE, QUEUE_OVERFLOW, HeardBroadcast
+from .simulate import SimulatedRig, simulate_room, simulate_room_links
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8000
@@ -60,6 +87,7 @@ REORDER_STARTUP_S = 2.0    # wall-clock wait for a connected receiver that has n
 WALL_CLOCK_TOLERANCE_S = 5.0  # packets stamped within this of the wall clock count as live
 MIN_EVENT_GAP_S = 0.2      # wall-clock gap between two SSE events: at most ~5 Hz
 FRAME_LOG_MAX = 1200       # frames kept for replay (4 minutes at 5 Hz)
+FRAME_LINKS_MAX = 64       # a room with more links sends frames without per-link rows (GET /api/link has them)
 CALIBRATION_JOIN_S = 30.0  # how long a run's final frame waits for a calibration still processing
 LIVE_LAG_FRAMES = 5        # a live client further behind than this skips to the newest frame
 KEEPALIVE_S = 15.0         # SSE comment sent when idle, so dead clients are noticed
@@ -72,10 +100,13 @@ SIM_CALIBRATION_SEED = 10
 LOG_FORMAT = "csi-dashboard-log"  # first line of a --log file; replay.py refuses other files
 LOG_VERSION = 1
 COMMAND_PATHS = frozenset({"/api/calibrate", "/api/calibrate/cancel", "/api/threshold",
-                           "/api/thresholds/save", "/api/params"})
+                           "/api/thresholds/save", "/api/params", "/api/raw-mode", "/api/ota"})
 MAX_BODY_BYTES = 64 * 1024
 DEFAULT_THRESHOLDS_FILE = "links_thresholds.json"   # working directory, unless --save-thresholds says otherwise
 COMMAND_LOG_MAX = 20
+DEFAULT_OTA_SIGNER = Path(__file__).resolve().parent.parent / "data" / "ota-signing.digest"
+OTA_FIELDS = frozenset({"image", "nodes", "ap_channel", "port", "channel", "bind", "checkin"})
+SEND_TIMEOUT_S = 2.0       # a command's write to a gateway's port that takes longer is given up (503 "timeout")
 # live heatmap parameters: request key -> (heatmap attribute, allowed range)
 PARAM_RANGES = {
     "sensitivity": ("sensitivity", (0.01, 10.0)),
@@ -235,6 +266,9 @@ class _Handler(BaseHTTPRequestHandler):
             self._send(200, "application/json; charset=utf-8", dash.state_json().encode())
         elif path == "/api/events":
             self._events(dash)
+        elif path == "/api/link":
+            ids = parse_qs(urlsplit(self.path).query).get("id")
+            self._json(*dash.link_detail(ids[0] if ids else None))
         elif path in ("/", "/index.html"):
             self._send(200, "text/html; charset=utf-8", dash.index_bytes())
         else:
@@ -401,6 +435,10 @@ class FrameServer:
         """GET of a server-specific resource (none in the base server): None means not found."""
         return None
 
+    def link_detail(self, label: Optional[str]) -> tuple[int, dict]:
+        """GET /api/link?id=<label>: one link's full row on demand, as (HTTP status, JSON object)."""
+        return 404, {"error": f"per-link detail is {REPLAY_OFF}"}
+
     def __enter__(self) -> "FrameServer":
         return self
 
@@ -449,7 +487,13 @@ class DashboardServer(FrameServer):
 
     ``log`` appends the frame stream to a file: a header line (room, thresholds, heatmap parameters, start
     time, ``log_meta``, ``notes``) and then one payload per line, exactly as /api/events sends them.
-    ``notes`` are extra human-readable lines for ``status.messages``.
+    ``notes`` are extra human-readable lines for ``status.messages``. Round broadcasts are verified with
+    ``kit_key`` (csi/round_auth.py; by default the published test key the simulator signs with).
+    ``gateways`` maps a source name to the object that can send for it (a node gateway, the simulated rig):
+    raw mode requests go out through the one that last delivered the target node's round broadcast.
+    ``possibly_occupied_s`` is the transceiver room state's possibly-occupied hold (csi/room_state.py).
+    ``ota_signer`` is the file with the kit's trusted image signing key digest that POST /api/ota checks images
+    against (default data/ota-signing.digest).
     """
 
     def __init__(self, room: Room, sources: Mapping[str, Stream], thresholds: Optional[Mapping[str, float]] = None,
@@ -458,14 +502,27 @@ class DashboardServer(FrameServer):
                  log: Optional[Union[str, Path]] = None, log_meta: Optional[Mapping] = None,
                  notes: Sequence[str] = (), allow_control: bool = False,
                  thresholds_path: Optional[Union[str, Path]] = None, replay: bool = False,
-                 mode: str = "fixed", **heatmap_params) -> None:
+                 mode: str = "fixed", kit_key: bytes = TEST_KIT_KEY,
+                 possibly_occupied_s: float = POSSIBLY_OCCUPIED_S,
+                 gateways: Optional[Mapping[str, SendingGateway]] = None,
+                 ota_signer: Optional[Union[str, Path]] = None, **heatmap_params) -> None:
         network_control = allow_control and not is_loopback(host)
         super().__init__(host, port, web_index, trusted_host=host if network_control else None)
         self._room = room
-        self._state = DashboardState(room, dict(thresholds or {}), mode=mode, **heatmap_params)
-        self._expected = [LinkId(rx.name, tx.mac) for rx, tx in room.links()]
+        self._kit_key = bytes(kit_key)
+        self._state = DashboardState(room, dict(thresholds or {}), mode=mode, kit_key=kit_key,
+                                     possibly_occupied_s=possibly_occupied_s, **heatmap_params)
+        self._expected = [link_id for link_id, _, _ in room_link_ids(room)]
         self._labels = {link.label for link in self._expected}
         self._controls_on = controls_allowed(host, allow_control)
+        self._gateways = dict(gateways or {})
+        self._ota_signer = Path(ota_signer) if ota_signer is not None else DEFAULT_OTA_SIGNER
+        self._ota: Optional[RolloutJob] = None
+        self._ota_starting = False
+        self._serials = room.transceiver_serials()
+        # sources that count what they lost before the host (a node gateway): status.broadcasts.gateways
+        self._lossy = {name: obj for name, obj in {**dict(sources), **self._gateways}.items()
+                       if callable(getattr(obj, "losses", None))}
         self._replay = replay
         self._thresholds_path = Path(thresholds_path) if thresholds_path else Path(DEFAULT_THRESHOLDS_FILE)
         self._calib: Optional[CalibrationJob] = None
@@ -485,6 +542,8 @@ class DashboardServer(FrameServer):
         self._last_mono: Optional[float] = None
         self._pump_thread: Optional[threading.Thread] = None
         self._pipeline_errors: dict[str, str] = {}
+        self._links_in_frames = len(self._expected) <= FRAME_LINKS_MAX
+        self._pending: list[tuple[Capture, dict, bool]] = []   # frames captured under the lock, not yet rendered
 
     # ------------------------------------------------------------------ lifecycle
 
@@ -499,6 +558,8 @@ class DashboardServer(FrameServer):
 
     def stop(self) -> None:
         super().stop()
+        if self._ota is not None:
+            self._ota.stop()
         self._close_log()
 
     def _close_sources(self) -> None:
@@ -522,11 +583,13 @@ class DashboardServer(FrameServer):
             while not self._stop.is_set():
                 for receiver, pkt in self._ms.drain(timeout=0.05):
                     reorder.add(receiver, pkt)
+                self._count_dropped()
                 self._feed(reorder.pop_ready(self._connected_receivers()))
                 self._idle_frame()
                 if self._ms.finished():
                     break
             if not self._stop.is_set():
+                self._count_dropped()
                 self._feed(reorder.pop_ready(self._connected_receivers(), flush=True))
                 self._finish_run()
         except _PipelineError as e:
@@ -543,6 +606,7 @@ class DashboardServer(FrameServer):
                 self._calib.abort("the sources ended before the calibration recording finished")
             self._run_done = True
             self._emit(self._last_host or 0.0, final=True)
+        self._publish()
 
     def _fail_run(self, receiver: Optional[str], error: BaseException) -> None:
         """The pipeline raised: name the receiver (or 'pipeline'), stop the readers, and end the run with a final frame.
@@ -563,14 +627,32 @@ class DashboardServer(FrameServer):
             self._run_done = True
             try:
                 self._emit(self._last_host or 0.0, final=True)
-            except Exception:  # the state itself is broken: a minimal final frame still ends the run
-                fallback = {"links": [], "heatmap": {}, "status": {
-                    "time_s": self._last_host or 0.0, "finished": True, "errors": self._errors(),
-                    "messages": [f"run ended: the pipeline failed: {message}"]}}
-                self._frames.append(json.dumps(fallback), final=True)
+                captured = True
+            except Exception:
+                captured = False
+            errors = self._errors()
+        try:
+            if not captured:
+                raise RuntimeError("the state cannot be captured")
+            self._publish()
+        except Exception:  # the state itself is broken: a minimal final frame still ends the run
+            with self._lock:
+                self._pending = []
+            fallback = {"links": [], "heatmap": {}, "status": {
+                "time_s": self._last_host or 0.0, "finished": True, "errors": errors,
+                "messages": [f"run ended: the pipeline failed: {message}"]}}
+            self._frames.append(json.dumps(fallback), final=True)
 
     def _connected_receivers(self) -> set[str]:
         return {name for name, s in self._ms.status().items() if _receiver_state(s) == "connected"}
+
+    def _count_dropped(self) -> None:
+        """Round broadcasts the sources' queue dropped (the pump fell behind) go into the ingest's counters."""
+        dropped = self._ms.take_dropped()
+        if dropped:
+            with self._lock:
+                for source, n in dropped.items():
+                    self._state.count_dropped(source, n)
 
     def _feed(self, batch: list[tuple[str, CSIPacket]]) -> None:
         if not batch:
@@ -582,12 +664,18 @@ class DashboardServer(FrameServer):
                 except Exception as e:
                     raise _PipelineError(receiver) from e
             self._last_mono = time.monotonic()
+        self._publish()
 
-    def _push_packet(self, receiver: str, pkt: CSIPacket) -> None:
+    def _push_packet(self, receiver: str, pkt: Union[CSIPacket, HeardBroadcast]) -> None:
         """Caller holds the lock."""
-        self._state.push(receiver, pkt)
-        if self._calib is not None and self._calib.active:
-            self._calib.observe(receiver, pkt, time.monotonic())
+        if isinstance(pkt, HeardBroadcast):
+            self._state.push_broadcast(pkt.host_ts, pkt.data, receiver)
+            if self._ota is not None and self._state.last_node is not None:
+                self._ota.heard(self._serials[self._state.last_node])   # back on the round (a staged rollout)
+        else:
+            self._state.push(receiver, pkt)
+            if self._calib is not None and self._calib.active:
+                self._calib.observe(receiver, pkt, time.monotonic())
         if self._last_host is None or pkt.host_ts > self._last_host:
             self._last_host = pkt.host_ts
         if self._next_frame_at is None:
@@ -608,6 +696,7 @@ class DashboardServer(FrameServer):
             if now is not None and self._next_frame_at is not None and now >= self._next_frame_at:
                 self._emit(now)
                 self._next_frame_at = now + self._frame_s
+        self._publish()
 
     def _clock(self) -> Optional[float]:
         """Host time now. Live hardware stamps packets with the wall clock, so while those run the clock
@@ -621,30 +710,51 @@ class DashboardServer(FrameServer):
         return self._last_host + (time.monotonic() - (self._last_mono or time.monotonic()))
 
     def _emit(self, now: float, final: bool = False) -> None:
-        """Append a frame at host time ``now``. Caller holds the lock."""
-        text = json.dumps(self._payload(now))
-        self._frames.append(text, final=final)
-        if self._log_file is not None:
-            self._log_file.write(text + "\n")
-            self._log_file.flush()
+        """Capture a frame at host time ``now``; ``_publish`` renders it. Caller holds the lock (the pump thread)."""
+        self._pending.append((self._state.capture(now), self._status_inputs(now), final))
+
+    def _publish(self) -> None:
+        """Render the captured frames and append them to the log, without the lock. Only the pump thread emits, so
+        frames keep their order."""
+        with self._lock:
+            pending, self._pending = self._pending, []
+        for cap, inputs, final in pending:
+            text = json.dumps(self._render(cap, inputs, links=self._links_in_frames))
+            self._frames.append(text, final=final)
+            if self._log_file is not None:
+                self._log_file.write(text + "\n")
+                self._log_file.flush()
 
     # ------------------------------------------------------------------ payload
 
-    def _payload(self, now: float) -> dict:
-        """Caller holds the lock: DashboardState advances its smoothing to ``now``."""
-        payload = self._state.snapshot(now)
-        payload["status"].update(self._status_extension(now, payload["links"]))
+    def _render(self, cap: Capture, inputs: dict, *, links: bool) -> dict:
+        """A payload from a capture and its status inputs: no lock needed."""
+        payload = self._state.render(cap, links=links)
+        payload["status"]["broadcasts"] = {**payload["status"]["broadcasts"], "gateways": inputs["gateways"]}
+        payload["status"].update(self._status_extension(inputs, cap.rows, payload["status"]["broadcasts"]))
+        payload["status"]["messages"].extend(raw_messages(payload.get("raw_mode") or {}))
+        payload["status"]["links_in_frames"] = self._links_in_frames
         return payload
 
-    def _status_extension(self, now: float, links: Sequence[Mapping]) -> dict:
-        receivers = {name: _receiver_state(s) for name, s in self._ms.status().items()}
-        errors = self._errors()
-        calibrated = sorted(self._state.thresholds)
+    def _status_inputs(self, now: float) -> dict:
+        """What the status extension needs from live state, copied. Caller holds the lock."""
+        return {"receivers": {name: _receiver_state(s) for name, s in self._ms.status().items()},
+                "errors": self._errors(), "finished": self._run_done, "calibrated": sorted(self._state.thresholds),
+                "calibration": self._calib_status(now),
+                "skipped": dict(self._calib.skipped) if self._calib is not None else {},
+                "commands": list(self._commands), "commands_status": self._commands_status(),
+                "gateways": {name: obj.losses() for name, obj in self._lossy.items()},
+                "ota": None if self._ota is None else self._ota.status()}
+
+    def _status_extension(self, inputs: Mapping, links: Sequence[Mapping], broadcasts: Mapping) -> dict:
+        """The ``status`` extension from ``_status_inputs`` and the link rows (LinkMonitor.snapshot rows)."""
+        errors = inputs["errors"]
+        calibrated = inputs["calibrated"]
         adaptive = sorted(row["id"] for row in links if row.get("mode") == "auto")  # no threshold needed
         uncalibrated = sorted(self._labels - set(calibrated) - set(adaptive))
         silent = sorted(row["id"] for row in links if row["id"] in uncalibrated and row["age_s"] is None)
         heard = [label for label in uncalibrated if label not in silent]
-        messages = list(self._notes)
+        messages = list(self._notes) + broadcast_messages(broadcasts)
         if heard:
             messages.append(f"{len(heard)} link(s) UNCALIBRATED ({', '.join(heard)}): no threshold. "
                             "Pass --thresholds links.json, or calibrate on an empty room first.")
@@ -653,20 +763,23 @@ class DashboardServer(FrameServer):
             messages.append(f"{len(silent)} link(s) have no data {where} ({', '.join(silent)}).")
         messages.extend(f"{'pipeline' if name == 'pipeline' else f'receiver {name}'} failed: {msg}"
                         for name, msg in sorted(errors.items()))
-        calibration = self._calib_status(now)
-        if self._calib is not None:
-            messages.extend(f"calibration skipped {label}: {why}" for label, why in self._calib.skipped.items())
-        messages.extend(f"command: {line}" for line in self._commands)
+        messages.extend(f"calibration skipped {label}: {why}" for label, why in inputs["skipped"].items())
+        messages.extend(f"command: {line}" for line in inputs["commands"])
+        ota_status = inputs["ota"]
+        if ota_status is not None and ota_status["state"] in ("failed", "stopped"):
+            messages.append(f"OTA rollout {ota_status['state']} at stage {ota_status['stage']} of "
+                            f"{ota_status['stages']}: {ota_status['failure'] or 'the dashboard stopped it'}")
         return {
-            "receivers": receivers,
+            "receivers": inputs["receivers"],
             "errors": errors,
-            "finished": self._run_done,
+            "finished": inputs["finished"],
             "calibrated_links": calibrated,
             "adaptive_links": adaptive,
             "uncalibrated_links": uncalibrated,
             "messages": messages,
-            "calibration": calibration,
-            "commands": self._commands_status(),
+            "calibration": inputs["calibration"],
+            "commands": inputs["commands_status"],
+            "ota": ota_status,
         }
 
     def _commands_status(self) -> dict:
@@ -682,20 +795,41 @@ class DashboardServer(FrameServer):
         return self._calib.status(now, time.monotonic())
 
     def state_json(self) -> str:
+        """GET /api/state: the payload with every link row, captured under the lock and rendered without it."""
         with self._lock:
             now = self._clock()
-            return json.dumps(self._payload(0.0 if now is None else now))
+            now = 0.0 if now is None else now
+            cap, inputs = self._state.capture(now), self._status_inputs(now)
+        return json.dumps(self._render(cap, inputs, links=True))
 
     # ------------------------------------------------------------------ commands
 
+    def link_detail(self, label: Optional[str]) -> tuple[int, dict]:
+        if not label:
+            return 400, {"error": "name the link: /api/link?id=<link label>, for example id=n1%3C-n5 (n1<-n5)"}
+        with self._lock:
+            now = self._clock()
+            row = self._state.link_detail(label, now)
+        if row is None:
+            return 404, {"error": f"unknown link {label!r}"}
+        return 200, {"link": row, "time_s": now}
+
     def view(self, path: str) -> Optional[dict]:
         if path != "/api/thresholds" or self._replay:
+
             return None
         with self._lock:
             return {"thresholds": self._state.thresholds, "path": str(self._thresholds_path.resolve())}
 
     def command(self, path: str, body: Mapping) -> tuple[int, dict]:
-        """Run one POST command under the lock. Returns (HTTP status, JSON object)."""
+        """Run one POST command under the lock. Returns (HTTP status, JSON object).
+
+        A handler may return a callable instead: the part that writes to a gateway's port, which runs after the
+        lock is released (ADR-0016), so a slow or wedged port never stalls the pump or /api/state."""
+        outcome = self._command_locked(path, body)
+        return outcome() if callable(outcome) else outcome
+
+    def _command_locked(self, path: str, body: Mapping):
         with self._lock:
             if not self._controls_on:
                 return 403, {"error": CONTROL_OFF}
@@ -707,6 +841,8 @@ class DashboardServer(FrameServer):
                 "/api/threshold": self._cmd_threshold,
                 "/api/thresholds/save": self._cmd_save,
                 "/api/params": self._cmd_params,
+                "/api/raw-mode": self._cmd_raw_mode,
+                "/api/ota": self._cmd_ota,
             }
             try:
                 return handlers[path](body)
@@ -766,7 +902,10 @@ class DashboardServer(FrameServer):
         value = body.get("value")
         if not _finite_positive(value):
             raise RequestError(f"value must be a positive number, or null for auto, got {value!r}")
-        self._state.set_threshold(link, float(value))
+        try:
+            self._state.set_threshold(link, float(value))
+        except ValueError as e:   # a transceiver link takes no threshold: adaptive baseline only (ADR-0029)
+            raise RequestError(str(e)) from None
         self._commands.append(f"threshold {link} = {float(value):.4g}")
         return 200, {"link": link, "threshold": float(value)}
 
@@ -796,15 +935,194 @@ class DashboardServer(FrameServer):
             if not lo <= value <= hi:
                 raise RequestError(f"{key} must be between {lo:g} and {hi:g}, got {value:g}")
             changes[attr] = float(value)
-        self._state.set_params(**changes)
+        try:
+            self._state.set_params(**changes)
+        except ValueError as e:   # e.g. the footprint falloff on a radio-tomography heatmap
+            raise RequestError(str(e)) from None
         self._commands.append("parameters: " + ", ".join(f"{k}={float(v):g}" for k, v in body.items()))
         return 200, {"parameters": self._state.parameters()}
+
+    def _cmd_raw_mode(self, body: Mapping) -> tuple[int, dict]:
+        unknown = sorted(set(body) - {"link", "on"})
+        if unknown:
+            raise RequestError(f"unknown field(s): {', '.join(unknown)}; expected link and on")
+        link, on = body.get("link"), body.get("on")
+        if not isinstance(link, str) or not isinstance(on, bool):
+            raise RequestError(f'name a link and true or false: {{"link": "n1<-n5", "on": true}}, got {dict(body)!r}')
+        via = self._gateway_for(link)
+        serial = getattr(self._gateways.get(via), "gateway_serial", None) if via else None
+        now = self._clock()
+        try:
+            frames = self._state.raw_mode_request(link, on, 0.0 if now is None else now, serial)
+        except RawModeRefused as e:
+            return (400 if e.reason == "unknown_link" else 409), {"error": str(e), "reason": e.reason}
+        gateway = self._gateways[via]
+
+        def send() -> tuple[int, dict]:   # off the lock: a port write may block
+            error = send_with_timeout(gateway, frames, SEND_TIMEOUT_S)
+            if error is not None:
+                reason, why = error
+                return 503, {"error": f"gateway {via} could not send the raw mode request: {why}", "reason": reason}
+            with self._lock:
+                self._commands.append(f"raw mode {'on' if on else 'off'} {link} (sent via {via}, {len(frames)} "
+                                      "copies)")
+                status = self._state.raw_mode_status(0.0 if now is None else now)
+            return 200, {"raw_mode": status, "sent": len(frames), "via": via}
+
+        return send
+
+    def _cmd_ota(self, body: Mapping) -> Union[tuple[int, dict], object]:
+        """POST /api/ota: checks under the lock; the image is read and checked and the rollout started off it."""
+        unknown = sorted(set(body) - OTA_FIELDS)
+        if unknown:
+            raise RequestError(f"unknown field(s): {', '.join(unknown)}; allowed: {', '.join(sorted(OTA_FIELDS))}")
+        checkin = body.get("checkin", False)
+        image_path = body.get("image")
+        if not isinstance(checkin, bool) or (not checkin and not isinstance(image_path, str)):
+            raise RequestError('name the signed image: {"image": "node-signed.bin"}, or {"checkin": true}')
+        numbers = {key: body.get(key, default) for key, default in (("ap_channel", 0), ("port", 8070))}
+        for key in ("ap_channel", "port", "channel"):
+            value = body.get(key, numbers.get(key))
+            if value is not None and (isinstance(value, bool) or not isinstance(value, int) or value < 0):
+                raise RequestError(f"{key} must be a whole number, got {value!r}")
+        try:
+            serials = ota.target_serials(self._room, body.get("nodes") or ())
+        except ValueError as e:
+            raise RequestError(str(e)) from None
+        if not serials:
+            raise RequestError("the room has no transceiver with a serial to update")
+        if (self._ota is not None and self._ota.active) or self._ota_starting:
+            return 409, {"error": "an OTA rollout is already running", "reason": "running",
+                         "ota": None if self._ota is None else self._ota.status()}
+        ready = [name for name, g in self._gateways.items()
+                 if getattr(g, "gateway_serial", None) and callable(getattr(g, "send_maintenance", None))]
+        if not ready:
+            return 409, {"error": "OTA needs a node gateway that can send maintenance commands (--node-gateway)",
+                         "reason": "no_gateway"}
+        gateway = self._gateways[ready[0]]
+        channel = body.get("channel", getattr(gateway, "channel", None))
+        if not channel:
+            return 409, {"error": "the sensing channel is not known yet (no status record from the gateway): pass "
+                                  '"channel"', "reason": "no_channel"}
+        if not ota.channels_clear(channel, numbers["ap_channel"]):
+            return 409, {"error": f"a maintenance network on channel {numbers['ap_channel']} overlaps sensing channel "
+                                  f"{channel}: put it on 5 GHz or 5+ channels away", "reason": "channel"}
+        self._ota_starting = True
+        return lambda: self._start_ota(gateway, ready[0], serials, image_path, checkin, numbers, channel,
+                                       body.get("bind", "0.0.0.0"))
+
+    def _start_ota(self, gateway, via: str, serials: list[str], image_path: Optional[str], checkin: bool,
+                   numbers: Mapping[str, int], channel: int, bind: str) -> tuple[int, dict]:
+        """Off the lock: read and check the image, open the image server and start the rollout's thread."""
+        try:
+            outcome = self._make_ota(gateway, serials, image_path, checkin, numbers, channel, bind)
+            if isinstance(outcome, tuple):
+                return outcome
+            with self._lock:
+                self._ota = outcome.start()
+                what = "check-in" if checkin else f"rollout of {image_path}"
+                self._commands.append(f"OTA {what} to {len(serials)} node(s) via {via}")
+                return 202, {"ota": self._ota.status()}
+        finally:
+            with self._lock:
+                self._ota_starting = False
+
+    def _make_ota(self, gateway, serials, image_path, checkin, numbers, channel, bind):
+        data, image = b"", None
+        if not checkin:
+            try:
+                signer = ota.load_signer(self._ota_signer)
+            except (OSError, ValueError) as e:
+                return 409, {"error": f"no trusted signing key digest ({self._ota_signer}): {e}", "reason": "no_signer"}
+            try:
+                data = Path(image_path).read_bytes()
+            except OSError as e:
+                return 400, {"error": f"cannot read {image_path}: {e.strerror or e}"}
+            try:
+                image = ota.check_image(data, signer)
+            except ota.ImageError as e:
+                return 409, {"error": f"image refused ({e.reason}): {e}", "reason": e.reason}
+        try:
+            server = ota.ImageServer(data, self._kit_key, host=bind, port=numbers["port"])
+        except OSError as e:
+            return 409, {"error": f"cannot serve the image on {bind}:{numbers['port']}: {e}", "reason": "port"}
+        command = ota.OTA_CMD_REPORT if checkin else ota.OTA_CMD_UPDATE
+
+        def make_rollout(send, log):
+            return ota.Rollout(ota.plan_stages(serials), self._kit_key, command=command, image=image,
+                               port=server.port, ap_channel=numbers["ap_channel"], sensing_channel=channel,
+                               send=send, log=log)
+
+        try:
+            return ota.RolloutJob(make_rollout, server, gateway.send_maintenance)
+        except ValueError as e:
+            server.close()
+            return 409, {"error": str(e), "reason": "channel"}
+
+    def _gateway_for(self, label: str) -> Optional[str]:
+        """The source to send a raw mode request through: the one that last delivered the target node's round
+        broadcast if it can send, else the first that knows its own serial."""
+        last = self._state.last_source(label)
+        if last in self._gateways:
+            return last
+        ready = [name for name, t in self._gateways.items() if getattr(t, "gateway_serial", None)]
+        return ready[0] if ready else next(iter(self._gateways), None)
 
     def _apply_threshold(self, label: str, value: float) -> None:
         """Calibration's apply hook; the caller holds the lock."""
         self._state.set_threshold(label, value)
         self._commands.append(f"threshold {label} = {value:.4g} (calibration)")
 
+
+def send_with_timeout(gateway: SendingGateway, frames: Sequence[bytes],
+                      timeout_s: float) -> Optional[tuple[str, str]]:
+    """Hand ``frames`` to ``gateway`` on a worker thread and wait at most ``timeout_s`` for it. None when every
+    frame was written; else (reason, message): "send" for a port error, "timeout" for a write still blocked (the
+    worker is left to finish or fail on its own; it is a daemon, so it never holds the process up)."""
+    result: list[Optional[tuple[str, str]]] = []
+
+    def write() -> None:
+        try:
+            for frame in frames:
+                gateway.send_frame(frame)
+            result.append(None)
+        except (OSError, RuntimeError) as e:
+            result.append(("send", str(e) or type(e).__name__))
+
+    worker = threading.Thread(target=write, name="gateway-send", daemon=True)
+    worker.start()
+    worker.join(timeout_s)
+    if not result:
+        return "timeout", f"the port write did not finish within {timeout_s:g} s"
+    return result[0]
+
+
+def broadcast_messages(counts: Mapping) -> list[str]:
+    """Operator lines for round broadcasts that were not used: unknown nodes, rejections, queue overflow."""
+    out = []
+    unknown = counts.get("unknown_nodes") or {}
+    if unknown:
+        named = ", ".join(f"{serial} ({n})" for serial, n in sorted(unknown.items()))
+        out.append(f"{len(unknown)} unknown node(s) heard, not in config/room.json: {named}. Their round "
+                   "broadcasts are counted but not used: add each serial to the room config, or switch the board off.")
+    rejected = counts.get("rejected") or {}
+    bad = {reason: n for reason, n in rejected.items() if n and reason not in (DUPLICATE, QUEUE_OVERFLOW)}
+    if bad:
+        hint = (" Failed authentication (auth) means a node has another kit key (compare `scripts/node.py PORT key` "
+                "with the host's) or someone is sending forged round broadcasts." if bad.get(AUTH) else "")
+        out.append(f"{sum(bad.values())} round broadcast(s) rejected: "
+                   + ", ".join(f"{reason} {n}" for reason, n in sorted(bad.items())) + "." + hint)
+    if rejected.get(QUEUE_OVERFLOW):
+        out.append(f"{rejected[QUEUE_OVERFLOW]} round broadcast(s) dropped because the host fell behind (queue full).")
+    for name, lost in sorted((counts.get("gateways") or {}).items()):
+        parts = {key: lost.get(key, 0) for key in LOSS_COUNTERS}
+        parts.update(lost.get("records_rejected") or {})
+        parts = {key: n for key, n in parts.items() if n}
+        if parts:
+            out.append(f"gateway {name} lost frames before the host: " + ", ".join(f"{k} {n}" for k, n in parts.items())
+                       + " (queue_full, usb_dropped and csi_skipped on the gateway since its boot; the rest are USB "
+                       "records that failed their checks).")
+    return out
 
 
 class _PipelineError(Exception):
@@ -870,3 +1188,12 @@ def _looping(name: str, room: Room, person: Walk, period: float, seed: int, quie
         lines = streams[name]
         yield from (lines if cycle == 0 else itertools.islice(lines, 1, None))  # one header is enough
         start_s += duration_s
+
+
+def simulated_rig_streams(room: Room, *, seed: int = 0, quiet_first_s: float = 0.0,
+                          realtime: bool = True) -> dict[str, Stream]:
+    """One endless round broadcast stream from the simulated transceiver rig, as one gateway ("sim-gateway") hears
+    it: ``default_walk`` repeated, after ``quiet_first_s`` seconds of an empty room. The stream is a
+    ``SimulatedRig``, so it is also the gateway that sends raw mode requests."""
+    return {"sim-gateway": SimulatedRig(room, default_walk(room), quiet_first_s=quiet_first_s, seed=seed,
+                                        realtime=realtime)}

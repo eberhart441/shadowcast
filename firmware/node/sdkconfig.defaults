@@ -1,0 +1,28 @@
+# The node image (firmware/node). Settings that differ per board are runtime settings in NVS, not here.
+# Console on UART0 pins only, nothing on USB: the USB Serial/JTAG port carries only gateway records
+# (docs/gateway-record.md), written by the app. No CSI is ever printed.
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+CONFIG_ESP_CONSOLE_UART_BAUDRATE=115200
+CONFIG_BOOTLOADER_LOG_LEVEL_WARN=y
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+CONFIG_FREERTOS_HZ=1000
+CONFIG_ESP_WIFI_CSI_ENABLED=y
+CONFIG_ESP_WIFI_AMPDU_TX_ENABLED=n
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=128
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=30
+
+# Over-the-air updates (docs/adr/0031, docs/ota.md): two app slots, rollback on a failed health check, and only
+# images signed like the running one (Secure Boot V2 RSA-3072 signature block, no hardware secure boot). CI builds
+# the image unsigned; the user signs it with espsecure and the kit's signing key, which never enters the repo.
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+CONFIG_SECURE_SIGNED_APPS_NO_SECURE_BOOT=y
+CONFIG_SECURE_SIGNED_APPS_RSA_SCHEME=y
+CONFIG_SECURE_SIGNED_ON_UPDATE_NO_SECURE_BOOT=y
+CONFIG_SECURE_BOOT_BUILD_SIGNED_BINARIES=n
+# Images come over plain HTTP from the host on the maintenance network: integrity is the signature and the
+# command's SHA-256, so no TLS code in the image.
+CONFIG_ESP_HTTP_CLIENT_ENABLE_HTTPS=n

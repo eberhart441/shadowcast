@@ -1,0 +1,220 @@
+{
+  "comment": "Frozen 30-node transceiver room for tests (ADR-0017): the 4 x 3 m room of room_tr8.json with 30 nodes evenly spaced round the walls (14 m / 30 = 0.467 m apart), clockwise from near the top-left corner. x right, y down, metres, origin top-left. Every serial ends in 5C, so a link named by the last byte of an address would collide.",
+  "room": {
+    "width_m": 4.0,
+    "depth_m": 3.0
+  },
+  "nodes": {
+    "n01": {
+      "role": "transceiver",
+      "chip": "ESP32-C5",
+      "x": 0.233,
+      "y": 0.0,
+      "serial": "02:00:00:00:01:5C"
+    },
+    "n02": {
+      "role": "transceiver",
+      "chip": "ESP32-C5",
+      "x": 0.7,
+      "y": 0.0,
+      "serial": "02:00:00:00:02:5C"
+    },
+    "n03": {
+      "role": "transceiver",
+      "chip": "ESP32-C5",
+      "x": 1.167,
+      "y": 0.0,
+      "serial": "02:00:00:00:03:5C"
+    },
+    "n04": {
+      "role": "transceiver",
+      "chip": "ESP32-C5",
+      "x": 1.633,
+      "y": 0.0,
+      "serial": "02:00:00:00:04:5C"
+    },
+    "n05": {
+      "role": "transceiver",
+      "chip": "ESP32-C5",
+      "x": 2.1,
+      "y": 0.0,
+      "serial": "02:00:00:00:05:5C"
+    },
+    "n06": {
+      "role": "transceiver",
+      "chip": "ESP32-C5",
+      "x": 2.567,
+      "y": 0.0,
+      "serial": "02:00:00:00:06:5C"
+    },
+    "n07": {
+      "role": "transceiver",
+      "chip": "ESP32-C5",
+      "x": 3.033,
+      "y": 0.0,
+      "serial": "02:00:00:00:07:5C"
+    },
+    "n08": {
+      "role": "transceiver",
+      "chip": "ESP32-C5",
+      "x": 3.5,
+      "y": 0.0,
+      "serial": "02:00:00:00:08:5C"
+    },
+    "n09": {
+      "role": "transceiver",
+      "chip": "ESP32-C5",
+      "x": 3.967,
+      "y": 0.0,
+      "serial": "02:00:00:00:09:5C"
+    },
+    "n10": {
+      "role": "transceiver",
+      "chip": "ESP32-C5",
+      "x": 4.0,
+      "y": 0.433,
+      "serial": "02:00:00:00:0A:5C"
+    },
+    "n11": {
+      "role": "transceiver",
+      "chip": "ESP32-C5",
+      "x": 4.0,
+      "y": 0.9,
+      "serial": "02:00:00:00:0B:5C"
+    },
+    "n12": {
+      "role": "transceiver",
+      "chip": "ESP32-C5",
+      "x": 4.0,
+      "y": 1.367,
+      "serial": "02:00:00:00:0C:5C"
+    },
+    "n13": {
+      "role": "transceiver",
+      "chip": "ESP32-C5",
+      "x": 4.0,
+      "y": 1.833,
+      "serial": "02:00:00:00:0D:5C"
+    },
+    "n14": {
+      "role": "transceiver",
+      "chip": "ESP32-C5",
+      "x": 4.0,
+      "y": 2.3,
+      "serial": "02:00:00:00:0E:5C"
+    },
+    "n15": {
+      "role": "transceiver",
+      "chip": "ESP32-C5",
+      "x": 4.0,
+      "y": 2.767,
+      "serial": "02:00:00:00:0F:5C"
+    },
+    "n16": {
+      "role": "transceiver",
+      "chip": "ESP32-C5",
+      "x": 3.767,
+      "y": 3.0,
+      "serial": "02:00:00:00:10:5C"
+    },
+    "n17": {
+      "role": "transceiver",
+      "chip": "ESP32-C5",
+      "x": 3.3,
+      "y": 3.0,
+      "serial": "02:00:00:00:11:5C"
+    },
+    "n18": {
+      "role": "transceiver",
+      "chip": "ESP32-C5",
+      "x": 2.833,
+      "y": 3.0,
+      "serial": "02:00:00:00:12:5C"
+    },
+    "n19": {
+      "role": "transceiver",
+      "chip": "ESP32-C5",
+      "x": 2.367,
+      "y": 3.0,
+      "serial": "02:00:00:00:13:5C"
+    },
+    "n20": {
+      "role": "transceiver",
+      "chip": "ESP32-C5",
+      "x": 1.9,
+      "y": 3.0,
+      "serial": "02:00:00:00:14:5C"
+    },
+    "n21": {
+      "role": "transceiver",
+      "chip": "ESP32-C5",
+      "x": 1.433,
+      "y": 3.0,
+      "serial": "02:00:00:00:15:5C"
+    },
+    "n22": {
+      "role": "transceiver",
+      "chip": "ESP32-C5",
+      "x": 0.967,
+      "y": 3.0,
+      "serial": "02:00:00:00:16:5C"
+    },
+    "n23": {
+      "role": "transceiver",
+      "chip": "ESP32-C5",
+      "x": 0.5,
+      "y": 3.0,
+      "serial": "02:00:00:00:17:5C"
+    },
+    "n24": {
+      "role": "transceiver",
+      "chip": "ESP32-C5",
+      "x": 0.033,
+      "y": 3.0,
+      "serial": "02:00:00:00:18:5C"
+    },
+    "n25": {
+      "role": "transceiver",
+      "chip": "ESP32-C5",
+      "x": 0.0,
+      "y": 2.567,
+      "serial": "02:00:00:00:19:5C"
+    },
+    "n26": {
+      "role": "transceiver",
+      "chip": "ESP32-C5",
+      "x": 0.0,
+      "y": 2.1,
+      "serial": "02:00:00:00:1A:5C"
+    },
+    "n27": {
+      "role": "transceiver",
+      "chip": "ESP32-C5",
+      "x": 0.0,
+      "y": 1.633,
+      "serial": "02:00:00:00:1B:5C"
+    },
+    "n28": {
+      "role": "transceiver",
+      "chip": "ESP32-C5",
+      "x": 0.0,
+      "y": 1.167,
+      "serial": "02:00:00:00:1C:5C"
+    },
+    "n29": {
+      "role": "transceiver",
+      "chip": "ESP32-C5",
+      "x": 0.0,
+      "y": 0.7,
+      "serial": "02:00:00:00:1D:5C"
+    },
+    "n30": {
+      "role": "transceiver",
+      "chip": "ESP32-C5",
+      "x": 0.0,
+      "y": 0.233,
+      "serial": "02:00:00:00:1E:5C"
+    }
+  },
+  "link_weights": {}
+}

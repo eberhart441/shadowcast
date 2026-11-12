@@ -4,6 +4,55 @@ ESP32 firmware for the CSI rig: `csi_send` transmits packets, `csi_recv` measure
 
 Which board is which (chip, position, sender address, board serial) is in `config/room.json`. Read it there.
 
+The transceiver rig of spec #2 runs its own image, `node/` (below, "Node image"). `csi_send` and `csi_recv` stay for
+the hackathon rig.
+
+## Node image (transceiver rig)
+
+`node/` is one image for every board of the transceiver rig, ESP32-C5 only ([ADR-0026](../docs/adr/0026-one-node-image-runtime-settings-gateway-records.md)).
+There are no build flags and no per-board build directories: what a board does is its node settings, set over USB
+after flashing.
+
+```
+cd firmware/node
+idf.py -B build set-target esp32c5
+idf.py -B build build                                   # ESP-IDF 6.0; CI builds the same in espressif/idf:v6.0
+cd build && esptool --chip esp32c5 -p <PORT> -b 460800 write-flash @flash_args   # unsigned: never takes an OTA
+# for over-the-air updates flash a signed image instead (docs/ota.md "Once per board")
+# a transceiver needs no settings; to change the kit-wide ones, give every node the same values:
+python scripts/node.py <PORT> set channel=6 round_hz=40 guard_us=250
+python scripts/node.py <PORT> set role=gateway channel=6        # the board on the dashboard host
+python scripts/node.py keygen                                     # once per kit: data/kit.key
+python scripts/node.py <PORT> key data/kit.key                    # every transceiver
+python scripts/dashboard.py --node-gateway <GATEWAY PORT> --room config/room_tr2.json
+```
+
+- **Transceiver:** the round scheduler (`core/round_scheduler`) gives it a node index and a slot: it listens,
+  joins the round it hears (or founds one alone), and sends its round broadcast
+  ([`docs/round-broadcast.md`](../docs/round-broadcast.md)) in its slot as an unacknowledged ESP-NOW broadcast at
+  HT20, MCS0. It measures CSI on the others' round broadcasts (HT20 only), scores each link with
+  `core/motion_score` and carries the link reports. Every frame it sends is signed with the kit key, and a heard
+  one whose tag or round number fails is ignored (`main/node_auth.c`, mbedTLS on the SHA accelerator). It needs
+  no per-board setting, only the kit key: without it, it only listens.
+- **Gateway:** listens only and writes every frame it hears to USB as a heard record with its receive time.
+- **USB carries only gateway records** ([`docs/gateway-record.md`](../docs/gateway-record.md)): status once a
+  second, text (log lines and command replies), heard records on a gateway. Read a node with
+  `python scripts/node.py <PORT> status`, not a serial terminal. Nothing goes to the UART after boot, and no CSI is
+  ever formatted as text.
+- **Gain** is the hackathon receiver's (record 100 frames, then force their median gain) until ticket #15.
+- **Over-the-air updates** ([`docs/ota.md`](../docs/ota.md), [ADR-0031](../docs/adr/0031-ota-maintenance-network-signed-images.md)):
+  two 1.875 MB app slots (`node/partitions.csv`, 4 MB flash), rollback on a failed health check, and only images
+  signed with the kit's signing key. The build makes an **unsigned** `node.bin` ("App built but not signed"); sign
+  it with `espsecure sign-data --version 2 --keyfile data/ota-signing.pem` and flash or roll out the signed file
+  (`scripts/ota.py`). A board running an unsigned image refuses every update. The update code is
+  `node/main/node_ota.c` over `core/ota_core.c`; with it the image is 0x110000 B (padded to 64 KB for signing), 43 %
+  of a slot free, and the bootloader 19 % free (ESP-IDF 6.0).
+- The logic that does not need ESP-IDF is in `core/` and tested on the PC; `node/main/` is only the glue (Wi-Fi,
+  ESP-NOW, CSI callback, timer, NVS, USB): `node_main.c` (USB, settings, radio, start), `node_transceiver.c` and
+  `node_gateway.c` (one per role, sharing `node_common.h`), `node_auth.c` and `node_ota.c`.
+- The two-board rig check is [`docs/rig-checks/two-nodes.md`](../docs/rig-checks/two-nodes.md); the round
+  scheduler's (unplug and replug with 3+ boards) is [`docs/rig-checks/round-scheduler.md`](../docs/rig-checks/round-scheduler.md).
+
 ## Our edits to the stock examples
 
 - Channel 6 (`CONFIG_LESS_INTERFERENCE_CHANNEL`), sender and receiver.
@@ -83,6 +132,29 @@ Flashing resets the board, and a receiver takes its gain baseline from the first
 - Flash only one port at a time and confirm it is the right board: list ports with `python -m serial.tools.list_ports -v`, which has no side effects. A port name can change after a reset.
 - Never run `esptool` (including `chip-id`) on a receiver while the dashboard is running.
 - macOS: use `/dev/cu.*` ports.
+
+## Node core (portable C)
+
+`core/` holds firmware logic that is plain C11 with no ESP-IDF calls, so it builds and is tested on a PC:
+`core/motion_score.{h,c}` is the on-node motion score and score code ([ADR-0021](../docs/adr/0021-on-node-score-streaming-window-and-score-code.md)).
+Run its tests with `firmware/core/test.sh` (any C compiler; `scripts/check.sh` runs it too, and CI runs it with gcc).
+They replay `core/tests/vectors/motion_score.txt`, which `scripts/gen_score_vectors.py` writes from the Python scorer.
+
+The node image's other core modules, each with a test in `core/tests/`:
+
+| Module | What it does |
+|---|---|
+| `round_broadcast` | Round broadcast v2 encoder and decoder. Tests replay `tests/vectors/round_broadcast.txt`, flattened from the host's golden fixture `tests/fixtures/round_broadcast_v2.json` by `scripts/gen_wire_vectors.py`. |
+| `round_auth` | The authentication tag (HMAC-SHA256 from a function the platform supplies), the freshness rule against replay, the key check value. Tests replay `tests/vectors/round_auth.txt` (same fixture) with a reference HMAC-SHA256 (`tests/hmac_sha256.c`, checked against RFC 4231). |
+| `gateway_record` | Gateway record v1 encoder (and decoder, for the tests). Same, from `tests/fixtures/gateway_record_v1.json`. |
+| `espnow_frame` | The ESP-NOW body (the round broadcast) inside the frame the CSI callback hands over. |
+| `csi_layout` | One amplitude per kept subcarrier, nulls learned as `csi/parser.py` learns an unknown layout. |
+| `link_table` | Per-transmitter link state and the link reports (calls `motion_score_get` once per link per round). |
+| `round_scheduler` | The round scheduler: join, drop, failover and merge, slot timing from any heard round broadcast, slot lateness ([ADR-0027](../docs/adr/0027-round-scheduler.md)). Tests run up to 30 nodes over a simulated radio. |
+| `node_settings` | The runtime settings and their text commands. |
+
+`tests/test_wire_vectors.py` fails when a flattened vector file no longer matches its JSON fixture: rerun
+`scripts/gen_wire_vectors.py`.
 
 ## Not in the repo
 

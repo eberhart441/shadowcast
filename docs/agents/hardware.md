@@ -31,6 +31,13 @@ The receivers run `csi_recv` built with `CSI_FORWARD=1` and send each CSI line o
 
 The firmware lives in `firmware/` (stock `esp-csi` examples plus our edits). Build and flash commands, the `SENDER_ID` build flag and the pre-flash cautions are in `firmware/README.md`; read it before touching a board. ESP-IDF 5.5.6 stays outside the repo, at `~/esp/esp-idf`.
 
+The transceiver rig of spec #2 runs one image, `firmware/node`, on every board, built with ESP-IDF 6.0 (locally and
+in the CI job `node-image`). Its role, channel and slot are node settings set with `scripts/node.py PORT set ...`
+after flashing, never build flags. Its USB port carries only binary gateway records, so read a node with
+`scripts/node.py PORT status`, not `idf.py monitor`; like any other reader it cannot share the port with the
+dashboard. On Windows, ESP-IDF 6.0's `export.ps1` needs the Python its environment was made with first on `PATH`
+(3.12; the `home` line of `~/.espressif/python_env/idf6.0_py3.12_env/pyvenv.cfg` names it).
+
 `csi_recv` also builds with ESP-IDF 6.0; `csi_send` does not yet. IDF 6.0 renamed `WIFI_BW_HT40` and `WIFI_BW_HT20` to `WIFI_BW40` and `WIFI_BW20`, and only `csi_recv` carries the compatibility defines, so build `csi_send` with 6.0 from a copy with those two names replaced. On Windows, build in a short path: object paths past 260 characters fail.
 
 ## Thresholds in a noisy room
@@ -53,4 +60,4 @@ The room is never empty, so there are two ways to set per-link thresholds on a r
 
 ## Git
 
-Stay on `csi-sensing` in the main checkout and use `git worktree` for side branches. `data/` is gitignored on `csi-sensing` and tracked on `data/two-board-sessions`, so switching branches in the main checkout deletes it.
+Stay on `main` in the main checkout and use `git worktree` for side branches. `data/` is gitignored on `main` and tracked on `archive/data-two-board-sessions`, so switching branches in the main checkout deletes it.
