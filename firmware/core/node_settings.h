@@ -28,7 +28,7 @@ typedef enum { NODE_ROLE_TRANSCEIVER = 0, NODE_ROLE_GATEWAY = 1 } node_role_t;
 typedef struct {
     uint8_t version;     /* NODE_SETTINGS_VERSION: a stored blob of another version is ignored */
     uint8_t role;        /* node_role_t */
-    uint8_t channel;     /* 2.4 GHz channel 1..13, kit-wide */
+    uint8_t channel;     /* kit-wide: 2.4 GHz 1..13 (default 6), or a 20 MHz 5 GHz channel (node_channel_valid) */
     uint8_t round_hz;    /* rounds per second, kit-wide */
     uint16_t guard_us;   /* slot guard of the round scheduler, kit-wide */
 } node_settings_t;
@@ -39,6 +39,13 @@ typedef enum {
     NODE_CMD_RESTART,
     NODE_CMD_ERROR,              /* refused; nothing changed */
 } node_cmd_t;
+
+/* True for a channel a node senses on: 2.4 GHz 1..13, or a 20 MHz 5 GHz channel of the ESP32-C5 (36..64 and
+ * 100..144 in steps of 4, 149..177 in steps of 4). Which band the radio uses follows from it (node_channel_is_5ghz). */
+bool node_channel_valid(uint8_t channel);
+
+/* True for a valid 5 GHz channel (36 and up). */
+bool node_channel_is_5ghz(uint8_t channel);
 
 /* Transceiver, channel 6, 40 rounds per second, 250 us guard. */
 void node_settings_default(node_settings_t *s);

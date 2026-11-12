@@ -19,14 +19,30 @@ void node_settings_default(node_settings_t *s)
     s->guard_us = RS_GUARD_DEFAULT_US;
 }
 
+bool node_channel_is_5ghz(uint8_t channel)
+{
+    if (channel >= 36 && channel <= 64) {
+        return channel % 4 == 0;
+    }
+    if (channel >= 100 && channel <= 144) {
+        return channel % 4 == 0;
+    }
+    return channel >= 149 && channel <= 177 && (channel - 149) % 4 == 0;
+}
+
+bool node_channel_valid(uint8_t channel)
+{
+    return (channel >= 1 && channel <= 13) || node_channel_is_5ghz(channel);
+}
+
 /* Why s is not valid, or NULL. */
 static const char *invalid(const node_settings_t *s)
 {
     if (s->role > NODE_ROLE_GATEWAY) {
         return "role must be transceiver or gateway";
     }
-    if (s->channel < 1 || s->channel > 13) {
-        return "channel must be a 2.4 GHz channel, 1 to 13";
+    if (!node_channel_valid(s->channel)) {
+        return "channel must be 1 to 13 (2.4 GHz) or a 20 MHz 5 GHz channel (36..64, 100..144, 149..177 in steps of 4)";
     }
     if (s->guard_us < NODE_GUARD_MIN_US || s->guard_us > NODE_GUARD_MAX_US) {
         return "guard_us must be 50 to 5000";

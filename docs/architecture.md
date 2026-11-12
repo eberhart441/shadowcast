@@ -116,7 +116,7 @@ The diagram has two seams.
 
 ## 2. Module map
 
-`csi/` holds 25 modules plus an empty `__init__.py`. Each responsibility below comes from the module's docstring.
+`csi/` holds 36 modules, the `ota/` package of seven, and an empty `__init__.py`. Each responsibility below comes from the module's docstring.
 
 | Layer | Module | Responsibility | Key public types and functions |
 |---|---|---|---|
@@ -124,11 +124,18 @@ The diagram has two seams.
 | Ingest | [`multisource.py`](../csi/multisource.py) | Reads several receivers at once into one queue of `(receiver, CSIPacket)`, one thread and parser per receiver. Round broadcasts in the queue are bounded: a live one that finds it full is dropped and counted, a recorded one waits | `MultiSource` (`start`, `drain`, `status`, `errors`, `finished`, `close`, `take_dropped`, `queued_broadcasts`), `parse_port_specs` |
 | Ingest | [`ports.py`](../csi/ports.py) | Finds each board by its USB serial (its base MAC address), not by its port name. Never opens a port | `resolve_receiver_ports`, `match_ports`, `PortReport`, `PortResolutionError`, `normalise_serial` |
 | Ingest | [`gateway.py`](../csi/gateway.py) | Wireless receivers: splits the gateway board's one serial stream back into one stream per receiver, named by its serial in `config/room.json` | `split_gateway`, `gateway_streams` |
+| Ingest | [`gateway_records.py`](../csi/gateway_records.py) | The node gateway's USB byte stream (gateway records, [`docs/gateway-record.md`](gateway-record.md)) as a transceiver source of `(host time, round broadcast)`; sends raw mode requests through the gateway; counts what the gateway lost | `GatewaySource` (`counts`, `losses`, `gateway_serial`, `send_frame`), `gateway_source`, `RecordReader`, `decode_record`, `encode_heard`, `encode_status`, `encode_text`, `SerialChunks` |
+| Ingest | [`errors.py`](../csi/errors.py) | The one error type for what the host refuses with a reason it counts or reports: decode rejections, gateway record errors, refused images and commands, raw mode refusals | `ReasonError` (`reason`); subclasses `BroadcastError`, `RecordError`, `ImageError`, `CommandError`, `RawModeRefused` |
+| Ingest | [`broadcast.py`](../csi/broadcast.py) | The round broadcast format v2, the host's copy of [`docs/round-broadcast.md`](round-broadcast.md): encode and decode every frame type, pinned to the golden fixtures | `RoundBroadcast`, `LinkReport`, `RawCsi`, `RawModeRequest`, `decode_broadcast`, `encode_broadcast`, `BroadcastError`, `FORMAT_VERSION`, `HEADER_BYTES` |
+| Ingest | [`round_auth.py`](../csi/round_auth.py) | The authentication tag (HMAC-SHA256 under the kit key), the freshness rule and the kit key file ([ADR-0028](adr/0028-hmac-sha256-tag-and-round-number-freshness.md)) | `sign_broadcast`, `tag_ok`, `Freshness`, `load_kit_key`, `write_kit_key`, `kit_key_check`, `TEST_KIT_KEY` |
+| Ingest | [`rounds.py`](../csi/rounds.py) | The transceiver ingest: decodes, authenticates, de-duplicates across gateways and places each link report on its link; counts every record it does not use | `RoundIngest` (`place`, `count_dropped`, `counts`), `BroadcastStream`, `HeardBroadcast`, `REJECT_REASONS` |
 | Signal | [`clock.py`](../csi/clock.py) | Turns the ESP32's 32-bit microsecond counter into time that always moves forward, and classifies each backward jump as a counter wrap or a receiver reboot | `DeviceClock.advance` → `(t_us, event)`, events `NORMAL`, `WRAP`, `RESET` |
 | Signal | [`health.py`](../csi/health.py) | Per-link packet rate and drops, inferred from gaps in device time | `LinkHealth` (`observe`, `rate_hz`, `packet_rate`, `drops`, `reboots`, `wraps`) |
 | Signal | [`detect.py`](../csi/detect.py) | Motion score (cascaded high-pass filter, variance over 1 s of device time), debounced detector, empty-room calibration | `MotionScorer`, `detect`, `detect_packets`, `calibrate`, `calibrate_clips`, `Calibration`, `CalibrationError`, `classify`, `validate_margin` |
 | Signal | [`adaptive.py`](../csi/adaptive.py) | Experimental `--auto-threshold` mode: each link learns its own noise baseline, and the room state needs links to agree | `AdaptiveDetector`, `RoomDecision`, `replay_series` |
 | Signal | [`room_state.py`](../csi/room_state.py) | The transceiver room state: the room in 1 m zones, and MOTION where enough links that share no node agree; the required agreement grows with the links crossing a point ([ADR-0029](adr/0029-adaptive-baseline-only-and-a-room-state-from-zones.md)); a zone that stops moving reads POSSIBLY_OCCUPIED for 60 s before EMPTY ([ADR-0030](adr/0030-possibly-occupied-hold.md)) | `ZoneMap`, `Zone`, `RoomState` (`observe`, `update`, `zone_states`), `independent_links` |
+| Signal | [`score_code.py`](../csi/score_code.py) | The motion score as the one byte a link report carries: log scale, 10 codes per octave ([ADR-0021](adr/0021-on-node-score-streaming-window-and-score-code.md)) | `encode_score`, `decode_score` |
+| Signal | [`coverage.py`](../csi/coverage.py) | Per-node health and coverage for the transceiver rig: who is heard by whom, slot lateness, missing nodes and silent links, and the link matrix | `node_health`, `coverage`, `link_health`, `link_matrix`, `SlotLateness` |
 | Signal | [`breathing.py`](../csi/breathing.py) | Experimental breathing rate from a 15 s window (0.1 to 0.5 Hz band, principal component analysis, FFT peak). Off by default | `estimate_breathing` → `BreathingEstimate` |
 | Model | [`room.py`](../csi/room.py) | Room geometry from the configuration file. The links are every receiver paired with every sender. Also models a simulated person's position | `load_room`, `Room` (`links()`, `wall_point`), `Node`, `Walk`, `Stand`, `link_responses`, `DEFAULT_ROOM_PATH` |
 | Model | [`links.py`](../csi/links.py) | Splits tagged packets out by link, one detector per link, and calibrates several links at once | `LinkId`, `LinkMonitor`, `calibrate_links`, `calibrate_links_report`, `LinkCalibration`, `save_thresholds`, `load_thresholds` |
@@ -139,8 +146,11 @@ The diagram has two seams.
 | Serving | [`server.py`](../csi/server.py) | HTTP server: frame log, SSE stream, guarded commands, and the reordering pump | `FrameServer`, `DashboardServer`, `FrameLog`, `controls_allowed`, `is_loopback`, `simulated_thresholds`, `looping_room_streams` |
 | Serving | [`live_calibration.py`](../csi/live_calibration.py) | Calibration inside the dashboard, run on the live stream: countdown, recording, processing, then done or failed | `CalibrationJob`, `parse_request`, `RequestError` |
 | Serving | [`replay.py`](../csi/replay.py) | Serves a logged run, or a recorded session, through the dashboard's HTTP interface | `load_log`, `ReplayLog`, `ReplayServer`, `session_dashboard`, `ReplayError` |
+| Serving | [`raw_mode.py`](../csi/raw_mode.py) | Raw mode for one link: signed raw mode requests within a per-round byte budget, and each raw link's state ([ADR-0032](adr/0032-raw-mode-in-the-join-slot-within-a-byte-budget.md)) | `RawMode` (`request`, `observe`, `status`), `RawModeRefused`, `SendingGateway`, `raw_messages`, `ppdu_us` |
+| Serving | [`ota/`](../csi/ota/__init__.py) | Over-the-air updates ([ADR-0031](adr/0031-ota-maintenance-network-signed-images.md)), one module per concern: `image` (the host's check of a signed image), `command` (the maintenance command, frame type 8), `network` (the maintenance network), `report` (the nodes' reports), `rollout` (the staged rollout), `server` (the image server), `job` (a rollout run by the dashboard) | `check_image`, `load_signer`, `maintenance_command`, `decode_command`, `channels_clear`, `maintenance_network`, `parse_report`, `plan_stages`, `Rollout`, `ImageServer`, `RolloutJob` (all from `csi.ota`) |
 | Offline | [`noisy_calibration.py`](../csi/noisy_calibration.py) | Thresholds for a room that is never empty: a pure, standard-library function of each link's live scores | `noisy_room_thresholds`, `link_threshold`, `LinkThreshold` |
 | Offline | [`recording.py`](../csi/recording.py) | Writes labelled session folders (one CSV per label, plus `session.json`) and loads them back | `record_session`, `RecordingReport`, `load_session`, `load_recording`, `Session`, `Recording`, `LABELS` |
+| Offline | [`round_recording.py`](../csi/round_recording.py) | Round recordings: every round broadcast a run's sources delivered, with labels and the room config, in one binary file ([ADR-0023](adr/0023-round-recordings.md)) | `RoundRecorder` (`tee`, `label`), `RoundRecording` (`raw_csi`), `load_rounds`, `RecordingFormatError` |
 | Offline | [`evaluate.py`](../csi/evaluate.py) | Evaluates the live detectors offline on recorded sessions, with a confusion matrix per label. Splits by recording, never by random window | `evaluate_sessions`, `format_report`, `EvaluationReport`, `SessionResult` |
 | Offline | [`simulate.py`](../csi/simulate.py) | Seeded fake CSI for development without hardware, written as real `CSI_DATA` text | `simulate_room`, `simulate_room_links`, `simulate_link_streams`, `simulate_stream`, `packet_to_line`, `Segment` |
 | Tools | [`common.py`](../csi/common.py) | Command-line plumbing shared by the single-port tools (`--simulate`, `--port`, `--rate`, `--margin`, thresholds) | `add_source_args`, `add_threshold_args`, `resolve_threshold`, `open_source`, `SenderWatch` |
@@ -158,6 +168,8 @@ The diagram has two seams.
 | [`detect_live.py`](../scripts/detect_live.py), [`telemetry.py`](../scripts/telemetry.py), [`live.py`](../scripts/live.py) | Single-port tools: debounced state, a one-line status, and a matplotlib viewer |
 | [`record.py`](../scripts/record.py), [`evaluate.py`](../scripts/evaluate.py) | The labelled recorder (switch labels with keys) and the offline evaluator |
 | [`ports.py`](../scripts/ports.py) | Lists connected boards matched to room nodes by USB serial. Opens no port |
+| [`node.py`](../scripts/node.py) | Node settings over USB (role, channel, round rate, slot guard) and the kit key (`keygen`, `PORT key`) |
+| [`ota.py`](../scripts/ota.py) | Checks a signed node image, names the maintenance network, and rolls an image out in stages through a gateway ([`docs/ota.md`](ota.md)) |
 | [`flash.sh`](../scripts/flash.sh) | Builds one board, checks that the port holds the named chip, then flashes it. Has `--dry-run`, and refuses to flash a receiver while a dashboard answers |
 | [`check.sh`](../scripts/check.sh) | Runs `ruff check .`, then the fast test tier in parallel. `--full` runs the whole suite |
 
@@ -247,6 +259,12 @@ Meanwhile the job is in state `processing` and takes no packets, so the clips th
 `/api/state` and commands keep flowing. When a run ends, `_finish_run` waits for the calibration thread, without
 holding the lock and for at most 30 s, so that the final frame shows the result.
 
+Writing to a gateway's USB port is the other slow step: a port can block. A command that sends frames through a
+gateway (raw mode, `POST /api/raw-mode`) builds and signs them under the lock, then releases it and hands them to a
+`gateway-send` thread (`csi.server.send_with_timeout`), waiting at most `SEND_TIMEOUT_S` (2 s) before answering 503
+with reason `timeout`. The port itself has a write timeout (`csi.gateway_records.WRITE_TIMEOUT_S`). So a wedged port
+costs that one request, never a frame or `/api/state`.
+
 ### 3.6 Boards are identified by USB serial, not by port name
 
 Port names such as `/dev/cu.usbmodem*` change on every replug. A board's USB serial is its base MAC address and
@@ -308,6 +326,7 @@ person is the costly error, so the code chooses the safe side wherever the two k
 | `dashboard-http` | 1 | `serve_forever` (polls every 0.1 s) | None |
 | Request handlers | One per connection (`daemon_threads`) | `/api/state` renders a fresh payload. `/api/link` renders one link's row. `/api/events` streams frames. POST requests run commands | The server lock for state and commands (`/api/state` only for its capture). `FrameLog`'s condition variable for SSE |
 | `dashboard-calibration` | 0 or 1 | Computes a finished calibration's report | Runs without the lock. Takes it only to apply the result |
+| `gateway-send` | 0 or 1 per command | Writes a command's frames to a gateway's port (raw mode) | Runs without the lock; the request waits for it at most `SEND_TIMEOUT_S` |
 | `dashboard-replay` | 1, in log replay only | Appends the logged payloads at the logged pace, divided by `--speed` | The server lock and `FrameLog` |
 
 **Locks.** `FrameServer._lock` is one coarse lock over all mutable dashboard state: `DashboardState`, the calibration
@@ -367,6 +386,7 @@ server.
 | `POST /api/threshold` | `{link, value}` sets one link's threshold. `value: null` returns the link to auto mode, or to UNCALIBRATED in fixed mode | Command checks. 400 for an unknown link or a value that is not positive |
 | `POST /api/thresholds/save` | Writes `{label: threshold}` to `--save-thresholds`, else to the `--thresholds` file, else to `links_thresholds.json` in the working directory | Command checks. 409 if there is nothing to save |
 | `POST /api/params` | Changes the live heatmap settings: `sensitivity` 0.01–10, `decay` 0.05–60 s, `rise` 0.01–10 s, `falloff` 0.05–2 m (not on a transceiver room: its heatmap is radio tomography) | Command checks. 400 for an unknown key, a value out of range, or `falloff` on a transceiver room |
+| `POST /api/ota` | `{image, nodes, ap_channel, port, channel, bind}` or `{checkin: true}`: a staged OTA rollout through the dashboard's gateway (`csi.ota.RolloutJob`, ADR-0031); the image is read and checked off the lock, the rollout runs on its own `ota-rollout` thread | Command checks. 202 `{ota}`; 400 for a bad body, unknown node or unreadable image; 409 `{error, reason}` |
 | `POST /api/raw-mode` | `{link, on}`: raw mode for one transceiver link, sent through a gateway in the join slot (`csi/raw_mode.py`, ADR-0032) | Command checks. 400 for a bad body or unknown link; 409 `{error, reason}` beyond the byte budget, a node's limit, a node not heard yet, no gateway that can send |
 
 Command checks, in the order the server applies them:

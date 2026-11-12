@@ -4,7 +4,7 @@
  *   maintenance command   frame type 8 on the sensing channel (docs/round-broadcast.md "Maintenance command"):
  *                         the 26-byte header (signed with the kit key, round_auth.h), then what to do, the image's
  *                         size and SHA-256, where to fetch it, and up to OTA_MAX_TARGETS target serials.
- *                         csi/ota.py is the host's copy; both are pinned to tests/fixtures/ota_command.json.
+ *                         csi/ota/command.py is the host's copy; both are pinned to tests/fixtures/ota_command.json.
  *   action                what a node does with a command that verified: nothing, update, or report.
  *   record                what the node keeps in NVS across the restarts of an update (a job to run in maintenance
  *                         mode, an attempt waiting for its health check, the outcome to report).
@@ -24,11 +24,14 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define OTA_FRAME_MAINTENANCE 8      /* round broadcast frame type of a maintenance command */
-#define OTA_FORMAT_VERSION 2         /* the round broadcast format version the command rides in */
-#define OTA_HEADER_BYTES 26
+#include "round_broadcast.h"
+
+/* The command rides in the round broadcast format: its version, frame type and header are round_broadcast.h's. */
+#define OTA_FRAME_MAINTENANCE RB_FRAME_MAINTENANCE
+#define OTA_FORMAT_VERSION RB_VERSION
+#define OTA_HEADER_BYTES RB_HEADER_BYTES
 #define OTA_BODY_BYTES 46            /* command .. image SHA-256, before the targets */
-#define OTA_SERIAL_BYTES 6
+#define OTA_SERIAL_BYTES RB_NODE_ID_BYTES
 #define OTA_SHA_BYTES 32
 #define OTA_MAX_TARGETS 13           /* 26 + 46 + 6 x 13 = 150 bytes, the most a node signs or checks */
 #define OTA_MAX_BYTES (OTA_HEADER_BYTES + OTA_BODY_BYTES + OTA_SERIAL_BYTES * OTA_MAX_TARGETS)
@@ -86,8 +89,9 @@ typedef enum {
     OTA_ACT_REPORT,       /* store a report job and restart into maintenance mode */
 } ota_action_t;
 
-/* True when a maintenance network on ap_channel cannot overlap a 20 MHz sensing channel: 5 GHz (36..177), or a
- * 2.4 GHz channel at least 5 away. 0 (scan) is allowed here; the channel found must pass again. */
+/* True when a maintenance network on ap_channel cannot overlap a 20 MHz sensing channel. Sensing on 2.4 GHz: 5 GHz
+ * (36..177), or a 2.4 GHz channel at least 5 away. Sensing on 5 GHz: 2.4 GHz, or a 5 GHz channel in another 80 MHz
+ * block. 0 (scan) is allowed here; the channel found must pass again. */
 bool ota_channels_clear(uint8_t sensing_channel, uint8_t ap_channel);
 
 /* What a node does with a command that verified. `last_issued`: the newest command it ran (0: none);
@@ -103,7 +107,7 @@ ota_action_t ota_command_action(const ota_command_t *c, const uint8_t serial[OTA
 
 typedef enum { OTA_JOB_NONE = 0, OTA_JOB_UPDATE = 1, OTA_JOB_REPORT = 2 } ota_job_t;
 
-/* Outcomes reported to the host. The names (ota_outcome_name) are the report's words; csi/ota.py has them too. */
+/* Outcomes reported to the host. The names (ota_outcome_name) are the report's words; csi/ota/report.py has them too. */
 typedef enum {
     OTA_OUT_NONE = 0,
     OTA_OUT_COMMITTED,          /* the new image passed its health check and runs */

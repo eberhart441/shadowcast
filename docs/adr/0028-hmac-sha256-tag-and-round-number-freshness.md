@@ -23,11 +23,11 @@ and signs 20) and must not add a dependency to the host.
   compared by an 8-hex-digit check value; the key itself is never printed. A transceiver without a key only
   listens. A published test key serves the fixtures and the simulator and is refused as a kit key.
 - **Freshness:** per sender, a broadcast is fresh when its round number is 1 to 16 + 1 per millisecond ahead of the
-  last fresh one; any other round is a replay, except after 2 s of silence from that sender, when any round is
+  last fresh one; any other round is stale (reason `stale`), except after 2 s of silence from that sender, when any round is
   taken (a restart or a renumbering). The host checks the tag before de-duplication and freshness after it.
 - **Node:** mbedTLS's PSA API on the C5's SHA accelerator. The portable core (`firmware/core/round_auth.c`) owns
   the coverage and the freshness rule and takes the HMAC as a function, so the PC tests run it with a reference
-  HMAC-SHA256 against the same fixtures as the host. A forged or replayed broadcast is counted as rejected and
+  HMAC-SHA256 against the same fixtures as the host. A forged or stale broadcast is counted as rejected and
   reaches neither the scheduler nor the link table.
 
 ## Alternatives considered

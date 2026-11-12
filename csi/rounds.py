@@ -3,7 +3,7 @@
 Every transceiver source is a stream of ``(host time, round broadcast bytes)`` (``BroadcastStream``; see
 docs/adr/0022-host-time-round-broadcast-seam.md). ``RoundIngest`` decodes each round broadcast
 (csi/broadcast.py), checks its authentication tag against the kit key and its round number
-against replay (csi/round_auth.py), names its sender by board serial from the room config, and places each link
+for freshness (csi/round_auth.py), names its sender by board serial from the room config, and places each link
 report on its link, ``NodeLinkId(receiving node, transmitting node)``:
 
     ingest = RoundIngest(room, kit_key)        # kit_key defaults to the simulator's TEST_KIT_KEY
@@ -16,7 +16,7 @@ report on its link, ``NodeLinkId(receiving node, transmitting node)``:
 
 A broadcast whose tag does not verify (forged, or another kit's key) is counted as ``auth`` before anything else
 looks at it, so a forgery never enters the de-duplication memory and cannot crowd out the real broadcast. One that
-verifies but whose round number is stale for its node (``round_auth.Freshness``) is counted as ``replay``.
+verifies but whose round number is stale for its node (``round_auth.Freshness``) is counted as ``stale``.
 
 Several gateways may hear the same round broadcast. The first copy of (node serial, schedule version, round
 number) is placed; another copy within ``DEDUP_WINDOW_S`` of host time, from any source, is counted as a
@@ -27,12 +27,14 @@ round broadcasts, per schedule version, so a report about a node the host has no
 version) cannot be placed: it is counted as unplaced. A join grant from the round scheduler (ticket #14) names
 the joining node and its index in the new schedule version, so reports about a joiner place from the start.
 Join frames (requests and grants) carry no link reports: each copy is counted in ``join_frames`` and never
-placed, de-duplicated or rejected. A round broadcast with raw CSI (frame type 5) is placed like any round
-broadcast, and its raw CSI blocks are placed on their links too (``last_raw``, counted in ``raw_csi``). A raw mode
-request (frame type 4) that a gateway heard from another gateway is counted in ``raw_requests`` and not used.
+placed; one that names a room node and is stale for it is rejected as ``stale``, as a round broadcast is. A
+round broadcast with raw CSI (frame type 5) is placed like any round broadcast, and its raw CSI blocks are placed
+on their links too (``last_raw``, counted in ``raw_csi``). A raw mode request (frame type 4) that a gateway heard
+from another gateway is counted in ``raw_requests`` and not used, and so is an authenticated maintenance command
+(frame type 8, OTA) in ``maintenance_commands``.
 Nothing is dropped without being counted: every record a source delivered is accepted, rejected for one of
-``REJECT_REASONS``, from an unknown node, a join frame or a raw mode request, so
-``heard == accepted + sum(rejected) + sum(unknown_nodes) + sum(join_frames) + raw_requests``. Memory is bounded: the de-duplication memory by
+``REJECT_REASONS``, from an unknown node, a join frame, a raw mode request or a maintenance command, so
+``heard == accepted + sum(rejected) + sum(unknown_nodes) + sum(join_frames) + raw_requests + maintenance_commands``. Memory is bounded: the de-duplication memory by
 time and ``DEDUP_MAX``, the unknown serials by ``UNKNOWN_NODES_KEPT``.
 """
 from __future__ import annotations
@@ -41,11 +43,11 @@ from collections import Counter, OrderedDict
 from dataclasses import dataclass
 from typing import Iterable, Optional
 
-from .broadcast import (DECODE_REASONS, FRAME_JOIN_GRANT, FRAME_RAW_REQUEST, JOIN_FRAMES, BroadcastError, LinkReport,
+from .broadcast import (DECODE_REASONS, FRAME_JOIN_GRANT, FRAME_MAINTENANCE, FRAME_RAW_REQUEST, JOIN_FRAMES, BroadcastError, LinkReport,
                         RawCsi, decode_broadcast)
 from .links import NodeLinkId
-from .room import Room
-from .round_auth import REPLAY, TEST_KIT_KEY, Freshness, tag_ok
+from .room import Room, board_serial
+from .round_auth import STALE, TEST_KIT_KEY, Freshness, tag_ok
 
 # A stream of (host time, round broadcast bytes); a quiet source may yield (host_ts, None) as a heartbeat.
 BroadcastStream = Iterable[tuple[float, Optional[bytes]]]
@@ -57,7 +59,7 @@ DUPLICATE = "duplicate"
 QUEUE_OVERFLOW = "queue_overflow"
 UNKNOWN_NODES_KEPT = 32   # unknown serials counted by name; any further ones are counted together as OTHER_NODES
 OTHER_NODES = "other"
-REJECT_REASONS = DECODE_REASONS + (AUTH, REPLAY, DUPLICATE, QUEUE_OVERFLOW)   # each has a counter in status.broadcasts.rejected
+REJECT_REASONS = DECODE_REASONS + (AUTH, STALE, DUPLICATE, QUEUE_OVERFLOW)   # each has a counter in status.broadcasts.rejected
 JOIN_FRAME_KINDS = ("request", "grant")                          # status.broadcasts.join_frames
 
 
@@ -72,7 +74,7 @@ class RoundIngest:
     def __init__(self, room: Room, kit_key: bytes = TEST_KIT_KEY) -> None:
         self._key = bytes(kit_key)
         self._fresh = Freshness()
-        self._names = {node.serial.upper(): node.name for node in room.transceivers if node.serial}
+        self._names = room.transceiver_names()
         self._index: dict[int, dict[int, str]] = {}   # schedule version -> {node index: node name}
         self._seen: OrderedDict[tuple[str, int, int], float] = OrderedDict()  # (serial, schedule, round) -> host_ts
         self._heard = 0
@@ -83,6 +85,7 @@ class RoundIngest:
         self._joins: Counter[str] = Counter({kind: 0 for kind in JOIN_FRAME_KINDS})
         self._sources: dict[str, Counter[str]] = {}
         self._raw_requests = 0
+        self._maintenance = 0
         self._last_source: dict[str, str] = {}   # node name -> the source of its latest accepted round broadcast
         self._raw = Counter({"blocks": 0, "iq_bytes": 0, "unplaced": 0})
         self.last_node: Optional[str] = None   # sender of the round broadcast just placed (None: not placed)
@@ -108,12 +111,15 @@ class RoundIngest:
             self._rejected[AUTH] += 1
             return []
         if broadcast.frame_type in JOIN_FRAMES:
-            self._join(broadcast)
+            self._join(broadcast, host_ts)
             return []
         if broadcast.frame_type == FRAME_RAW_REQUEST:
             self._raw_requests += 1    # another gateway's request to a node: nothing for the host to use
             return []
-        serial = broadcast.node_id.upper()
+        if broadcast.frame_type == FRAME_MAINTENANCE:
+            self._maintenance += 1     # an OTA maintenance command a gateway sent: counted, not used
+            return []
+        serial = board_serial(broadcast.node_id)
         if self._duplicate((serial, broadcast.schedule_version, broadcast.round), host_ts):
             self._rejected[DUPLICATE] += 1
             tally[DUPLICATE] += 1
@@ -123,8 +129,8 @@ class RoundIngest:
             known = broadcast.node_id in self._unknown or len(self._unknown) < UNKNOWN_NODES_KEPT
             self._unknown[broadcast.node_id if known else OTHER_NODES] += 1
             return []
-        if self._fresh.check(serial, broadcast.round, host_ts) == REPLAY:
-            self._rejected[REPLAY] += 1
+        if self._fresh.check(serial, broadcast.round, host_ts) == STALE:
+            self._rejected[STALE] += 1
             return []
         self._accepted += 1
         tally["accepted"] += 1
@@ -154,11 +160,21 @@ class RoundIngest:
         """The source that delivered node ``name``'s latest accepted round broadcast (None: never heard)."""
         return self._last_source.get(name)
 
-    def _join(self, frame) -> None:
-        """A join request or grant: counted; a grant for a known node teaches its index in the new schedule."""
+    def _join(self, frame, host_ts: float) -> None:
+        """A join request or grant: counted; a grant for a known node teaches its index in the new schedule.
+
+        Like a round broadcast, a join frame naming a room node must be fresh for that node (the node applies the
+        same rule to every frame); a stale one is rejected as ``stale``. Another gateway's copy (same node,
+        schedule version, round and frame type within DEDUP_WINDOW_S) is counted as a join frame again but not
+        checked twice, so a second gateway never turns a join frame stale."""
+        serial = board_serial(frame.node_id)
+        name = self._names.get(serial)
+        copy = self._duplicate((serial, frame.schedule_version, frame.round, frame.frame_type), host_ts)
+        if name is not None and not copy and self._fresh.check(serial, frame.round, host_ts) == STALE:
+            self._rejected[STALE] += 1
+            return
         grant = frame.frame_type == FRAME_JOIN_GRANT
         self._joins["grant" if grant else "request"] += 1
-        name = self._names.get(frame.node_id.upper())
         if grant and name is not None:
             self._indices(frame.schedule_version)[frame.node_index] = name
 
@@ -198,10 +214,12 @@ class RoundIngest:
         """``status.broadcasts``: heard (records delivered, including those dropped on a full queue), accepted
         (placed), rejected {reason: n} for every one of REJECT_REASONS, unknown_nodes {serial: n} (beyond
         UNKNOWN_NODES_KEPT serials, the rest under "other"), unplaced_reports, join_frames {request, grant}
-        (every copy), raw_requests (raw mode requests heard, every copy), raw_csi {blocks, iq_bytes, unplaced}
+        (every copy), raw_requests (raw mode requests heard, every copy), maintenance_commands (OTA maintenance
+        commands heard, every copy), raw_csi {blocks, iq_bytes, unplaced}
         (raw CSI blocks of accepted round broadcasts), and per source {heard, accepted, duplicate,
         queue_overflow}."""
         return {"heard": self._heard, "accepted": self._accepted, "rejected": dict(self._rejected), "unknown_nodes": dict(self._unknown),
                 "unplaced_reports": self._unplaced, "join_frames": dict(self._joins),
-                "raw_requests": self._raw_requests, "raw_csi": dict(self._raw),
+                "raw_requests": self._raw_requests, "maintenance_commands": self._maintenance,
+                "raw_csi": dict(self._raw),
                 "sources": {name: dict(tally) for name, tally in self._sources.items()}}

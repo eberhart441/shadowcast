@@ -8,7 +8,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from csi.broadcast import FLAG_WARMING, FORMAT_VERSION, LinkReport, RoundBroadcast, encode_broadcast, quantise_score
+from csi.broadcast import FLAG_WARMING, FORMAT_VERSION, LinkReport, RoundBroadcast, encode_broadcast
+from csi.score_code import encode_score
 from csi.dashboard import DashboardState
 from csi.round_auth import TEST_KIT_KEY, sign_broadcast
 from csi.room import load_room
@@ -29,7 +30,7 @@ def broadcast(sender, round_no, reports=None, *, membership=ALL, node_id=None, s
     for i, name in enumerate(NAMES):
         if i == index or not membership >> i & 1:
             continue
-        fields = {"score_q": quantise_score(QUIET), "rssi": -50, "heard": 15, "since": 0, "flags": 0}
+        fields = {"score_q": encode_score(QUIET), "rssi": -50, "heard": 15, "since": 0, "flags": 0}
         fields.update((reports or {}).get(name, {}))
         rows.append(LinkReport(i, **fields))
     return sign_broadcast(encode_broadcast(RoundBroadcast(FORMAT_VERSION, 1, round_no % 65536, index, len(NAMES) + 1,
@@ -45,7 +46,7 @@ def run(state, seconds, start_s=0.0, reports=lambda round_no, sender: None, send
         for slot, sender in enumerate(NAMES):
             if sender not in senders:
                 continue
-            quiet = {name: {"score_q": quantise_score(QUIET * rng.lognormal(0, 0.2))} for name in NAMES}
+            quiet = {name: {"score_q": encode_score(QUIET * rng.lognormal(0, 0.2))} for name in NAMES}
             quiet.update(reports(round_no, sender) or {})
             host_ts = T0 + round_no / ROUND_HZ + slot / (ROUND_HZ * (len(NAMES) + 1))
             state.push_broadcast(host_ts, broadcast(sender, round_no, quiet))
@@ -65,7 +66,7 @@ def test_every_ordered_pair_of_transceivers_is_a_link_named_by_its_nodes():
     expected = {f"{rx}<-{tx}" for rx in NAMES for tx in NAMES if rx != tx}
     assert set(links(payload)) == expected and len(expected) == 56   # every serial ends in 5C: no collisions
     row = links(payload)["n3<-n7"]
-    assert (row["receiver"], row["sender"], row["state"]) == ("n3", "n7", "NO_SIGNAL")
+    assert (row["receiver"], row["transmitter"], row["state"]) == ("n3", "n7", "NO_SIGNAL")
     assert sorted((n["name"], n["role"]) for n in payload["nodes"]) == [(n, "transceiver") for n in NAMES]
 
 
@@ -78,7 +79,7 @@ def test_quiet_reports_warm_up_then_read_empty():
     assert late["status"]["room"]["state"] == "EMPTY"
 
 
-HOT = {"score_q": quantise_score(40 * QUIET)}
+HOT = {"score_q": encode_score(40 * QUIET)}
 
 
 def test_a_score_rising_on_links_reads_motion_on_those_links_only():

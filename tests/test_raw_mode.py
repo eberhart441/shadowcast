@@ -10,7 +10,8 @@ import pytest
 
 from csi.broadcast import (FLAG_RAW_MODE, FORMAT_VERSION, FRAME_RAW_REQUEST, FRAME_ROUND, FRAME_ROUND_RAW,
                            RAW_REQUEST_MAX_AGE_ROUNDS, LinkReport, RawCsi, RawModeRequest, RoundBroadcast,
-                           decode_broadcast, encode_broadcast, quantise_score)
+                           decode_broadcast, encode_broadcast)
+from csi.score_code import encode_score
 from csi.dashboard import DashboardState
 from csi.raw_mode import (ACK_TIMEOUT_S, RAW_BUDGET_BYTES, REQUEST_COPIES, RawModeRefused, ppdu_us,
                           raw_airtime_us)
@@ -31,7 +32,7 @@ def broadcast(sender, round_no, *, raw=(), flagged=()):
     link reports carry the raw mode flag (by default the ``raw`` ones)."""
     index = NAMES.index(sender)
     flagged = set(flagged) | set(raw)
-    rows = tuple(LinkReport(i, quantise_score(2.0), -50, 15, 0, FLAG_RAW_MODE if NAMES[i] in flagged else 0)
+    rows = tuple(LinkReport(i, encode_score(2.0), -50, 15, 0, FLAG_RAW_MODE if NAMES[i] in flagged else 0)
                  for i in range(len(NAMES)) if i != index)
     blocks = tuple(RawCsi(NAMES.index(t), round_no, -48, IQ) for t in raw)
     return sign_broadcast(encode_broadcast(RoundBroadcast(
@@ -86,7 +87,7 @@ def test_a_round_broadcast_with_raw_csi_drives_its_links_and_counts_the_csi_on_i
 def test_a_raw_mode_request_heard_from_another_gateway_is_counted_and_not_used():
     state = DashboardState(ROOM, mode="auto")
     heard_round(state, 0)
-    frame, = state.raw_mode_request("n1<-n5", True, T0 + 1, sender_id=GATEWAY)[:1]
+    frame, = state.raw_mode_request("n1<-n5", True, T0 + 1, gateway_serial=GATEWAY)[:1]
     state.push_broadcast(T0 + 1, frame, "gw2")
     counts = state.snapshot(T0 + 1)["status"]["broadcasts"]
     assert counts["raw_requests"] == 1
@@ -97,7 +98,7 @@ def test_a_raw_mode_request_heard_from_another_gateway_is_counted_and_not_used()
 def test_a_request_names_the_receiving_node_its_round_and_the_transmitter_and_is_signed():
     state = DashboardState(ROOM, mode="auto")
     heard_round(state, 300)
-    frames = state.raw_mode_request("n1<-n5", True, T0 + 16, sender_id=GATEWAY)
+    frames = state.raw_mode_request("n1<-n5", True, T0 + 16, gateway_serial=GATEWAY)
     assert len(frames) == REQUEST_COPIES
     decoded = [decode_broadcast(f) for f in frames]
     assert all(tag_ok(f, TEST_KIT_KEY) for f in frames)
@@ -105,10 +106,10 @@ def test_a_request_names_the_receiving_node_its_round_and_the_transmitter_and_is
     assert {d.request for d in decoded} == {RawModeRequest(SERIAL["n1"], 300, (SERIAL["n5"],))}
     rounds = [d.round for d in decoded]
     assert rounds == [(rounds[0] + k) % 65536 for k in range(REQUEST_COPIES)]   # each copy fresh, never back
-    again = decode_broadcast(state.raw_mode_request("n1<-n6", True, T0 + 17, sender_id=GATEWAY)[0])
+    again = decode_broadcast(state.raw_mode_request("n1<-n6", True, T0 + 17, gateway_serial=GATEWAY)[0])
     assert again.round == (rounds[-1] + 1) % 65536
     assert again.request.transmitters == (SERIAL["n5"], SERIAL["n6"])   # the node's whole set, every time
-    off = decode_broadcast(state.raw_mode_request("n1<-n5", False, T0 + 18, sender_id=GATEWAY)[0])
+    off = decode_broadcast(state.raw_mode_request("n1<-n5", False, T0 + 18, gateway_serial=GATEWAY)[0])
     assert off.request.transmitters == (SERIAL["n6"],)
     assert RAW_REQUEST_MAX_AGE_ROUNDS >= 32   # room for the gateway's wait for a join slot
 
@@ -117,23 +118,23 @@ def test_a_request_beyond_the_byte_budget_is_refused_with_a_reason():
     state = DashboardState(ROOM, mode="auto")
     heard_round(state, 0)
     for label in ("n1<-n5", "n2<-n5", "n3<-n5"):
-        state.raw_mode_request(label, True, T0 + 1, sender_id=GATEWAY)
+        state.raw_mode_request(label, True, T0 + 1, gateway_serial=GATEWAY)
     with pytest.raises(RawModeRefused) as refused:
-        state.raw_mode_request("n4<-n5", True, T0 + 1, sender_id=GATEWAY)
+        state.raw_mode_request("n4<-n5", True, T0 + 1, gateway_serial=GATEWAY)
     assert refused.value.reason == "budget"
     assert "400" in str(refused.value) and "n1<-n5" in str(refused.value)
     assert state.snapshot(T0 + 1)["raw_mode"]["used_bytes"] == 3 * 133
-    state.raw_mode_request("n1<-n5", False, T0 + 2, sender_id=GATEWAY)
-    state.raw_mode_request("n4<-n5", True, T0 + 2, sender_id=GATEWAY)     # room again after one is off
+    state.raw_mode_request("n1<-n5", False, T0 + 2, gateway_serial=GATEWAY)
+    state.raw_mode_request("n4<-n5", True, T0 + 2, gateway_serial=GATEWAY)     # room again after one is off
 
 
 def test_a_node_streams_at_most_two_links():
     state = DashboardState(ROOM, mode="auto")
     heard_round(state, 0)
-    state.raw_mode_request("n1<-n5", True, T0 + 1, sender_id=GATEWAY)
-    state.raw_mode_request("n1<-n6", True, T0 + 1, sender_id=GATEWAY)
+    state.raw_mode_request("n1<-n5", True, T0 + 1, gateway_serial=GATEWAY)
+    state.raw_mode_request("n1<-n6", True, T0 + 1, gateway_serial=GATEWAY)
     with pytest.raises(RawModeRefused) as refused:
-        state.raw_mode_request("n1<-n7", True, T0 + 1, sender_id=GATEWAY)
+        state.raw_mode_request("n1<-n7", True, T0 + 1, gateway_serial=GATEWAY)
     assert refused.value.reason == "node_limit"
 
 
@@ -142,7 +143,7 @@ def test_links_a_node_already_streams_count_against_the_budget():
     for k in range(2):   # e.g. left on by an earlier run of the dashboard
         now = heard_round(state, k, raw={"n1": ["n5"], "n2": ["n5"], "n3": ["n5"]})
     with pytest.raises(RawModeRefused) as refused:
-        state.raw_mode_request("n4<-n5", True, now, sender_id=GATEWAY)
+        state.raw_mode_request("n4<-n5", True, now, gateway_serial=GATEWAY)
     assert refused.value.reason == "budget"
 
 
@@ -158,7 +159,7 @@ def test_requests_that_cannot_be_sent_are_refused_with_a_reason(label, sender, h
     if heard:
         heard_round(state, 0)
     with pytest.raises(RawModeRefused) as refused:
-        state.raw_mode_request(label, True, T0 + 1, sender_id=sender)
+        state.raw_mode_request(label, True, T0 + 1, gateway_serial=sender)
     assert refused.value.reason == reason
     assert state.snapshot(T0 + 1)["raw_mode"]["links"] == []
 
@@ -166,11 +167,11 @@ def test_requests_that_cannot_be_sent_are_refused_with_a_reason(label, sender, h
 def test_a_link_shows_requested_then_on_then_stopping_then_off():
     state = DashboardState(ROOM, mode="auto")
     now = heard_round(state, 0)
-    state.raw_mode_request("n1<-n5", True, now, sender_id=GATEWAY)
+    state.raw_mode_request("n1<-n5", True, now, gateway_serial=GATEWAY)
     assert raw_rows(state.snapshot(now))["n1<-n5"]["state"] == "requested"
     now = heard_round(state, 1, raw={"n1": ["n5"]})
     assert raw_rows(state.snapshot(now))["n1<-n5"]["state"] == "on"
-    state.raw_mode_request("n1<-n5", False, now, sender_id=GATEWAY)
+    state.raw_mode_request("n1<-n5", False, now, gateway_serial=GATEWAY)
     now = heard_round(state, 2, raw={"n1": ["n5"]})
     assert raw_rows(state.snapshot(now))["n1<-n5"]["state"] == "stopping"
     now = heard_round(state, 3)
@@ -181,7 +182,7 @@ def test_a_link_shows_requested_then_on_then_stopping_then_off():
 def test_a_request_without_an_answer_says_so():
     state = DashboardState(ROOM, mode="auto")
     now = heard_round(state, 0)
-    state.raw_mode_request("n1<-n5", True, now, sender_id=GATEWAY)
+    state.raw_mode_request("n1<-n5", True, now, gateway_serial=GATEWAY)
     k = 1
     while now < T0 + ACK_TIMEOUT_S + 0.5:
         now = heard_round(state, k)
@@ -216,8 +217,8 @@ def test_a_simulated_node_takes_a_signed_fresh_request_for_itself_only():
     for k, (host_ts, data) in enumerate(stream):
         state.push_broadcast(host_ts, data, "sim")
         if k == 8 * 10:     # round 10: ask n2 for raw mode on n2<-n7; and send a forged copy for n3
-            frames = state.raw_mode_request("n2<-n7", True, host_ts, sender_id=GATEWAY)
-            forged = bytearray(state.raw_mode_request("n3<-n7", True, host_ts, sender_id=GATEWAY)[0])
+            frames = state.raw_mode_request("n2<-n7", True, host_ts, gateway_serial=GATEWAY)
+            forged = bytearray(state.raw_mode_request("n3<-n7", True, host_ts, gateway_serial=GATEWAY)[0])
             forged[-1] ^= 1
             commands.extend(frames + [bytes(forged)])
         b = decode_broadcast(data)
@@ -243,9 +244,9 @@ def test_a_node_gateway_sends_a_frame_as_one_send_command_line_and_names_itself_
     from csi.gateway_records import GatewaySource, encode_status
     port = FakePort([(T0, encode_status(GATEWAY, 5_000_000, 1, 1, 6, [0] * 7))])
     gateway = GatewaySource(port)
-    assert gateway.sender_id is None              # not before its first status record
+    assert gateway.gateway_serial is None              # not before its first status record
     list(gateway)
-    assert gateway.sender_id == GATEWAY
+    assert gateway.gateway_serial == GATEWAY
     gateway.send_frame(bytes.fromhex("0204"))
     assert port.written == b"send 0204\n"
 
@@ -254,6 +255,29 @@ def test_a_transceiver_on_the_port_is_not_a_gateway_that_can_send():
     from csi.gateway_records import GatewaySource, encode_status
     gateway = GatewaySource(FakePort([(T0, encode_status(SERIAL["n1"], 5_000_000, 1, 0, 6, [0] * 7))]))
     list(gateway)
-    assert gateway.sender_id is None
+    assert gateway.gateway_serial is None
     with pytest.raises(RuntimeError):
         GatewaySource([(T0, None)]).send_frame(b"\x02\x04")    # chunks that cannot be written to
+
+
+@pytest.mark.parametrize("lost", [1, 2], ids=["first copy collided", "two copies collided"])
+def test_a_request_lost_to_a_collision_in_the_join_slot_is_taken_from_a_later_copy(lost):
+    """ADR-0032: the request goes out in the join slot, where a joiner's request can collide with it, so the host
+    sends REQUEST_COPIES copies, each with a fresh round number. With the first copies lost, the node still takes a
+    later one and its link reports acknowledge it (the raw mode flag)."""
+    from collections import deque
+    from csi.simulate import simulate_rounds
+    state = DashboardState(ROOM, mode="auto")
+    commands = deque()
+    flagged_at = None
+    for k, (host_ts, data) in enumerate(simulate_rounds(ROOM, None, duration_s=3.0, seed=4, commands=commands)):
+        state.push_broadcast(host_ts, data, "sim")
+        if k == 8 * 10:
+            frames = state.raw_mode_request("n2<-n7", True, host_ts, gateway_serial=GATEWAY)
+            assert len(frames) == REQUEST_COPIES == 3
+            commands.extend(frames[lost:])          # the first ``lost`` copies collided with a join request
+        b = decode_broadcast(data)
+        if flagged_at is None and b.node_id == SERIAL["n2"] and any(r.raw_mode for r in b.reports):
+            flagged_at = k // 8
+    assert flagged_at == 11
+    assert {row["id"]: row["state"] for row in state.raw_mode_status(host_ts)["links"]} == {"n2<-n7": "on"}

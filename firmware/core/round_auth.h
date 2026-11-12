@@ -6,7 +6,7 @@
  *   tag       the first 8 bytes of HMAC-SHA256(kit key, the broadcast with its tag bytes 18..25 set to zero)
  *   fresh     per sender (node id): the round number is ahead of the last fresh one from it by 1 to
  *             RB_AUTH_AHEAD_SLACK + 1 per millisecond since; or the sender has been silent for more than
- *             RB_AUTH_RESYNC_US (it restarted or renumbered). Anything else is a replay.
+ *             RB_AUTH_RESYNC_US (it restarted or renumbered). Anything else is stale.
  *
  * The HMAC itself is the platform's: rb_auth_init takes a function that computes the full 32-byte HMAC-SHA256 of a
  * message under the kit key (on the node, mbedTLS with the SHA accelerator; in the PC tests, a portable reference).
@@ -36,7 +36,7 @@ typedef bool (*rb_auth_mac_fn)(void *ctx, const uint8_t *msg, size_t len, uint8_
 typedef enum {
     RB_AUTH_OK = 0,
     RB_AUTH_FORGED,    /* the tag does not verify: forged, damaged, or another kit's key */
-    RB_AUTH_REPLAY,    /* the tag verifies but the round number is stale for its sender */
+    RB_AUTH_STALE,    /* the tag verifies but the round number is stale for its sender */
 } rb_auth_status_t;
 
 typedef struct {
@@ -61,7 +61,7 @@ bool rb_auth_sign(const rb_auth_t *a, uint8_t *bytes, size_t len);
 bool rb_auth_tag_ok(const rb_auth_t *a, const uint8_t *bytes, size_t len);
 
 /* The freshness rule for one authenticated broadcast from node_id with `round`, heard at device time t_us.
- * RB_AUTH_OK (remembered as the sender's last fresh round) or RB_AUTH_REPLAY (nothing changes). */
+ * RB_AUTH_OK (remembered as the sender's last fresh round) or RB_AUTH_STALE (nothing changes). */
 rb_auth_status_t rb_auth_fresh(rb_auth_t *a, const uint8_t node_id[RB_NODE_ID_BYTES], uint16_t round, int64_t t_us);
 
 /* Both, on a heard round broadcast that decoded (rb_decode): the tag, then the freshness of its node id and round.
@@ -77,7 +77,7 @@ bool rb_auth_parse_key(const char *hex, uint8_t key[RB_AUTH_KEY_BYTES]);
 /* True for the published test key of the fixtures and the simulator (00 01 .. 0f), which no kit may use. */
 bool rb_auth_is_test_key(const uint8_t key[RB_AUTH_KEY_BYTES]);
 
-/* "ok", "auth" or "replay": the host's rejection reasons. */
+/* "ok", "auth" or "stale": the host's rejection reasons. */
 const char *rb_auth_status_name(rb_auth_status_t st);
 
 #endif /* ROUND_AUTH_H */

@@ -112,7 +112,7 @@ def test_any_link_s_detail_is_served_on_demand():
         status, body = get(server, "/api/link?id=" + quote("n8<-n4"))
         assert status == 200
         link = body["link"]
-        assert (link["id"], link["receiver"], link["sender"]) == ("n8<-n4", "n8", "n4")
+        assert (link["id"], link["receiver"], link["transmitter"]) == ("n8<-n4", "n8", "n4")
         assert link["state"] == "WARMUP" and link["pkt_rate"] > 15 and link["rssi"] is not None
         assert {"score", "threshold", "level", "drops", "age_s", "baseline", "evidence", "mode"} <= set(link)
         status, body = get(server, "/api/link?id=" + quote("n3<-n1"))

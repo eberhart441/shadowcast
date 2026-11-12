@@ -717,7 +717,7 @@
     (p.node_health || []).forEach(function (h) { health[h.name] = h; });
     if (isNodeRig(p)) drawMotionLinks(p, nodes, X, Y);
     (isNodeRig(p) ? [] : p.links || []).forEach(function (row) {
-      var rx = nodes[row.receiver], tx = nodes[row.sender];
+      var rx = nodes[row.receiver], tx = nodes[row.transmitter || row.sender];
       if (!rx || !tx) return;
       var colour = COLOR[row.state] || COLOR.NO_SIGNAL;
       var norm = row.normalised == null ? 0 : clamp(row.normalised / FULL_SCALE, 0, 1);
@@ -918,7 +918,7 @@
     var state = row.state;
     r.badge.textContent = state;
     r.badge.className = "badge s-" + state;
-    r.route.textContent = row.receiver + " from " + (row.sender || row.mac);
+    r.route.textContent = row.receiver + " from " + (row.transmitter || row.sender || row.mac);
     var norm = row.normalised;
     r.fill.style.width = norm == null ? "0%" : (clamp(norm / FULL_SCALE, 0, 1) * 100).toFixed(1) + "%";
     r.fill.style.background = COLOR[state] || COLOR.NO_SIGNAL;

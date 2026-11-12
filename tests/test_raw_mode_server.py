@@ -75,7 +75,7 @@ def test_raw_mode_from_the_dashboard_is_recorded_and_replays(serve, tmp_path):
     rig = SimulatedRig(ROOM, None, duration_s=6.0, realtime=True, seed=3)
     path = tmp_path / "raw.rounds"
     with RoundRecorder(path, ROOM, ["sim"], notes="raw mode test") as recorder:
-        server = serve(recorder.tee({"sim": rig}), transmitters={"sim": rig})
+        server = serve(recorder.tee({"sim": rig}), gateways={"sim": rig})
         wait_for(server, everyone_heard)
         status, body = post(server, {"link": "n1<-n5", "on": True})
         assert status == 200, body
@@ -105,7 +105,7 @@ def test_raw_mode_from_the_dashboard_is_recorded_and_replays(serve, tmp_path):
 
 def test_a_request_beyond_the_budget_is_refused_over_http_with_its_reason(serve):
     rig = SimulatedRig(ROOM, None, duration_s=30.0, realtime=True)
-    server = serve({"sim": rig}, transmitters={"sim": rig})
+    server = serve({"sim": rig}, gateways={"sim": rig})
     wait_for(server, everyone_heard)
     for label in ("n1<-n5", "n2<-n5", "n3<-n5"):
         assert post(server, {"link": label, "on": True})[0] == 200
@@ -121,9 +121,9 @@ def test_a_request_beyond_the_budget_is_refused_over_http_with_its_reason(serve)
 
 def test_raw_mode_is_refused_where_commands_are(serve):
     rig = SimulatedRig(ROOM, None, duration_s=30.0, realtime=True)
-    open_bind = serve({"sim": rig}, transmitters={"sim": rig}, host="0.0.0.0")
+    open_bind = serve({"sim": rig}, gateways={"sim": rig}, host="0.0.0.0")
     assert post(open_bind, {"link": "n1<-n5", "on": True})[0] == 403          # not loopback, no --allow-control
-    local = serve({"sim": rig}, transmitters={"sim": rig})
+    local = serve({"sim": rig}, gateways={"sim": rig})
     assert post(local, {"link": "n1<-n5", "on": True}, headers={"Content-Type": "text/plain"})[0] == 415
     assert post(local, {"link": "n1<-n5", "on": True},
                 headers={**JSON_TYPE, "Origin": "http://evil.example"})[0] == 403
@@ -198,3 +198,40 @@ def test_the_cli_sends_raw_mode_through_the_node_gateway_and_simulate_through_th
         wait_for(server, lambda p: raw_row(p, "n2<-n3").get("state") == "on")
     finally:
         server.stop()
+
+
+class StuckGateway:
+    """A transmitter whose port write never returns until released: a wedged USB port."""
+
+    def __init__(self, rig):
+        self._rig = rig
+        self.gateway_serial = rig.gateway_serial
+        self.release = __import__("threading").Event()
+
+    def send_frame(self, frame):
+        self.release.wait(30)
+
+
+def test_a_stuck_gateway_write_neither_blocks_the_state_nor_hangs_the_command(serve, monkeypatch):
+    import threading
+
+    import csi.server
+
+    monkeypatch.setattr(csi.server, "SEND_TIMEOUT_S", 0.5)
+    rig = SimulatedRig(ROOM, None, duration_s=30.0, realtime=True)
+    stuck = StuckGateway(rig)
+    server = serve({"sim": rig}, gateways={"sim": stuck})
+    try:
+        wait_for(server, everyone_heard)
+        answer = {}
+        thread = threading.Thread(target=lambda: answer.update(r=post(server, {"link": "n1<-n5", "on": True})))
+        thread.start()
+        time.sleep(0.1)
+        started = time.monotonic()
+        state(server)                                  # the write holds no lock /api/state needs
+        assert time.monotonic() - started < 0.4
+        thread.join(10)
+        status, body = answer["r"]
+        assert (status, body["reason"]) == (503, "timeout")
+    finally:
+        stuck.release.set()

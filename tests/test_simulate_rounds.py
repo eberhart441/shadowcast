@@ -145,3 +145,33 @@ def test_simulated_broadcasts_are_signed_with_the_test_key_or_the_kit_key_given(
     signed = [data for _, data in simulate_rounds(ROOM, duration_s=0.5, t0=T0, kit_key=kit)]
     assert default and all(tag_ok(data, TEST_KIT_KEY) for data in default)
     assert all(tag_ok(data, kit) and not tag_ok(data, TEST_KIT_KEY) for data in signed)
+
+
+def test_a_joining_node_is_silent_then_asks_is_granted_and_broadcasts_in_a_new_schedule_version():
+    stream = list(simulate_rounds(ROOM, duration_s=2.0, join_after={"n8": 1.0}, t0=T0))
+    frames = [decode_broadcast(data) for _, data in stream]
+    n8 = NODES["n8"].serial
+    request = next(f for f in frames if f.is_join_request)
+    grant = next(f for f in frames if f.is_join_grant)
+    assert request.node_id == grant.node_id == n8 and request.round % 2 == 0 and grant.round == request.round + 1
+    assert grant.schedule_version == request.schedule_version + 1 and grant.membership == 0xFF
+    own = [f for f in frames if f.node_id == n8 and f.carries_reports]
+    assert own and min(f.round for f in own) == grant.round + 1
+    before = [f for f in frames if f.carries_reports and f.round < request.round]
+    assert all(f.membership == 0x7F and f.node_id != n8 for f in before)
+    assert all(f.schedule_version == grant.schedule_version for f in frames if f.carries_reports
+               and f.round > grant.round)
+
+
+def test_two_schedules_collide_then_merge_into_the_lower_scheduler_ids():
+    split = ["n5", "n6", "n7", "n8"]
+    frames = [decode_broadcast(d) for _, d in simulate_rounds(ROOM, duration_s=2.0, split=split, merge_after=1.0,
+                                                              t0=T0)]
+    reports = [f for f in frames if f.carries_reports]
+    early = {f.schedule_version: f.membership for f in reports if f.round < 10}
+    assert sorted(early.values()) == [0x0F, 0xF0] and len(early) == 2          # two schedules, side by side
+    grants = [f for f in frames if f.is_join_grant]
+    assert sorted(g.node_id for g in grants) == sorted(NODES[n].serial for n in split)
+    late = {(f.schedule_version, f.membership) for f in reports if f.round > grants[0].round}
+    assert late == {(grants[0].schedule_version, 0xFF)}
+    assert grants[0].schedule_version not in early

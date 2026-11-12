@@ -60,9 +60,9 @@ The 16-byte secret shared by every node of a kit and the dashboard host, that au
 _Avoid_: password, secret (alone)
 _See_: `csi/round_auth.py` (`load_kit_key`, `kit_key_check`), `firmware/node/main/node_auth.h`
 
-**Replay**:
-A round broadcast with a valid tag whose round number is stale for its sender: not 1 to 16 + 1 per millisecond ahead of the last fresh one. It is rejected as `replay` and not used. A sender silent for more than 2 s is taken at any round number again.
-_Avoid_: duplicate (that is a second gateway's copy, within 2 s)
+**Stale round broadcast**:
+A round broadcast (or join frame) with a valid tag whose round number is stale for its sender: not 1 to 16 + 1 per millisecond ahead of the last fresh one, as a recorded copy sent again would be. It is rejected as `stale` and not used. A sender silent for more than 2 s is taken at any round number again.
+_Avoid_: replay (that is serving a run log or feeding a recording through the pipeline), duplicate (that is a second gateway's copy, within 2 s)
 _See_: `csi/round_auth.py` (`Freshness`), `firmware/core/round_auth.h` (`rb_auth_fresh`)
 
 **Link report**:
@@ -114,14 +114,14 @@ One framed binary record on a node's USB port: heard (receive time, RSSI, a roun
 _See_: `csi/gateway_records.py`, `firmware/core/gateway_record.h`, [ADR-0026](docs/adr/0026-one-node-image-runtime-settings-gateway-records.md)
 
 **Node settings**:
-What differs between boards running the one node image: role (transceiver or gateway), channel, round rate and slot guard. Kept in the node's flash and set over USB with `scripts/node.py`, never by a build flag. A transceiver needs none of them (the defaults join any round on channel 6); the node index is not a setting but given out by the round scheduler.
+What differs between boards running the one node image: role (transceiver or gateway), channel, round rate and slot guard. Kept in the node's flash and set over USB with `scripts/node.py`, never by a build flag. A transceiver needs none of them (the defaults join any round on channel 6, 2.4 GHz); the channel may also be a 20 MHz 5 GHz channel, and the band follows from it; the node index is not a setting but given out by the round scheduler.
 _Avoid_: build flags, SENDER_ID (for these nodes)
 _See_: `firmware/core/node_settings.h`, `scripts/node.py`
 
 **Maintenance command**:
 The signed frame (frame type 8) that tells up to 13 named nodes to update their firmware to one image (named by its size and SHA-256) or to report what they run. The host builds it, the gateway sends it on the sensing channel; a node runs each one at most once.
 _Avoid_: OTA packet, update frame
-_See_: [`docs/round-broadcast.md`](docs/round-broadcast.md) (maintenance command), `csi/ota.py`, `firmware/core/ota_core.h`
+_See_: [`docs/round-broadcast.md`](docs/round-broadcast.md) (maintenance command), `csi/ota/command.py`, `firmware/core/ota_core.h`
 
 **Maintenance mode**:
 What a node runs instead of the transceiver for one job after a maintenance command: off the round and off the sensing channel, it joins the maintenance network, fetches and checks an image (or only reports), then restarts. At most 240 s.
@@ -134,7 +134,7 @@ _Avoid_: hotspot (that is one way to provide it), backhaul
 **Signing key**:
 The RSA-3072 key pair whose private half signs node images (`espsecure sign-data`) and stays on the user's machine; a node takes a new image only if it is signed by the same key as the image it runs. Not the kit key, which every node holds.
 _Avoid_: kit key (a different, symmetric key), secure boot key (hardware secure boot is not enabled)
-_See_: [ADR-0031](docs/adr/0031-ota-maintenance-network-signed-images.md), `csi/ota.py` (`check_image`)
+_See_: [ADR-0031](docs/adr/0031-ota-maintenance-network-signed-images.md), `csi/ota/image.py` (`check_image`)
 
 **Health check**:
 The test a newly updated image must pass to stay: within 120 s of its first boot, a member of a round that has heard and sent 20 round broadcasts. Failing it, or crashing before it passes, rolls the node back to its old app slot.
@@ -490,7 +490,7 @@ _See_: `csi/coverage.py` (`link_matrix`)
 
 
 **Commands**:
-The five POST endpoints that calibrate, set or save thresholds, and tune the heatmap. They run only when the server is bound to a loopback address or started with `--allow-control`.
+The seven POST endpoints (`COMMAND_PATHS`) that calibrate (and cancel a calibration), set or save thresholds, tune the heatmap, switch raw mode on or off for a link (`/api/raw-mode`), and start a staged OTA rollout through the dashboard's gateway (`/api/ota`). They run only when the server is bound to a loopback address or started with `--allow-control`.
 _Avoid_: API (alone)
 _See_: `csi/server.py` (`COMMAND_PATHS`), [ADR-0015](docs/adr/0015-stdlib-http-server-loopback-commands.md)
 

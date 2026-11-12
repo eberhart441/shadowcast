@@ -291,11 +291,12 @@ def run_until(server, accepted):
 def test_cli_records_a_simulated_run_with_its_labels_and_replays_it(tmp_path, capsys):
     path = tmp_path / "sim.rounds"
     args = cli_args("--simulate", "--room", str(TR8), "--record", str(path), "--label", "empty")
-    server = cli.build_server(args)
+    built = cli.build(args)
+    server = built.server
     server.start()
     try:
         run_until(server, 24)
-        cli.read_labels(["walking mark=A3\n", "\n", "dancing\n"], args.recorder)
+        cli.read_labels(["walking mark=A3\n", "\n", "dancing\n"], built.recorder)
     finally:
         server.stop()
     out = capsys.readouterr().out

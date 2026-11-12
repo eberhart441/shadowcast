@@ -17,8 +17,8 @@ receive time relative to the newest of them. The order and spacing of the round 
 
 Sending (raw mode, ticket #17): ``send_frame(frame)`` writes the text command ``send <hex>`` to the gateway, which
 sends that frame (a raw mode request the host signed) in the join slot of the next round its scheduler numbers
-even. ``sender_id`` is the gateway's board serial from its status record (None before the first one, or when the
-board on the port is not a gateway), the node id the host puts in the frames it sends this way.
+even. ``gateway_serial`` is the gateway's board serial from its status record (None before the first one, or when
+the board on the port is not a gateway), the node id the host puts in the frames it sends this way.
 """
 from __future__ import annotations
 
@@ -28,6 +28,8 @@ import threading
 import time
 from collections import Counter, deque
 from typing import Iterable, Iterator, NamedTuple, Optional, Union
+
+from .errors import ReasonError
 
 SYNC = b"SC"
 VERSION = 1
@@ -40,18 +42,16 @@ _HEARD = struct.Struct("<QbB")    # receive time (gateway device time, us), rssi
 _STATUS = struct.Struct("<6sQBBBB")
 ROLES = {0: "transceiver", 1: "gateway"}
 COUNTER_NAMES = ("heard", "queue_full", "usb_dropped", "sent", "send_errors", "rejected", "csi_skipped")
+LOSS_COUNTERS = ("queue_full", "usb_dropped", "csi_skipped")   # status counters of frames the gateway lost
 MAX_SPREAD_S = 2.0                # records of one read are never placed more than this before its arrival
 TEXTS_KEPT = 50
+WRITE_TIMEOUT_S = 1.0             # a command line to the gateway that cannot be written in this long fails
 
 Chunks = Iterable[tuple[float, Optional[bytes]]]
 
 
-class RecordError(ValueError):
+class RecordError(ReasonError):
     """Bytes that are not a v1 gateway record. ``reason``: truncated, sync, version, too_long, crc, type, short_body."""
-
-    def __init__(self, reason: str, message: str) -> None:
-        super().__init__(message)
-        self.reason = reason
 
 
 class Heard(NamedTuple):
@@ -195,13 +195,16 @@ class GatewaySource:
     def __init__(self, chunks: Chunks) -> None:
         self._chunks = chunks
         self._reader = RecordReader()
+        self._lock = threading.Lock()                 # the reader thread feeds; the dashboard reads losses()
         self.status: Optional[NodeStatus] = None      # the gateway's latest status record
         self.texts: deque[str] = deque(maxlen=TEXTS_KEPT)
 
     def __iter__(self) -> Iterator[tuple[float, Optional[bytes]]]:
         for arrived, data in self._chunks:
             heard: list[Heard] = []
-            for record in self._reader.feed(data) if data else ():
+            with self._lock:
+                records = self._reader.feed(data) if data else ()
+            for record in records:
                 if isinstance(record, Heard):
                     heard.append(record)
                 elif isinstance(record, NodeStatus):
@@ -218,21 +221,47 @@ class GatewaySource:
 
     def counts(self) -> dict:
         """{"records": {type: n}, "rejected": {reason: n}, "skipped_bytes": n}."""
-        return self._reader.counts()
+        with self._lock:
+            return self._reader.counts()
+
+    def losses(self) -> dict:
+        """What never reached the host as a round broadcast, by where it was lost: on the gateway (its status
+        record's ``queue_full``, ``usb_dropped`` and ``csi_skipped``, counted since its boot; 0 before the first
+        status record) and on the way in (``records_rejected`` {reason: n} for records that failed their checks,
+        ``skipped_bytes`` that were not a record). The dashboard shows it per gateway in ``status.broadcasts``."""
+        counts = self.counts()
+        status = self.status
+        out = {name: status.counter(name) if status is not None else 0 for name in LOSS_COUNTERS}
+        out["records_rejected"] = counts["rejected"]
+        out["skipped_bytes"] = counts["skipped_bytes"]
+        return out
 
     @property
-    def sender_id(self) -> Optional[str]:
+    def gateway_serial(self) -> Optional[str]:
         """The gateway's board serial once its status record has arrived; None before, or for a transceiver."""
         status = self.status
         return status.serial if status is not None and status.role == "gateway" else None
 
+    @property
+    def channel(self) -> Optional[int]:
+        """The sensing channel from the gateway's status record, None before the first one."""
+        status = self.status
+        return status.channel if status is not None else None
+
     def send_frame(self, frame: bytes) -> None:
         """Have the gateway send ``frame`` on the sensing channel (``send <hex>``). RuntimeError if these chunks
         cannot be written to; OSError from the port."""
+        self._write(f"send {bytes(frame).hex()}\n".encode())
+
+    def send_maintenance(self, frame: bytes) -> None:
+        """Have the gateway send a signed maintenance command (OTA, ``ota send <hex>``) on the sensing channel."""
+        self._write(f"ota send {bytes(frame).hex()}\n".encode())
+
+    def _write(self, line: bytes) -> None:
         write = getattr(self._chunks, "write", None)
         if write is None:
             raise RuntimeError("this gateway source cannot send (its chunks are read-only)")
-        write(f"send {bytes(frame).hex()}\n".encode())
+        write(line)
 
     def close(self) -> None:
         """Close the chunk source (a serial port's reader releases the port). MultiSource calls this on stop."""
@@ -257,6 +286,7 @@ class SerialChunks:
         with self._lock:
             if self._ser is None:
                 self._ser = open_serial(self._port, self._baud, self._timeout)
+                self._ser.write_timeout = WRITE_TIMEOUT_S   # pyserial raises SerialTimeoutException (an OSError)
             ser = self._ser
         try:
             while True:

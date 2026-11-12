@@ -41,13 +41,8 @@ static bool all_zero(const uint8_t *p, size_t n)
 
 /* ---------------------------------------------------------------- the maintenance command */
 
-/* Header offsets as in round_broadcast.h; slot .. membership (bytes 4..11) are zero in a command. */
-#define OFF_ROUND 2
-#define OFF_RESERVED_HEADER 4
-#define RESERVED_HEADER_BYTES 8
-#define OFF_SENDER 12
-#define OFF_TAG 18
-#define OFF_COMMAND 26
+/* The round header is round_broadcast.h's; slot .. membership (RB_RESERVED_*) are zero in a command. */
+#define OFF_COMMAND RB_HEADER_BYTES
 #define OFF_TARGET_COUNT 27
 #define OFF_PORT 28
 #define OFF_CHANNEL 30
@@ -101,13 +96,13 @@ ota_status_t ota_command_decode(const uint8_t *bytes, size_t len, ota_command_t 
     if (st != OTA_OK) {
         return st;
     }
-    if (bytes[OFF_RESERVED] != 0 || !all_zero(bytes + OFF_RESERVED_HEADER, RESERVED_HEADER_BYTES)) {
+    if (bytes[OFF_RESERVED] != 0 || !all_zero(bytes + RB_RESERVED_OFFSET, RB_RESERVED_BYTES)) {
         return OTA_FIELD;
     }
     memset(out, 0, sizeof *out);
-    out->round = get16(bytes + OFF_ROUND);
-    memcpy(out->sender, bytes + OFF_SENDER, OTA_SERIAL_BYTES);
-    memcpy(out->tag, bytes + OFF_TAG, sizeof out->tag);
+    out->round = get16(bytes + RB_ROUND_OFFSET);
+    memcpy(out->sender, bytes + RB_NODE_ID_OFFSET, OTA_SERIAL_BYTES);
+    memcpy(out->tag, bytes + RB_TAG_OFFSET, sizeof out->tag);
     out->command = bytes[OFF_COMMAND];
     out->port = get16(bytes + OFF_PORT);
     out->ap_channel = bytes[OFF_CHANNEL];
@@ -128,9 +123,9 @@ size_t ota_command_encode(const ota_command_t *c, uint8_t *out, size_t cap)
     memset(out, 0, len);
     out[0] = OTA_FORMAT_VERSION;
     out[1] = OTA_FRAME_MAINTENANCE;
-    put16(out + OFF_ROUND, c->round);
-    memcpy(out + OFF_SENDER, c->sender, OTA_SERIAL_BYTES);
-    memcpy(out + OFF_TAG, c->tag, sizeof c->tag);
+    put16(out + RB_ROUND_OFFSET, c->round);
+    memcpy(out + RB_NODE_ID_OFFSET, c->sender, OTA_SERIAL_BYTES);
+    memcpy(out + RB_TAG_OFFSET, c->tag, sizeof c->tag);
     out[OFF_COMMAND] = c->command;
     out[OFF_TARGET_COUNT] = c->n_targets;
     put16(out + OFF_PORT, c->port);
@@ -151,10 +146,25 @@ const char *ota_status_name(ota_status_t st)
 
 /* ---------------------------------------------------------------- what a node does with a command */
 
+/* The 80 MHz block a 5 GHz channel lies in (36-48, 52-64, 100-112, ...; 149-161, 165-177): an access point may use
+ * all of it. */
+static int block_80mhz(uint8_t channel)
+{
+    return channel >= 149 ? 100 + (channel - 149) / 16 : (channel - 36) / 16;
+}
+
 bool ota_channels_clear(uint8_t sensing_channel, uint8_t ap_channel)
 {
-    if (ap_channel == 0 || (ap_channel >= 36 && ap_channel <= 177)) {
-        return true;   /* scan (checked again on the channel found), or 5 GHz */
+    bool ap_5ghz = ap_channel >= 36 && ap_channel <= 177;
+    if (ap_channel == 0) {
+        return true;   /* scan (checked again on the channel found) */
+    }
+    if (sensing_channel >= 36) {   /* sensing on 5 GHz: 2.4 GHz, or another 80 MHz block */
+        return (ap_channel >= 1 && ap_channel <= 14)
+               || (ap_5ghz && block_80mhz(ap_channel) != block_80mhz(sensing_channel));
+    }
+    if (ap_5ghz) {
+        return true;
     }
     if (ap_channel > 14) {
         return false;

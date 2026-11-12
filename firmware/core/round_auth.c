@@ -72,7 +72,7 @@ rb_auth_status_t rb_auth_fresh(rb_auth_t *a, const uint8_t node_id[RB_NODE_ID_BY
             }
             int64_t window = RB_AUTH_AHEAD_SLACK + (dt > 0 ? dt / 1000 : 0);
             if (ahead < 1 || ahead > window) {
-                return RB_AUTH_REPLAY;
+                return RB_AUTH_STALE;
             }
         }
     } else {
@@ -151,7 +151,7 @@ const char *rb_auth_status_name(rb_auth_status_t st)
     switch (st) {
     case RB_AUTH_OK: return "ok";
     case RB_AUTH_FORGED: return "auth";
-    case RB_AUTH_REPLAY: return "replay";
+    case RB_AUTH_STALE: return "stale";
     }
     return "unknown";
 }

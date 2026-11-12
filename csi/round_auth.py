@@ -5,15 +5,15 @@ tests/fixtures/round_broadcast_v2.json, and firmware/core/round_auth.h is the no
 
     data = sign_broadcast(encode_broadcast(b), key)   # write the tag
     tag_ok(data, key)                                  # False: forged, or another kit's key
-    fresh = Freshness(); fresh.check(node_id, round, host_ts)   # FRESH, or REPLAY for a stale round number
+    fresh = Freshness(); fresh.check(node_id, round, host_ts)   # FRESH, or STALE for a stale round number
 
 The tag is the first 8 bytes of HMAC-SHA256(kit key, the broadcast with its tag bytes 18..25 set to zero). It
 covers every other byte, the node id and the round number included. The kit key is 16 random bytes shared by every
 node of a kit and the host; it gives authenticity, not secrecy (nothing is encrypted).
 
-The round number guards against replay. Per sender, a broadcast is fresh when its round number is ahead of the
+The round number guards against a recorded copy sent again (a replay attack). Per sender, a broadcast is fresh when its round number is ahead of the
 last fresh one from that node, by at most ``AHEAD_SLACK`` + 1 round per millisecond since then (no rig runs a
-round faster than 1 ms per round). Anything else is a replay, unless the node has been silent (no fresh broadcast)
+round faster than 1 ms per round). Anything else is stale, unless the node has been silent (no fresh broadcast)
 for more than ``RESYNC_S``: then any round number is taken, because a node that restarted or renumbered its rounds
 starts again from wherever it is. The limits are in docs/round-broadcast.md.
 
@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Union
 
 from .broadcast import HEADER_BYTES, TAG_BYTES, TAG_OFFSET
+from .room import board_serial
 
 KIT_KEY_BYTES = 16
 TEST_KIT_KEY = bytes(range(KIT_KEY_BYTES))   # 000102..0f: fixtures and simulator only, never a real kit
@@ -39,7 +40,7 @@ AHEAD_SLACK = 16          # rounds a fresh broadcast may be ahead of the last on
 MAX_ROUNDS_PER_S = 1000   # that 1 per millisecond: no rig runs a round shorter than 1 ms
 RESYNC_S = 2.0            # a node silent this long is taken at whatever round number it sends next
 FRESH = "fresh"
-REPLAY = "replay"
+STALE = "stale"         # rejection reason: the tag verifies but the round number is stale
 _ZERO_TAG = bytes(TAG_BYTES)
 
 
@@ -72,19 +73,19 @@ def kit_key_check(key: bytes) -> str:
 
 
 class Freshness:
-    """The replay guard: the last fresh round number of every sender, by node id."""
+    """The freshness rule: the last fresh round number of every sender, by node id."""
 
     def __init__(self) -> None:
         self._last: dict[str, tuple[int, float]] = {}   # node id (upper case) -> (round, time of that broadcast)
 
     def check(self, node_id: str, round_no: int, t: float) -> str:
-        """FRESH (and remembered) or REPLAY for an authenticated broadcast from ``node_id`` heard at ``t`` seconds."""
-        node = node_id.upper()
+        """FRESH (and remembered) or STALE for an authenticated broadcast from ``node_id`` heard at ``t`` seconds."""
+        node = board_serial(node_id)
         last = self._last.get(node)
         if last is not None and t - last[1] <= RESYNC_S:
             ahead = (round_no - last[0] + 32768) % 65536 - 32768
             if not 1 <= ahead <= AHEAD_SLACK + math.floor(max(0.0, t - last[1]) * MAX_ROUNDS_PER_S):
-                return REPLAY
+                return STALE
         self._last[node] = (round_no, t)
         return FRESH
 

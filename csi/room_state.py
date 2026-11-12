@@ -71,6 +71,7 @@ from typing import Optional, Sequence
 import numpy as np
 
 from .adaptive import EMPTY, MOTION, WARMUP, Reading
+from .health import NO_SIGNAL_S
 from .room import Node, Room, point_segment_distance
 
 ZONE_M = 1.0            # zone side: the unit the operator reads and the possibly-occupied hold (#9) latches on
@@ -82,7 +83,6 @@ TARGET_INDEPENDENT = 3  # ... three where three independent links cover the poin
 HOLD_S = 1.0            # a zone (and so the room) stays MOTION this long after the last firing point
 POSSIBLY_OCCUPIED_S = 60.0   # ... then POSSIBLY_OCCUPIED this long: twice the ~30 s a still person takes to fade
 POSSIBLY_OCCUPIED = "POSSIBLY_OCCUPIED"
-NO_SIGNAL_S = 2.0       # a link not heard for longer is not warm
 EVAL_S = 0.05           # the points are re-judged at most this often (one round at 20 Hz) when links change
 
 

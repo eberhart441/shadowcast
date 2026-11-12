@@ -35,7 +35,7 @@ Work moves in three steps: a **work branch**, then the **integration branch** na
 End every commit message with:
 
 ```
-Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ```
 
 Merge the integration branch (or `main`, if the work branch was cut from it) into the work branch before reporting.

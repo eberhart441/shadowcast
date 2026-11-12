@@ -75,7 +75,7 @@ The score byte is the **score code** of [ADR-0021](adr/0021-on-node-score-stream
 (`csi/score_code.py` on the host, `firmware/core/motion_score.h` on the node): 10 codes per octave. Code `0` is no score yet; code *c* from 1 to 255 stands for
 the score 2^((*c* − 1)/10 − 10), from 2⁻¹⁰ ≈ 0.001 (code 1) to 2¹⁵·⁴ ≈ 43,000 (code 255). A score *s* encodes as
 floor(10 × (log₂ *s* + 10) + 0.5) + 1, clamped to 1 to 255 (*s* ≤ 0 gives 1), so a decoded score is within
-about 3.5 % of the score. `csi/broadcast.py` (`quantise_score`, `dequantise_score`) calls `csi/score_code.py`.
+about 3.5 % of the score. The host's copy is `csi/score_code.py` (`encode_score`, `decode_score`).
 
 ## Authentication
 
@@ -101,14 +101,14 @@ The **test kit key** `000102030405060708090a0b0c0d0e0f` is published: the fixtur
 host defaults to it for `--simulate` and `--replay-rounds` (pass `--kit-key` to replay a real kit's recording),
 and neither `node.py` nor a node accepts it as a kit key.
 
-**Freshness (replay).** A copied round broadcast keeps a valid tag, so the round number guards against replay.
+**Freshness.** A copied round broadcast keeps a valid tag, so the round number guards against it being sent again.
 Every receiver (the host, per board serial; a node, per node id) keeps the last fresh round number of each sender
 and when it was heard. A broadcast whose tag verifies is **fresh** if its round number is 1 to 16 + *t* ahead of
 that last fresh one (mod 2^16), where *t* is the milliseconds since it; anything else, the same round again, an
-older one, or one too far ahead, is a **replay** (reason `replay`) and is not used. The exception is a sender
+older one, or one too far ahead, is **stale** (reason `stale`) and is not used. The exception is a sender
 silent for more than 2 s, with no fresh broadcast: its next one is taken at any round number, because a node that
 restarted or renumbered its rounds starts again from wherever it is. The first broadcast heard from a sender is
-fresh. On the host, de-duplication runs first, so a second gateway's copy is a `duplicate`, not a replay.
+fresh. On the host, de-duplication runs first, so a second gateway's copy is a `duplicate`, not stale.
 
 What it does not stop: while a node is silent for more than 2 s, a replay of its own old broadcasts can stand in
 for it until it is heard again; and a copy recorded a whole number of round-number wraps ago (55 min at 20 Hz,
@@ -131,10 +131,11 @@ length is reason `length`), with these meanings:
 | node index | the index it asks for (the lowest free one; the scheduler may give another). 0 to 31, else reason `membership` | the index given to the joiner; it must be in the membership (reason `membership`) |
 | node id | the joining node's board serial | the joining node's board serial (not the scheduler's) |
 
-Join frames are signed like round broadcasts and a forged one is rejected as `auth`. The host counts the others
-(`status.broadcasts.join_frames`, every copy) and never places, de-duplicates or checks them for freshness; a
-grant tells it the joiner's index in the new schedule version. A node checks join frames for freshness like any
-frame (both carry the joiner's round numbers, so they count on with its own) and never takes its timing from one.
+Join frames are signed like round broadcasts and a forged one is rejected as `auth`. Host and node check a join
+frame for freshness like any frame (both carry the joiner's round numbers, so they count on with its own): one that
+names a room node and is stale for it is rejected as `stale`. The host counts the others
+(`status.broadcasts.join_frames`, every copy; a second gateway's copy is not checked again) and never places them;
+a grant tells it the joiner's index in the new schedule version. A node never takes its timing from a join frame.
 
 ## Raw mode
 
@@ -194,7 +195,7 @@ airtime model of report 03 (HT20 MCS0, ESP-NOW framing), one raw link adds 172 �
 ## Maintenance command
 
 Frame type 8 tells chosen nodes to update their firmware or to report it ([ADR-0031](adr/0031-ota-maintenance-network-signed-images.md),
-[`docs/ota.md`](ota.md)). The host builds and signs it (`csi/ota.py` `maintenance_command`) and the gateway sends it
+[`docs/ota.md`](ota.md)). The host builds and signs it (`csi/ota/command.py` `maintenance_command`) and the gateway sends it
 (`ota send <hex>` on its USB port), three copies 0.2 s apart; nodes decode it with `firmware/core/ota_core.h`, not
 with the round broadcast decoder. The golden cases are
 [`tests/fixtures/ota_command.json`](../tests/fixtures/ota_command.json). The round header's slot, slots per round,
@@ -227,13 +228,15 @@ command).
   counted as unplaced.
 - A round broadcast with raw CSI is placed like any round broadcast; each raw CSI block is placed on its link the
   same way (`status.broadcasts.raw_csi {blocks, iq_bytes, unplaced}`, and per link in the payload's `raw_mode`). A
-  raw mode request another gateway sent is counted in `status.broadcasts.raw_requests` and not used.
+  raw mode request another gateway sent is counted in `status.broadcasts.raw_requests` and not used, and an
+  authenticated maintenance command (frame type 8) in `status.broadcasts.maintenance_commands`: neither is a
+  rejection.
 - `heard` 0 makes the link NO_SIGNAL. A warming flag or score 0 makes it WARMUP. Otherwise the score drives
   the link's detector as a packet's score does in the line pipeline.
 - Bytes that fail to decode are counted by reason (`short`, `version`, `frame_type`, `length`, `membership`)
   and dropped. Then the tag is checked: one that does not verify is counted as `auth` before anything else
   looks at it, so a forgery cannot take the place of the real broadcast. A round broadcast whose node id is not in
-  the room config is counted as an unknown node; one that is stale for its sender as `replay`.
+  the room config is counted as an unknown node; one that is stale for its sender as `stale`.
 - Several gateways may hear one round broadcast. The host places the first copy of (node id, schedule version,
   round number); any other copy within 2 s of host time, from any gateway, is counted as a `duplicate` and not
   placed again. Two gateways therefore never double-count a link report. A node must not send two different
@@ -243,3 +246,7 @@ command).
   counted as `queue_overflow`; a recorded one waits. Every reason, unknown nodes and per-gateway counts are in
   the dashboard payload at `status.broadcasts` (`csi/rounds.py`), and unknown nodes, rejections and drops also
   raise a line in `status.messages`.
+- What a node gateway lost before the host ever saw it is in `status.broadcasts.gateways {source: {queue_full,
+  usb_dropped, csi_skipped, records_rejected {reason: n}, skipped_bytes}}`: the first three from the gateway's
+  status record (counted since its boot), the last two from the host's reader of its USB records (a record that
+  fails its CRC, for example). Any of them non-zero raises a line in `status.messages` naming the gateway.

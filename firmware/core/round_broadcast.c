@@ -127,7 +127,7 @@ rb_status_t rb_decode(const uint8_t *data, size_t len, rb_broadcast_t *out)
     out->schedule_version = data[6];
     out->node_index = index;
     out->membership = membership;
-    memcpy(out->node_id, data + 12, RB_NODE_ID_BYTES);
+    memcpy(out->node_id, data + RB_NODE_ID_OFFSET, RB_NODE_ID_BYTES);
     memcpy(out->tag, data + RB_TAG_OFFSET, RB_TAG_BYTES);
     out->len = (uint16_t)len;
     out->n_raw = 0;
@@ -207,7 +207,7 @@ size_t rb_encode(const rb_broadcast_t *b, uint8_t *out, size_t cap)
     out[6] = b->schedule_version;
     out[7] = b->node_index;
     put_u32(out + 8, b->membership);
-    memcpy(out + 12, b->node_id, RB_NODE_ID_BYTES);
+    memcpy(out + RB_NODE_ID_OFFSET, b->node_id, RB_NODE_ID_BYTES);
     memcpy(out + RB_TAG_OFFSET, b->tag, RB_TAG_BYTES);
     uint8_t *p = out + RB_HEADER_BYTES;
     for (k = 0; k < b->n_reports; k++) {

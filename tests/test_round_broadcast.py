@@ -10,8 +10,8 @@ from pathlib import Path
 import pytest
 
 from csi.broadcast import (FORMAT_VERSION, FRAME_JOIN_GRANT, FRAME_JOIN_REQUEST, FRAME_RAW_REQUEST, FRAME_ROUND_RAW,
-                           BroadcastError, LinkReport, RawCsi, RawModeRequest, RoundBroadcast, decode_broadcast,
-                           dequantise_score, encode_broadcast, quantise_score)
+                           BroadcastError, LinkReport, RawCsi, RawModeRequest, RoundBroadcast, decode_broadcast, encode_broadcast)
+from csi.score_code import decode_score, encode_score
 
 FIXTURES = Path(__file__).parent / "fixtures"
 GOLDEN = json.loads((FIXTURES / "round_broadcast_v2.json").read_text())
@@ -119,29 +119,29 @@ def test_the_encoder_refuses_reports_that_do_not_follow_the_membership():
 
 
 def test_score_zero_means_no_score_yet():
-    assert quantise_score(None) == 0
-    assert dequantise_score(0) is None
+    assert encode_score(None) == 0
+    assert decode_score(0) is None
 
 
 @pytest.mark.parametrize("score", [1e-3, 0.05, 1.0, 7.3, 450.0, 9e3])
 def test_a_score_survives_quantisation_within_a_few_percent(score):
-    q = quantise_score(score)
+    q = encode_score(score)
     assert 1 <= q <= 255
-    assert dequantise_score(q) == pytest.approx(score, rel=0.05)
+    assert decode_score(q) == pytest.approx(score, rel=0.05)
 
 
 def test_the_score_code_is_ten_steps_per_octave_from_two_to_the_minus_ten():
     # the C scorer ticket's score code: score = 2 ** ((code - 1) / 10 - 10)
-    assert quantise_score(1.0) == 101 and dequantise_score(101) == 1.0
-    assert quantise_score(2.0) == 111 and dequantise_score(111) == 2.0
-    assert quantise_score(2.0 ** -10) == 1 and dequantise_score(1) == 2.0 ** -10
-    assert dequantise_score(255) == pytest.approx(2.0 ** 15.4)
+    assert encode_score(1.0) == 101 and decode_score(101) == 1.0
+    assert encode_score(2.0) == 111 and decode_score(111) == 2.0
+    assert encode_score(2.0 ** -10) == 1 and decode_score(1) == 2.0 ** -10
+    assert decode_score(255) == pytest.approx(2.0 ** 15.4)
 
 
 def test_quantisation_keeps_the_order_of_scores_and_saturates_at_the_ends():
-    assert quantise_score(1.0) < quantise_score(2.0) < quantise_score(4.0)
-    assert quantise_score(0.0) == 1          # a real but tiny score is not "no score"
-    assert quantise_score(1e12) == 255
+    assert encode_score(1.0) < encode_score(2.0) < encode_score(4.0)
+    assert encode_score(0.0) == 1          # a real but tiny score is not "no score"
+    assert encode_score(1e12) == 255
 
 
 def test_slot_lateness_reads_in_microseconds():

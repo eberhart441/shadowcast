@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from csi.round_auth import (FRESH, REPLAY, TEST_KIT_KEY, Freshness, KitKeyError, kit_key_check, load_kit_key,
+from csi.round_auth import (FRESH, STALE, TEST_KIT_KEY, Freshness, KitKeyError, kit_key_check, load_kit_key,
                             sign_broadcast, tag_ok, write_kit_key)
 
 GOLDEN = json.loads((Path(__file__).parent / "fixtures" / "round_broadcast_v2.json").read_text())
@@ -65,13 +65,13 @@ def test_the_key_check_value_names_a_key_without_revealing_it():
 def test_the_freshness_rule_follows_the_golden_sequence():
     fresh = Freshness()
     got = [fresh.check(step["node_id"], step["round"], step["t_us"] / 1e6) for step in GOLDEN["freshness"]]
-    assert got == [FRESH if step["expect"] == "fresh" else REPLAY for step in GOLDEN["freshness"]]
+    assert got == [FRESH if step["expect"] == "fresh" else STALE for step in GOLDEN["freshness"]]
 
 
 def test_freshness_matches_node_ids_in_any_case():
     fresh = Freshness()
     assert fresh.check("aa:bb:cc:dd:ee:ff", 10, 0.0) == FRESH
-    assert fresh.check("AA:BB:CC:DD:EE:FF", 10, 0.025) == REPLAY
+    assert fresh.check("AA:BB:CC:DD:EE:FF", 10, 0.025) == STALE
 
 
 def test_a_kit_key_file_round_trips_and_is_not_overwritten(tmp_path):

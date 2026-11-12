@@ -40,7 +40,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Mapping, Optional
+from typing import Mapping, NamedTuple, Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -296,35 +296,58 @@ def kit_key(args: argparse.Namespace) -> bytes:
         raise SystemExit(f"error: {e}")
 
 
-def record_rounds(args: argparse.Namespace, room: Room, streams: dict, notes: str) -> dict:
-    """With --record: tee the round broadcast streams into a round recording (args.recorder). Else unchanged."""
+class Sources(NamedTuple):
+    """What a live source kind gives the server, decided once by ``build_sources``: the streams, the fixed thresholds
+    (None in auto mode), the gateways that can send (raw mode, OTA), the kit key the round broadcasts are verified
+    with, the round recorder (with --record), and the source's description for the log header."""
+    streams: Mapping[str, Stream]
+    thresholds: Optional[Mapping[str, float]]
+    description: str
+    gateways: Optional[Mapping] = None
+    key: bytes = TEST_KIT_KEY
+    recorder: Optional[RoundRecorder] = None
+
+
+class Dashboard(NamedTuple):
+    """A built dashboard, not yet started: the server and, with --record, the round recorder (closed by ``main``
+    once the server stops)."""
+    server: FrameServer
+    recorder: Optional[RoundRecorder] = None
+
+
+def record_rounds(args: argparse.Namespace, room: Room, streams: dict,
+                  notes: str) -> tuple[dict, Optional[RoundRecorder]]:
+    """With --record: the round broadcast streams teed into a new round recording, and the recorder. Else the
+    streams unchanged and None."""
     if args.record is None:
-        return streams
-    args.recorder = RoundRecorder(args.record, room, list(streams), notes=notes)
+        return streams, None
+    recorder = RoundRecorder(args.record, room, list(streams), notes=notes)
     if args.label is not None:
-        args.recorder.label(args.label)
-    return args.recorder.tee(streams, close_when_done=True)
+        recorder.label(args.label)
+    return recorder.tee(streams, close_when_done=True), recorder
 
 
-def build_sources(args: argparse.Namespace, room: Room) -> tuple[dict[str, Stream], Optional[Mapping[str, float]]]:
-    """Named (host_ts, line) streams and the per-link fixed thresholds for them (None in auto mode).
-    Serial ports open on first read."""
+def build_sources(args: argparse.Namespace, room: Room) -> Sources:
+    """The live source the arguments name, as ``Sources``. Serial ports open on first read."""
     fixed = server_mode(args) == "fixed"
     if args.simulate:
         if len(room.transceivers) < 2:
             raise SystemExit(f"error: --simulate needs a room with at least two transceivers; {args.room} has "
                              f"{len(room.transceivers)} (try --room config/room_tr8.json)")
         streams = simulated_rig_streams(room, seed=args.seed, quiet_first_s=args.sim_quiet_first)
-        args.transmitters = dict(streams)   # the simulated rig takes raw mode requests too
-        return record_rounds(args, room, streams, "dashboard.py --simulate"), None
+        teed, recorder = record_rounds(args, room, streams, "dashboard.py --simulate")
+        # the simulated rig takes raw mode requests too
+        return Sources(teed, None, "simulate (transceiver rig)", gateways=dict(streams), recorder=recorder)
     if args.node_gateway is not None:
         if len(room.transceivers) < 2:
             raise SystemExit(f"error: --node-gateway needs a room with at least two transceivers; {args.room} has "
                              f"{len(room.transceivers)} (try --room config/room_tr2.json)")
-        args.key = kit_key(args)
+        key = kit_key(args)
         streams = {"gateway": gateway_source(args.node_gateway, args.baud)}
-        args.transmitters = dict(streams)   # raw mode requests go out through the gateway
-        return record_rounds(args, room, streams, f"dashboard.py --node-gateway {args.node_gateway}"), None
+        teed, recorder = record_rounds(args, room, streams, f"dashboard.py --node-gateway {args.node_gateway}")
+        # raw mode requests and maintenance commands go out through the gateway
+        return Sources(teed, None, f"node gateway {args.node_gateway}", gateways=dict(streams), key=key,
+                       recorder=recorder)
     if args.simulate_room:
         thresholds = None
         if fixed:
@@ -335,27 +358,34 @@ def build_sources(args: argparse.Namespace, room: Room) -> tuple[dict[str, Strea
         quiet = looping_room_streams(room, default_walk(room), seed=args.seed, quiet_first_s=args.sim_quiet_first)
         if args.raw_log is not None:
             quiet = tee_sources(quiet, args.raw_log)
-        return quiet, thresholds
+        return Sources(quiet, thresholds, "simulate-room")
     if args.gateway is not None:
         sources = gateway_streams(args.gateway, room, args.baud)
+        description = f"gateway {args.gateway}"
     else:
         sources = {name: serial_stream(path, args.baud) for name, path in parse_port_specs(args.port)}
+        description = "ports " + ", ".join(n for n, _ in parse_port_specs(args.port))
     if args.raw_log is not None:
         sources = tee_sources(sources, args.raw_log)
-    return sources, load_link_thresholds(args.thresholds) if fixed else None
+    return Sources(sources, load_link_thresholds(args.thresholds) if fixed else None, description)
 
 
 def build_server(args: argparse.Namespace) -> FrameServer:
-    """The server for the chosen source, not yet started. Raises ReplayError for unusable replay inputs.
+    """The server for the chosen source, not yet started (``build`` also gives the round recorder)."""
+    return build(args).server
 
-    With --record, ``args.recorder`` is set to the RoundRecorder (None otherwise); it closes when the server stops."""
+
+def build(args: argparse.Namespace) -> Dashboard:
+    """The dashboard for the chosen source, not yet started. Raises ReplayError for unusable replay inputs."""
     speed = 1.0 if args.speed is None else args.speed
     page = args.page  # None: the server's default, web/index.html
     if args.replay is not None:
-        return ReplayServer(load_log(args.replay), speed=speed, host=args.host, port=args.http_port, web_index=page)
+        return Dashboard(ReplayServer(load_log(args.replay), speed=speed, host=args.host, port=args.http_port,
+                                      web_index=page))
     if args.replay_rounds is not None:
-        return rounds_dashboard(args.replay_rounds, speed=speed, host=args.host, port=args.http_port, log=args.log,
-                                web_index=page, kit_key=kit_key(args), possibly_occupied_s=hold_s(args))
+        return Dashboard(rounds_dashboard(args.replay_rounds, speed=speed, host=args.host, port=args.http_port,
+                                          log=args.log, web_index=page, kit_key=kit_key(args),
+                                          possibly_occupied_s=hold_s(args)))
     room = load_room(args.room)
     if args.replay_session is not None:
         thresholds = load_link_thresholds(args.thresholds)
@@ -366,21 +396,8 @@ def build_server(args: argparse.Namespace) -> FrameServer:
                                    host=args.host, port=args.http_port, log=args.log)
         if page is not None:
             server._web_index = page  # session_dashboard takes no web_index; the page is read on each GET /
-        return server
-    args.recorder = None
-    args.key = TEST_KIT_KEY
-    args.transmitters = {}
-    sources, thresholds = build_sources(args, room)
-    if args.simulate:
-        source = "simulate (transceiver rig)"
-    elif args.simulate_room:
-        source = "simulate-room"
-    elif args.gateway is not None:
-        source = f"gateway {args.gateway}"
-    elif args.node_gateway is not None:
-        source = f"node gateway {args.node_gateway}"
-    else:
-        source = "ports " + ", ".join(n for n, _ in parse_port_specs(args.port))
+        return Dashboard(server)
+    live = build_sources(args, room)
     save_to = args.save_thresholds or args.thresholds
     mode = server_mode(args)
     if mode == "auto":
@@ -389,12 +406,13 @@ def build_server(args: argparse.Namespace) -> FrameServer:
         thresholds_source = (f"loaded from {args.thresholds}" if args.thresholds else
                              ("simulated empty room" if args.simulate_room else "none"))
     notes = [] if args.node_gateway is None else [
-        f"Round broadcasts are verified with the kit key, check {kit_key_check(args.key)}: every node's "
+        f"Round broadcasts are verified with the kit key, check {kit_key_check(live.key)}: every node's "
         "`scripts/node.py PORT key` must show the same check."]
-    return DashboardServer(room, sources, thresholds, host=args.host, port=args.http_port, log=args.log,
-                           allow_control=args.allow_control, thresholds_path=save_to, mode=mode, kit_key=args.key,
-                           notes=notes, log_meta={"source": source, "thresholds_source": thresholds_source},
-                           web_index=page, possibly_occupied_s=hold_s(args), transmitters=args.transmitters)
+    server = DashboardServer(room, live.streams, live.thresholds, host=args.host, port=args.http_port, log=args.log,
+                             allow_control=args.allow_control, thresholds_path=save_to, mode=mode, kit_key=live.key,
+                             notes=notes, log_meta={"source": live.description, "thresholds_source": thresholds_source},
+                             web_index=page, possibly_occupied_s=hold_s(args), gateways=live.gateways or {})
+    return Dashboard(server, live.recorder)
 
 
 def read_labels(lines, recorder: RoundRecorder) -> None:
@@ -427,13 +445,13 @@ def main(argv: Optional[list[str]] = None) -> int:
     if args.auto_ports:
         args.port = resolve_auto_ports(load_room(args.room))
     try:
-        server = build_server(args)
+        built = build(args)
+        server, recorder = built.server, built.recorder
         server.start()
     except (ReplayError, OSError) as e:
         raise SystemExit(f"error: {e}")
     previous_sigterm = signal.signal(signal.SIGTERM, _stop_on_sigterm)
     print(f"dashboard at {server.url}  (listening on {server.address[0]})  Ctrl+C to stop", flush=True)
-    recorder = getattr(args, "recorder", None)
     if recorder is not None:
         print(f"recording round broadcasts to {recorder.path}; type a label ({', '.join(LABELS)}) and Enter to "
               "switch", flush=True)

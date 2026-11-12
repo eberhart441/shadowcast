@@ -31,7 +31,6 @@ keep ``RoomDecision``.
 from __future__ import annotations
 
 import json
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar, Iterable, Mapping, Optional, Sequence, Union
@@ -40,7 +39,7 @@ from .adaptive import AdaptiveDetector, Reading, RoomDecision
 from .detect import (DEBOUNCE_S, DEFAULT_MARGIN, MIN_CLEAN_FRACTION, MOTION, Calibration, CalibrationError,
                      MotionScorer, _Debouncer, calibrate_clips, classify, validate_margin)
 from .broadcast import LinkReport
-from .health import LinkHealth, ReportHealth
+from .health import NO_SIGNAL_S, LinkHealth, ReportHealth
 from .parser import CSIPacket
 from .room import Node, Room
 from .room_state import POSSIBLY_OCCUPIED, POSSIBLY_OCCUPIED_S, RoomState, ZoneMap
@@ -48,7 +47,6 @@ from .room_state import POSSIBLY_OCCUPIED, POSSIBLY_OCCUPIED_S, RoomState, ZoneM
 NO_SIGNAL = "NO_SIGNAL"
 WARMUP = "WARMUP"
 UNCALIBRATED = "UNCALIBRATED"
-NO_SIGNAL_S = 2.0
 ROOM_STEP_S = 0.05     # link reports update the room decision at most this often (host time): once per 20 Hz round
 FIXED = "fixed"        # a link judged against a threshold
 AUTO = "auto"          # a link judged against its own adaptive baseline (csi/adaptive.py)
@@ -223,6 +221,7 @@ class LinkMonitor:
         self.room_step_s = ROOM_STEP_S
         self._room_state = WARMUP                   # the hackathon links' decision (RoomDecision)
         self._room_elevated: list[str] = []
+        self._newest: Optional[float] = None        # newest host time pushed: "now" when none is given (ADR-0013)
         self._zones: Optional[RoomState] = None     # the transceiver links' room state (csi/room_state.py)
         if room is not None and room.transceivers:
             self._zones = RoomState(ZoneMap(room, [(NodeLinkId(rx.name, tx.name).label, rx, tx)
@@ -267,11 +266,29 @@ class LinkMonitor:
     def push(self, receiver: str, pkt: CSIPacket) -> str:
         """Feed one packet from ``receiver``. Returns that link's state after the packet."""
         state = self._get(LinkId(receiver, pkt.mac)).push(pkt)
+        self._saw(pkt.host_ts)
         self._update_room(pkt.host_ts)
         return state
 
+    def _saw(self, host_ts: float) -> None:
+        if self._newest is None or host_ts > self._newest:
+            self._newest = host_ts
+
+    @property
+    def newest_host_ts(self) -> Optional[float]:
+        """The newest host time pushed so far (packet or link report), None before any."""
+        return self._newest
+
+    def _now(self, now: Optional[float]) -> float:
+        """``now``, else the newest host time pushed (0.0 before any: every link is silent then anyway). Never the
+        wall clock: a replay or simulation runs on its own host times (ADR-0013)."""
+        if now is not None:
+            return now
+        return 0.0 if self._newest is None else self._newest
+
     def push_reports(self, host_ts: float, reports: Iterable[tuple[NodeLinkId, LinkReport]]) -> None:
         """Feed the link reports of one round broadcast, heard at ``host_ts``; the room decision follows once."""
+        self._saw(host_ts)
         if self._zones is not None:
             seen = []
             for link_id, report in reports:
@@ -331,12 +348,12 @@ class LinkMonitor:
         return self._zones
 
     def snapshot(self, now: Optional[float] = None) -> list[dict]:
-        """One dict per link, sorted by label. ``now`` is host time (default: the wall clock).
+        """One dict per link, sorted by label. ``now`` is host time (default: the newest host time pushed).
 
         ``threshold`` is the fixed threshold, or in auto mode the adaptive enter level (None while warming up).
         ``level`` is score relative to that threshold (>= 1 at or above it); ``elevated`` is True in MOTION.
         """
-        now = time.time() if now is None else now
+        now = self._now(now)
         self._settle_room()
         return [self._row(
 link_id, self._links[link_id], now)
@@ -348,7 +365,7 @@ link_id, self._links[link_id], now)
         link_id = self._by_label.get(label)
         if link_id is None:
             return None
-        return self._row(link_id, self._links[link_id], time.time() if now is None else now)
+        return self._row(link_id, self._links[link_id], self._now(now))
 
     def _row(self, link_id: AnyLinkId, link: _Link, now: float) -> dict:
         age = None if link.last_host is None else max(0.0, now - link.last_host)

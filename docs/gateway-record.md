@@ -47,7 +47,7 @@ one place, and counts what it rejects (ADR-0022).
 | 6 | 8 | uptime | Device time in µs, u64. |
 | 14 | 1 | reset reason | `esp_reset_reason()` of the last boot (1 power-on, 3 software, 4 panic, 7 task watchdog, ...). |
 | 15 | 1 | role | `0` transceiver, `1` gateway. |
-| 16 | 1 | channel | The 2.4 GHz channel the node is on. |
+| 16 | 1 | channel | The channel the node is on (2.4 GHz 1 to 13, or 5 GHz 36 and up). |
 | 17 | 1 | reserved | 0. |
 | 18 | 4 × *k* | counters | u32 each, counted since boot (never reset), in this order; a reader ignores counters past the ones it knows. |
 
@@ -58,7 +58,7 @@ one place, and counts what it rejects (ADR-0022).
 | 2 | USB dropped | records not written because the USB buffer was full (no host reading) | same |
 | 3 | sent | frames it sent for the host (`send`, raw mode requests) | round broadcasts sent |
 | 4 | send errors | failed sends of those | `esp_now_send` errors, failed send callbacks and missed slots |
-| 5 | rejected | frames longer than 416 bytes (not ours) | ESP-NOW frames that are not a v2 frame of ours, forged or replayed, or come from a node outside the round |
+| 5 | rejected | frames longer than 416 bytes (not ours) | ESP-NOW frames that are not a v2 frame of ours, forged or stale, or come from a node outside the round |
 | 6 | CSI skipped | 0 | CSI frames not scored: layout warm-up, a layout other than the locked one, or too many subcarriers |
 
 A body shorter than 18 bytes is reason `short_body`.

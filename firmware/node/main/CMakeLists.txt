@@ -1,7 +1,7 @@
 # The node's portable C core (firmware/core, tested on the PC by firmware/core/test.sh) plus the ESP-IDF glue.
 set(core "${CMAKE_CURRENT_LIST_DIR}/../../core")
 idf_component_register(
-    SRCS "node_main.c" "node_auth.c" "node_ota.c"
+    SRCS "node_main.c" "node_transceiver.c" "node_gateway.c" "node_auth.c" "node_ota.c"
          "${core}/motion_score.c" "${core}/round_broadcast.c" "${core}/gateway_record.c" "${core}/espnow_frame.c"
          "${core}/csi_layout.c" "${core}/link_table.c" "${core}/round_scheduler.c" "${core}/node_settings.c"
          "${core}/round_auth.c" "${core}/ota_core.c" "${core}/raw_mode.c" "${core}/gateway_tx.c"

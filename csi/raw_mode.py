@@ -10,7 +10,7 @@ usual, counts the raw CSI per link, and a recording keeps the bytes as they came
 replays with the round broadcasts (docs/round-recording.md). Turning raw mode off sends n1 its remaining set.
 
     raw = RawMode(room, kit_key)                         # DashboardState owns one
-    frames = raw.request("n1<-n5", True, ingest, now, sender_id="02:00:00:00:00:80")   # or RawModeRefused
+    frames = raw.request("n1<-n5", True, ingest, now, gateway_serial="02:00:00:00:00:80")   # or RawModeRefused
     for frame in frames: gateway.send_frame(frame)
     raw.observe(host_ts, placed_reports, raw_blocks)     # every round broadcast
     raw.status(now)                                      # payload "raw_mode"
@@ -25,7 +25,7 @@ three links on three nodes, adds 516 us per round: at 20 Hz 1.0 % of the channel
 17.5 %), at 16 nodes and 40 Hz 2.0 % (13.2 % becomes 15.2 %). A round broadcast with raw CSI is longer than ESP-NOW
 v1's 250 bytes at most rig sizes: the node image sends ESP-NOW v2 (up to 1470 bytes), which every node runs.
 
-Requests are sent ``REQUEST_COPIES`` times (each with the next round number of the sender, so each is fresh under
+Requests are sent ``REQUEST_COPIES`` times (each with the next round number of the gateway, so each is fresh under
 the replay rule) because broadcasts are not acknowledged; the acknowledgement is the raw mode flag in the target's
 link reports. A link asked for and not flagged within ``ACK_TIMEOUT_S`` shows "no answer".
 """
@@ -40,7 +40,8 @@ from typing import Iterable, Mapping, Optional, Protocol, Sequence
 from .broadcast import (FORMAT_VERSION, FRAME_RAW_REQUEST, RAW_BLOCK_MAX_BYTES, RAW_MAX_LINKS, LinkReport, RawCsi,
                         RawModeRequest, RoundBroadcast, encode_broadcast)
 from .links import NodeLinkId
-from .room import Room
+from .errors import ReasonError
+from .room import Room, board_serial
 from .round_auth import TEST_KIT_KEY, sign_broadcast
 
 RAW_BUDGET_BYTES = 400        # raw CSI per round over the whole rig: 3 links of RAW_BLOCK_MAX_BYTES
@@ -51,20 +52,16 @@ RATE_WINDOW_S = 2.0           # raw CSI blocks per second over this window
 REFUSALS = ("unknown_link", "budget", "node_limit", "not_heard", "no_gateway")
 
 
-class Transmitter(Protocol):
-    """A source that can also send: a gateway on USB, or the simulated rig. ``sender_id`` is its board serial (the
-    raw mode request's node id), None until known."""
-    sender_id: Optional[str]
+class SendingGateway(Protocol):
+    """A source that can also send: a gateway on USB, or the simulated rig. ``gateway_serial`` is its board serial
+    (the raw mode request's node id), None until known."""
+    gateway_serial: Optional[str]
 
     def send_frame(self, frame: bytes) -> None: ...
 
 
-class RawModeRefused(ValueError):
+class RawModeRefused(ReasonError):
     """A raw mode request the host will not send. ``reason`` is one of REFUSALS."""
-
-    def __init__(self, reason: str, message: str) -> None:
-        super().__init__(message)
-        self.reason = reason
 
 
 def espnow_frame_bytes(payload: int) -> int:
@@ -110,19 +107,19 @@ def _parse(label: str) -> Optional[NodeLinkId]:
 class RawMode:
     def __init__(self, room: Room, kit_key: bytes = TEST_KIT_KEY, seed: Optional[int] = None) -> None:
         self._key = bytes(kit_key)
-        self._serial = {node.name: node.serial.upper() for node in room.transceivers if node.serial}
+        self._serial = room.transceiver_serials()
         self._links: dict[str, _Link] = {}
-        self._rounds: dict[str, int] = {}      # sender id -> the round number of its next request
+        self._rounds: dict[str, int] = {}      # gateway serial -> the round number of its next request
         self._rng = random.Random(seed)
 
     # ------------------------------------------------------------------ requests
 
     def request(self, label: str, on: bool, last_round: Mapping[str, int], now: float,
-                sender_id: Optional[str]) -> list[bytes]:
+                gateway_serial: Optional[str]) -> list[bytes]:
         """The signed raw mode request frames that turn raw mode on (or off) for link ``label``.
 
         ``last_round`` maps a node's board serial (upper case) to the round number of its latest round broadcast
-        (``RoundIngest.last_rounds``). ``sender_id`` is the serial of the gateway that will send the frames.
+        (``RoundIngest.last_rounds``). ``gateway_serial`` is the serial of the gateway that will send the frames.
         Raises RawModeRefused, and changes nothing, when the request is not sent."""
         link = _parse(label)
         if link is None or link.receiver not in self._serial or link.transmitter not in self._serial \
@@ -145,26 +142,28 @@ class RawMode:
         if target not in last_round:
             raise RawModeRefused("not_heard", f"raw mode on {label}: no round broadcast from {link.receiver} has "
                                               "reached the host yet, so it cannot be addressed")
-        if not sender_id:
+        if not gateway_serial:
             raise RawModeRefused("no_gateway", "raw mode needs a gateway that can send (a node gateway that has "
                                                "sent its status record); this source cannot")
         after = (wanted | {label}) if on else (wanted - {label})
         transmitters = tuple(self._serial[_parse(lbl).transmitter] for lbl in sorted(after)
                              if _parse(lbl).receiver == link.receiver)
         body = RawModeRequest(target, last_round[target] % 65536, transmitters)
-        frames = [self._frame(sender_id.upper(), body) for _ in range(REQUEST_COPIES)]
+        frames = [self._frame(board_serial(gateway_serial), body) for _ in range(REQUEST_COPIES)]
         state = self._links.setdefault(label, _Link())
         state.wanted, state.asked_at = on, now
         return frames
 
-    def _frame(self, sender_id: str, body: RawModeRequest) -> bytes:
-        round_no = self._rounds.get(sender_id)
+    def _frame(self, gateway_serial: str, body: RawModeRequest) -> bytes:
+        round_no = self._rounds.get(gateway_serial)
         if round_no is None:
             round_no = self._rng.randrange(65536)
-        self._rounds[sender_id] = (round_no + 1) % 65536
-        header = RoundBroadcast(FORMAT_VERSION, FRAME_RAW_REQUEST, round_no, 0, 0, 0, 0, 0, sender_id, bytes(8), (),
-                                (), body)
-        return sign_broadcast(encode_broadcast(header), self._key)
+        self._rounds[gateway_serial] = (round_no + 1) % 65536
+        # a request's slot, slots per round, schedule version, node index and membership are 0 and unchecked
+        frame = RoundBroadcast(version=FORMAT_VERSION, frame_type=FRAME_RAW_REQUEST, round=round_no, slot=0,
+                               slots_per_round=0, schedule_version=0, node_index=0, membership=0,
+                               node_id=gateway_serial, tag=bytes(8), reports=(), request=body)
+        return sign_broadcast(encode_broadcast(frame), self._key)
 
     def _costing(self, now: float) -> list[str]:
         """Links that use the budget: asked for here, or flagged raw by their node (it streams them)."""

@@ -1,4 +1,4 @@
-"""The image server the nodes pull from in maintenance mode (csi/ota.py ImageServer), over a real socket."""
+"""The image server the nodes pull from in maintenance mode (csi/ota/server.py ImageServer), over a real socket."""
 import urllib.error
 import urllib.request
 

@@ -10,7 +10,8 @@ from pathlib import Path
 
 import pytest
 
-from csi.broadcast import FORMAT_VERSION, LinkReport, RoundBroadcast, encode_broadcast, quantise_score
+from csi.broadcast import FORMAT_VERSION, LinkReport, RoundBroadcast, encode_broadcast
+from csi.score_code import encode_score
 from csi.dashboard import DashboardState
 from csi.round_auth import TEST_KIT_KEY, sign_broadcast
 from csi.room import Walk, load_room
@@ -27,7 +28,7 @@ T0 = 1_700_000_000.0
 
 def broadcast(sender, round_no, *, node_id=None, schedule=1, key=TEST_KIT_KEY, score=2.0):
     index = NAMES.index(sender)
-    rows = tuple(LinkReport(i, quantise_score(score), -50, 15, 0) for i in range(len(NAMES)) if i != index)
+    rows = tuple(LinkReport(i, encode_score(score), -50, 15, 0) for i in range(len(NAMES)) if i != index)
     return sign_broadcast(encode_broadcast(RoundBroadcast(FORMAT_VERSION, 1, round_no % 65536, index, len(NAMES) + 1,
                                                           schedule, index, ALL, node_id or SERIAL[sender], bytes(8),
                                                           rows)), key)
@@ -75,18 +76,18 @@ def test_a_copy_is_a_duplicate_only_for_the_same_node_schedule_and_round_within_
     state.push_broadcast(T0 + 1.9, broadcast("n1", 7), "gw2")              # the same round, late: a copy
     state.push_broadcast(T0 + 0.1, broadcast("n2", 7), "gw2")              # another node, same round
     state.push_broadcast(T0 + 0.1, broadcast("n1", 7, schedule=2), "gw2")  # not a copy: a new schedule, but
-    #                                                    the same round number again from n1 is a replay
+    #                                                    the same round number again from n1 is stale
     state.push_broadcast(T0 + 3300.0, broadcast("n1", 7), "gw1")           # the u16 round number wrapped
     counts = state.snapshot(T0 + 3300.0)["status"]["broadcasts"]
     assert counts["accepted"] == 3
     assert counts["rejected"]["duplicate"] == 1
-    assert counts["rejected"]["replay"] == 1
+    assert counts["rejected"]["stale"] == 1
 
 
 def test_every_rejection_reason_has_a_counter_from_the_start():
     counts = DashboardState(ROOM, mode="auto").snapshot(T0)["status"]["broadcasts"]
     assert counts["rejected"] == {"short": 0, "version": 0, "frame_type": 0, "length": 0, "membership": 0,
-                                  "auth": 0, "replay": 0, "duplicate": 0, "queue_overflow": 0}
+                                  "auth": 0, "stale": 0, "duplicate": 0, "queue_overflow": 0}
 
 
 def test_each_malformed_or_wrong_version_record_is_counted_by_its_reason():
@@ -100,7 +101,7 @@ def test_each_malformed_or_wrong_version_record_is_counted_by_its_reason():
         state.push_broadcast(T0, data, "gw1")
     counts = state.snapshot(T0)["status"]["broadcasts"]
     assert counts["rejected"] == {"short": 1, "version": 1, "frame_type": 1, "length": 1, "membership": 1,
-                                  "auth": 0, "replay": 0, "duplicate": 0, "queue_overflow": 0}
+                                  "auth": 0, "stale": 0, "duplicate": 0, "queue_overflow": 0}
     assert counts["accepted"] == 0 and counts["heard"] == 5
 
 
@@ -130,7 +131,7 @@ def test_a_forged_broadcast_cannot_take_the_place_of_the_real_one():
     assert (counts["accepted"], counts["rejected"]["auth"], counts["rejected"]["duplicate"]) == (1, 1, 0)
 
 
-def test_a_replayed_broadcast_is_counted_as_replay_and_not_used():
+def test_a_broadcast_sent_again_is_counted_as_stale_and_not_used():
     state = DashboardState(ROOM, mode="auto")
     live = rounds(6.0)
     for host_ts, _, data in live:
@@ -138,9 +139,9 @@ def test_a_replayed_broadcast_is_counted_as_replay_and_not_used():
     _, _, old = live[8 * 10]                                        # n1's round 10, recorded 5.5 s ago
     state.push_broadcast(T0 + 6.0, old, "gw1")
     counts = state.snapshot(T0 + 6.0)["status"]["broadcasts"]
-    assert counts["rejected"]["replay"] == 1 and counts["rejected"]["duplicate"] == 0
+    assert counts["rejected"]["stale"] == 1 and counts["rejected"]["duplicate"] == 0
     assert counts["accepted"] == len(live)
-    assert any("replay 1" in m for m in broadcast_messages(counts))
+    assert any("stale 1" in m for m in broadcast_messages(counts))
 
 
 def test_a_node_that_restarts_its_round_numbers_is_taken_again_after_two_silent_seconds():
@@ -151,7 +152,7 @@ def test_a_node_that_restarts_its_round_numbers_is_taken_again_after_two_silent_
     for k in range(10):
         state.push_broadcast(restart + k / ROUND_HZ, broadcast("n1", k), "gw1")
     counts = state.snapshot(restart + 1.0)["status"]["broadcasts"]
-    assert counts["accepted"] == 50 and counts["rejected"]["replay"] == 0
+    assert counts["accepted"] == 50 and counts["rejected"]["stale"] == 0
 
 
 def test_the_host_verifies_with_the_kit_key_it_is_given():
@@ -239,12 +240,12 @@ def join_frame(frame_type, joiner, index, membership, *, schedule=1, round_no=0,
                                                           membership, SERIAL[joiner], bytes(8), ())), key)
 
 
-def test_join_frames_are_counted_apart_and_never_placed_or_rejected():
+def test_join_frames_are_counted_apart_and_never_placed():
     without_n8 = ALL & ~(1 << 7)
     state = DashboardState(ROOM, mode="auto")
-    state.push_broadcast(T0, join_frame(2, "n8", 7, without_n8), "gw1")              # n8 asks to join
+    state.push_broadcast(T0, join_frame(2, "n8", 7, without_n8), "gw1")              # n8 asks to join (even round)
     state.push_broadcast(T0 + 0.002, join_frame(2, "n8", 7, without_n8), "gw2")      # a second gateway's copy
-    state.push_broadcast(T0 + 0.05, join_frame(3, "n8", 7, ALL, schedule=2), "gw1")  # the scheduler admits it
+    state.push_broadcast(T0 + 0.05, join_frame(3, "n8", 7, ALL, schedule=2, round_no=1), "gw1")  # admitted (odd)
     counts = state.snapshot(T0 + 0.1)["status"]["broadcasts"]
     assert counts["join_frames"] == {"request": 2, "grant": 1}
     assert counts["accepted"] == 0 and sum(counts["rejected"].values()) == 0 and counts["heard"] == 3
@@ -260,8 +261,103 @@ def test_a_join_grant_names_the_joiner_so_reports_about_it_place_before_its_own_
     assert links(payload)["n1<-n8"]["rssi"] == -50
 
 
+def test_a_stale_join_frame_is_rejected_like_a_stale_round_broadcast():
+    """The host's freshness rule covers join frames as the node's does (rb_auth_check on every frame): a join grant
+    recorded and sent again once its node has moved on is stale and counted as such, not as a join frame."""
+    from csi.rounds import RoundIngest
+
+    ingest = RoundIngest(ROOM)
+    grant = join_frame(3, "n8", 7, ALL, schedule=2, round_no=100)
+    ingest.place(grant, T0, "gw1")
+    for k in range(60):                                        # n8 in the round for 3 s: rounds 101..160
+        ingest.place(broadcast("n8", 101 + k, schedule=2), T0 + 0.05 * (k + 1), "gw1")
+    ingest.place(grant, T0 + 3.1, "gw1")                    # the recorded grant, sent again
+    counts = ingest.counts()
+    assert counts["join_frames"] == {"request": 0, "grant": 1}
+    assert counts["rejected"]["stale"] == 1
+    assert counts["heard"] == counts["accepted"] + sum(counts["rejected"].values()) + 1
+
+
 def test_a_forged_join_frame_is_rejected_as_auth():
     state = DashboardState(ROOM, mode="auto")
     state.push_broadcast(T0, join_frame(2, "n8", 7, ALL & ~(1 << 7), key=bytes(range(1, 17))), "gw1")
     counts = state.snapshot(T0)["status"]["broadcasts"]
     assert counts["rejected"]["auth"] == 1 and counts["join_frames"] == {"request": 0, "grant": 0}
+
+
+def test_every_record_is_accounted_for_including_what_the_gateway_lost():
+    """#7's accounting, extended past the host: a gateway's own losses (its queue, its USB writes, CSI it skipped)
+    and the records that failed their CRC on the way in are in status.broadcasts.gateways and status.messages."""
+    from csi.gateway_records import COUNTER_NAMES, GatewaySource, encode_heard, encode_status
+
+    good = rounds(1.0)
+    losses = {"queue_full": 4, "usb_dropped": 2, "csi_skipped": 1}
+    status = encode_status("02:00:00:00:00:80", 1_000_000, 1, 1, 6,
+                           [losses.get(name, 0) for name in COUNTER_NAMES])
+    corrupt = bytearray(encode_heard(5, -40, good[0][2]))
+    corrupt[-1] ^= 0xFF                                   # its CRC fails: the reader skips it and counts it
+    chunks = [(host_ts, encode_heard(k * 3125, -40, data)) for k, (host_ts, _, data) in enumerate(good)]
+    chunks.insert(3, (chunks[2][0], bytes(corrupt) + b"boot rom noise"))
+    chunks.append((chunks[-1][0], status))
+    payload = serve({"gw1": GatewaySource(iter(chunks))})
+    counts = payload["status"]["broadcasts"]
+    assert counts["heard"] == len(good) == counts["accepted"]
+    gw = counts["gateways"]["gw1"]
+    assert {k: gw[k] for k in losses} == losses
+    assert gw["records_rejected"] == {"crc": 1}
+    assert gw["skipped_bytes"] > 0
+    lines = [m for m in payload["status"]["messages"] if "gateway gw1" in m]
+    assert lines and all(word in lines[0] for word in ("queue_full 4", "usb_dropped 2", "csi_skipped 1", "crc 1"))
+
+
+def test_a_maintenance_command_heard_on_the_channel_is_counted_on_its_own_not_rejected():
+    from csi import ota
+    from csi.rounds import RoundIngest
+
+    command = ota.maintenance_command(ota.OTA_CMD_REPORT, ["02:00:00:00:01:5C"], TEST_KIT_KEY, port=8070,
+                                      ap_channel=36, issued=7)
+    ingest = RoundIngest(ROOM)
+    for host_ts, _, data in rounds(0.5):
+        ingest.place(data, host_ts, "gw1")
+    assert ingest.place(command, T0 + 1.0, "gw1") == []
+    forged = command[:-1] + bytes([command[-1] ^ 1])
+    ingest.place(forged, T0 + 1.1, "gw1")
+    counts = ingest.counts()
+    assert counts["maintenance_commands"] == 1
+    assert counts["rejected"]["frame_type"] == 0 and counts["rejected"]["auth"] == 1
+    assert counts["heard"] == (counts["accepted"] + sum(counts["rejected"].values()) + sum(counts["unknown_nodes"].values())
+                               + sum(counts["join_frames"].values()) + counts["raw_requests"]
+                               + counts["maintenance_commands"])
+
+
+def test_a_link_is_judged_on_packet_time_when_no_time_is_given_not_the_wall_clock(monkeypatch):
+    """ADR-0013: with no ``now``, a link row and its detail use the newest host time of the pipeline. The wall clock
+    (here years after the recording) must not turn every link of a replayed or simulated run NO_SIGNAL."""
+    state = DashboardState(ROOM, mode="auto")
+    for host_ts, _, data in rounds(1.0):
+        state.push_broadcast(host_ts, data, "gw1")
+    monkeypatch.setattr(time, "time", lambda: T0 + 1e6)
+    detail = state.link_detail("n1<-n5")
+    assert detail["state"] != "NO_SIGNAL" and detail["age_s"] < 0.1
+    monitor = state._monitor
+    assert monitor.row("n1<-n5")["state"] != "NO_SIGNAL"
+    assert all(row["state"] != "NO_SIGNAL" for row in monitor.snapshot())
+
+
+@pytest.mark.parametrize("kwargs", [{"join_after": {"n8": 2.0}}, {"split": ["n5", "n6", "n7", "n8"], "merge_after": 2.0}],
+                         ids=["a node joins mid-run", "two schedules merge"])
+def test_the_dashboard_takes_a_joining_node_and_a_schedule_merge_without_double_counting(kwargs):
+    """Seam 1 (host time, round broadcast bytes): a node joining mid-run and a schedule merge (a schedule version
+    change) reach every link once: each round broadcast is accepted once, nothing is rejected, every link reads at
+    one round's rate and no link is left silent once the rig is one schedule."""
+    stream = list(simulate_rounds(ROOM, duration_s=6.0, t0=T0, **kwargs))
+    from csi.broadcast import decode_broadcast as decode
+
+    sent = sum(1 for _, data in stream if decode(data).carries_reports)
+    payload = serve({"gw1": iter(stream)})
+    counts = payload["status"]["broadcasts"]
+    assert counts["accepted"] == sent and sum(counts["rejected"].values()) == 0
+    assert sum(counts["join_frames"].values()) >= 1
+    rows = links(payload)
+    assert len(rows) == 56 and all(row["state"] != "NO_SIGNAL" for row in rows.values())
+    assert max(row["pkt_rate"] for row in rows.values()) <= ROUND_HZ * 1.1      # 40 if a report counted twice
