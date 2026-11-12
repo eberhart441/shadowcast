@@ -9,7 +9,7 @@ description = "WiFi CSI presence/motion/breathing detection from ESP32 nodes"
 requires-python = ">=3.10"
 
 [tool.setuptools]
-packages = ["csi"]
+packages = ["csi", "csi.ota"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
