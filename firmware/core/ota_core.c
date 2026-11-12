@@ -41,13 +41,8 @@ static bool all_zero(const uint8_t *p, size_t n)
 
 /* ---------------------------------------------------------------- the maintenance command */
 
-/* Header offsets as in round_broadcast.h; slot .. membership (bytes 4..11) are zero in a command. */
-#define OFF_ROUND 2
-#define OFF_RESERVED_HEADER 4
-#define RESERVED_HEADER_BYTES 8
-#define OFF_SENDER 12
-#define OFF_TAG 18
-#define OFF_COMMAND 26
+/* The round header is round_broadcast.h's; slot .. membership (RB_RESERVED_*) are zero in a command. */
+#define OFF_COMMAND RB_HEADER_BYTES
 #define OFF_TARGET_COUNT 27
 #define OFF_PORT 28
 #define OFF_CHANNEL 30
@@ -101,13 +96,13 @@ ota_status_t ota_command_decode(const uint8_t *bytes, size_t len, ota_command_t 
     if (st != OTA_OK) {
         return st;
     }
-    if (bytes[OFF_RESERVED] != 0 || !all_zero(bytes + OFF_RESERVED_HEADER, RESERVED_HEADER_BYTES)) {
+    if (bytes[OFF_RESERVED] != 0 || !all_zero(bytes + RB_RESERVED_OFFSET, RB_RESERVED_BYTES)) {
         return OTA_FIELD;
     }
     memset(out, 0, sizeof *out);
-    out->round = get16(bytes + OFF_ROUND);
-    memcpy(out->sender, bytes + OFF_SENDER, OTA_SERIAL_BYTES);
-    memcpy(out->tag, bytes + OFF_TAG, sizeof out->tag);
+    out->round = get16(bytes + RB_ROUND_OFFSET);
+    memcpy(out->sender, bytes + RB_NODE_ID_OFFSET, OTA_SERIAL_BYTES);
+    memcpy(out->tag, bytes + RB_TAG_OFFSET, sizeof out->tag);
     out->command = bytes[OFF_COMMAND];
     out->port = get16(bytes + OFF_PORT);
     out->ap_channel = bytes[OFF_CHANNEL];
@@ -128,9 +123,9 @@ size_t ota_command_encode(const ota_command_t *c, uint8_t *out, size_t cap)
     memset(out, 0, len);
     out[0] = OTA_FORMAT_VERSION;
     out[1] = OTA_FRAME_MAINTENANCE;
-    put16(out + OFF_ROUND, c->round);
-    memcpy(out + OFF_SENDER, c->sender, OTA_SERIAL_BYTES);
-    memcpy(out + OFF_TAG, c->tag, sizeof c->tag);
+    put16(out + RB_ROUND_OFFSET, c->round);
+    memcpy(out + RB_NODE_ID_OFFSET, c->sender, OTA_SERIAL_BYTES);
+    memcpy(out + RB_TAG_OFFSET, c->tag, sizeof c->tag);
     out[OFF_COMMAND] = c->command;
     out[OFF_TARGET_COUNT] = c->n_targets;
     put16(out + OFF_PORT, c->port);

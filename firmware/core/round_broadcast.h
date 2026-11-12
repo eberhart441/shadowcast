@@ -27,11 +27,16 @@
 #define RB_FRAME_JOIN_GRANT 3     /* the scheduler admitting it, in the join slot: the header alone */
 #define RB_FRAME_RAW_REQUEST 4    /* the host asking a node to stream raw CSI (sent by a gateway in the join slot) */
 #define RB_FRAME_ROUND_RAW 5      /* a round broadcast with raw CSI blocks after its link reports */
+#define RB_FRAME_MAINTENANCE 8    /* a maintenance command (OTA): ota_core.h decodes it, rb_decode does not */
 #define RB_MAX_NODES 32           /* the membership bitmap is 32 bits */
 #define RB_HEADER_BYTES 26
 #define RB_REPORT_BYTES 4
 #define RB_NODE_ID_BYTES 6
-#define RB_TAG_OFFSET 18
+#define RB_ROUND_OFFSET 2          /* header offsets: round number u16, */
+#define RB_RESERVED_OFFSET 4       /* slot .. membership (bytes 4..11; zero in frames that are not the round's), */
+#define RB_RESERVED_BYTES 8
+#define RB_NODE_ID_OFFSET 12       /* node id, */
+#define RB_TAG_OFFSET 18           /* authentication tag */
 #define RB_TAG_BYTES 8
 #define RB_MAX_REPORTS (RB_MAX_NODES - 1)
 #define RB_MAX_BYTES (RB_HEADER_BYTES + RB_REPORT_BYTES * RB_MAX_REPORTS)   /* 150 */

@@ -24,11 +24,14 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define OTA_FRAME_MAINTENANCE 8      /* round broadcast frame type of a maintenance command */
-#define OTA_FORMAT_VERSION 2         /* the round broadcast format version the command rides in */
-#define OTA_HEADER_BYTES 26
+#include "round_broadcast.h"
+
+/* The command rides in the round broadcast format: its version, frame type and header are round_broadcast.h's. */
+#define OTA_FRAME_MAINTENANCE RB_FRAME_MAINTENANCE
+#define OTA_FORMAT_VERSION RB_VERSION
+#define OTA_HEADER_BYTES RB_HEADER_BYTES
 #define OTA_BODY_BYTES 46            /* command .. image SHA-256, before the targets */
-#define OTA_SERIAL_BYTES 6
+#define OTA_SERIAL_BYTES RB_NODE_ID_BYTES
 #define OTA_SHA_BYTES 32
 #define OTA_MAX_TARGETS 13           /* 26 + 46 + 6 x 13 = 150 bytes, the most a node signs or checks */
 #define OTA_MAX_BYTES (OTA_HEADER_BYTES + OTA_BODY_BYTES + OTA_SERIAL_BYTES * OTA_MAX_TARGETS)

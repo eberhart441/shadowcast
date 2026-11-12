@@ -26,6 +26,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+from .broadcast import HEADER_BYTES as ROUND_HEADER_BYTES
+from .broadcast import FORMAT_VERSION, FRAME_MAINTENANCE, encode_header, format_id, parse_id
 from .room import board_serial
 from .round_auth import kit_key_check, sign_broadcast
 from .errors import ReasonError
@@ -165,13 +167,12 @@ def _app_version(data: bytes) -> Optional[str]:
 
 # ---------------------------------------------------------------- the maintenance command
 
-FRAME_MAINTENANCE = 8          # round broadcast frame type of a maintenance command
 OTA_CMD_UPDATE = 1             # fetch, verify and boot the image the command names
 OTA_CMD_REPORT = 2             # only report the running image
 MAX_TARGETS = 13               # 26 + 46 + 6 x 13 = 150 bytes, the most a node signs or checks
-HOST_ID = bytes(6)             # the header's node id on a command: the host
+HOST_ID = "00:00:00:00:00:00"  # the header's node id on a command: the host
 _BODY = struct.Struct("<BBHBBII32s")   # command, targets, port, ap channel, reserved, issued, image size, SHA-256
-_COMMAND_HEAD = 26 + _BODY.size        # 72
+_COMMAND_HEAD = ROUND_HEADER_BYTES + _BODY.size   # 72
 COMMAND_REASONS = ("short", "version", "frame_type", "length", "targets", "command", "field")
 
 
@@ -211,20 +212,6 @@ def channels_clear(sensing_channel: int, ap_channel: int) -> bool:
     return 1 <= ap_channel <= 14 and abs(ap_channel - sensing_channel) >= 5
 
 
-def _serial_bytes(serial: str) -> bytes:
-    try:
-        raw = bytes.fromhex(serial.replace(":", ""))
-    except ValueError:
-        raw = b""
-    if len(raw) != 6:
-        raise ValueError(f"{serial!r} is not a board serial (6 bytes, e.g. 02:00:00:00:01:5C)")
-    return raw
-
-
-def _serial_text(raw: bytes) -> str:
-    return ":".join(f"{b:02X}" for b in raw)
-
-
 def maintenance_command(command: int, targets, kit_key: bytes, *, port: int, ap_channel: int, issued: int,
                         image_size: int = 0, image_sha256: bytes = bytes(32), round_no: int = 0,
                         sensing_channel: Optional[int] = None) -> bytes:
@@ -239,24 +226,24 @@ def maintenance_command(command: int, targets, kit_key: bytes, *, port: int, ap_
         raise ValueError("a maintenance command needs a server port, and an update needs the image's size and SHA-256")
     if sensing_channel is not None and not channels_clear(sensing_channel, ap_channel):
         raise ValueError(f"a maintenance network on channel {ap_channel} overlaps sensing channel {sensing_channel}")
-    header = struct.pack("<BBHBBBBI6s8s", 2, FRAME_MAINTENANCE, round_no & 0xFFFF, 0, 0, 0, 0, 0, HOST_ID, bytes(8))
+    header = encode_header(FRAME_MAINTENANCE, round_no, HOST_ID)
     body = _BODY.pack(command, len(targets), port, ap_channel, 0, issued & 0xFFFFFFFF, image_size,
                       bytes(image_sha256))
-    return sign_broadcast(header + body + b"".join(_serial_bytes(t) for t in targets), kit_key)
+    return sign_broadcast(header + body + b"".join(parse_id(t) for t in targets), kit_key)
 
 
 def decode_command(data: bytes) -> Command:
     """The node's decoder (firmware/core/ota_core.c ota_command_decode) on the host. The tag is not checked."""
     data = bytes(data)
-    if len(data) < 26:
+    if len(data) < ROUND_HEADER_BYTES:
         raise CommandError("short", "shorter than the round header")
-    if data[0] != 2:
-        raise CommandError("version", f"format version {data[0]}, not 2")
+    if data[0] != FORMAT_VERSION:
+        raise CommandError("version", f"format version {data[0]}, not {FORMAT_VERSION}")
     if data[1] != FRAME_MAINTENANCE:
         raise CommandError("frame_type", f"frame type {data[1]} is not a maintenance command")
     if len(data) < _COMMAND_HEAD:
         raise CommandError("length", "cut short before the targets")
-    command, count, port, channel, reserved, issued, size, sha = _BODY.unpack_from(data, 26)
+    command, count, port, channel, reserved, issued, size, sha = _BODY.unpack_from(data, ROUND_HEADER_BYTES)
     if not 1 <= count <= MAX_TARGETS:
         raise CommandError("targets", f"{count} targets (1 to {MAX_TARGETS})")
     if len(data) != _COMMAND_HEAD + 6 * count:
@@ -265,7 +252,7 @@ def decode_command(data: bytes) -> Command:
         raise CommandError("command", f"unknown command {command}")
     if port == 0 or (command == OTA_CMD_UPDATE and size == 0) or reserved or any(data[4:12]):
         raise CommandError("field", "port 0, an update without a size, or a reserved field set")
-    targets = tuple(_serial_text(data[_COMMAND_HEAD + 6 * i:_COMMAND_HEAD + 6 * i + 6]) for i in range(count))
+    targets = tuple(format_id(data[_COMMAND_HEAD + 6 * i:_COMMAND_HEAD + 6 * i + 6]) for i in range(count))
     return Command(command, targets, port, channel, issued, size, sha, struct.unpack_from("<H", data, 2)[0])
 
 

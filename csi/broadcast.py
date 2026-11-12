@@ -188,10 +188,10 @@ def decode_broadcast(data: bytes) -> RoundBroadcast:
                             node_id, tag)
     if frame_type == FRAME_RAW_REQUEST:
         return RoundBroadcast(version, frame_type, round_no, slot, slots, schedule, node_index, membership,
-                              _format_id(node_id), bytes(tag), (), (), _decode_request(data))
+                              format_id(node_id), bytes(tag), (), (), _decode_request(data))
     if frame_type == FRAME_MAINTENANCE:     # the header alone here; csi.ota.decode_command reads the body
         return RoundBroadcast(version, frame_type, round_no, slot, slots, schedule, node_index, membership,
-                              _format_id(node_id), bytes(tag), ())
+                              format_id(node_id), bytes(tag), ())
     if node_index >= MAX_NODES or not membership >> node_index & 1:
         raise BroadcastError("membership", f"node index {node_index} is not in membership {membership:#010x}")
     indices = report_indices(membership, node_index)
@@ -205,7 +205,7 @@ def decode_broadcast(data: bytes) -> RoundBroadcast:
         reports.append(LinkReport(index, score_q, None if rssi == RSSI_NONE else rssi, counts >> 4, counts & 0x0F,
                                   flags & FLAGS_KNOWN, flags >> LATENESS_SHIFT))
     return RoundBroadcast(version, frame_type, round_no, slot, slots, schedule, node_index, membership,
-                          _format_id(node_id), bytes(tag), tuple(reports), raw)
+                          format_id(node_id), bytes(tag), tuple(reports), raw)
 
 
 def _decode_raw(data: bytes, offset: int, transmitters: set[int]) -> tuple[RawCsi, ...]:
@@ -242,8 +242,8 @@ def _decode_request(data: bytes) -> RawModeRequest:
         raise BroadcastError("length", f"{len(data)} bytes; a raw mode request for {n} link(s) is {expected} "
                                        f"(at most {RAW_MAX_LINKS} links)")
     start = HEADER_BYTES + REQUEST_HEAD_BYTES
-    ids = tuple(_format_id(data[start + NODE_ID_BYTES * k:start + NODE_ID_BYTES * (k + 1)]) for k in range(n))
-    return RawModeRequest(_format_id(target), target_round, ids)
+    ids = tuple(format_id(data[start + NODE_ID_BYTES * k:start + NODE_ID_BYTES * (k + 1)]) for k in range(n))
+    return RawModeRequest(format_id(target), target_round, ids)
 
 
 def _decode_join(data: bytes, *fields) -> RoundBroadcast:
@@ -257,7 +257,7 @@ def _decode_join(data: bytes, *fields) -> RoundBroadcast:
     if len(data) != HEADER_BYTES:
         raise BroadcastError("length", f"{len(data)} bytes; a join frame is the {HEADER_BYTES}-byte header alone")
     return RoundBroadcast(version, frame_type, round_no, slot, slots, schedule, node_index, membership,
-                          _format_id(node_id), bytes(tag), ())
+                          format_id(node_id), bytes(tag), ())
 
 
 def encode_broadcast(broadcast: RoundBroadcast) -> bytes:
@@ -273,7 +273,7 @@ def encode_broadcast(broadcast: RoundBroadcast) -> bytes:
         raise ValueError(f"tag must be {TAG_BYTES} bytes")
     out = bytearray(_HEADER.pack(broadcast.version, broadcast.frame_type, broadcast.round, broadcast.slot,
                                  broadcast.slots_per_round, broadcast.schedule_version, broadcast.node_index,
-                                 broadcast.membership, _parse_id(broadcast.node_id), broadcast.tag))
+                                 broadcast.membership, parse_id(broadcast.node_id), broadcast.tag))
     for r in broadcast.reports:
         if not (0 <= r.heard <= 15 and 0 <= r.since <= 15):
             raise ValueError(f"heard and since are 4-bit counts, got {r.heard} and {r.since}")
@@ -309,16 +309,31 @@ def _encode_request(request: Optional[RawModeRequest]) -> bytes:
         raise ValueError("a raw mode request (frame type 4) needs its request")
     if len(request.transmitters) > RAW_MAX_LINKS:
         raise ValueError(f"a raw mode request names at most {RAW_MAX_LINKS} transmitters")
-    return (_REQUEST_HEAD.pack(_parse_id(request.target), request.target_round, len(request.transmitters))
-            + b"".join(_parse_id(t) for t in request.transmitters))
+    return (_REQUEST_HEAD.pack(parse_id(request.target), request.target_round, len(request.transmitters))
+            + b"".join(parse_id(t) for t in request.transmitters))
 
 
-def _format_id(raw: bytes) -> str:
+def encode_header(frame_type: int, round_no: int, node_id: str, *, slot: int = 0, slots_per_round: int = 0,
+                  schedule_version: int = 0, node_index: int = 0, membership: int = 0, tag: bytes = bytes(TAG_BYTES),
+                  version: int = FORMAT_VERSION) -> bytes:
+    """The 26-byte round header alone, for a frame whose body another codec writes (a maintenance command,
+    csi/ota): the fields a non-round frame does not use default to 0, the tag to zeros (sign the whole frame)."""
+    return _HEADER.pack(version, frame_type, round_no & 0xFFFF, slot, slots_per_round, schedule_version, node_index,
+                        membership, parse_id(node_id), tag)
+
+
+def format_id(raw: bytes) -> str:
+    """6 bytes of a node id (board serial) as text, "AA:BB:CC:DD:EE:FF"."""
     return ":".join(f"{b:02X}" for b in raw)
 
 
-def _parse_id(node_id: str) -> bytes:
-    raw = bytes.fromhex(node_id.replace(":", ""))
+def parse_id(node_id: str) -> bytes:
+    """A node id (board serial) as its 6 bytes; ValueError for anything else."""
+    try:
+        raw = bytes.fromhex(node_id.replace(":", ""))
+    except ValueError:
+        raw = b""
     if len(raw) != NODE_ID_BYTES:
-        raise ValueError(f"node id must be {NODE_ID_BYTES} bytes, got {node_id!r}")
+        raise ValueError(f"node id must be {NODE_ID_BYTES} bytes (a board serial, e.g. 02:00:00:00:01:5C), "
+                         f"got {node_id!r}")
     return raw
