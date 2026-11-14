@@ -140,6 +140,8 @@ def simulate(n_send, n_recv, rate, mode_s, mode_f, payload, transceiver=False, s
             at, st, kind = arrivals[ai]; ai += 1
             if len(st.q) >= qlim and st is not bg:
                 stats["sense_drop_q"] += 1
+                # never sent, but still expected on every link of this sender: keep it in the per-link rate
+                stats["link_exp"] += sum(1 for x in receivers if x is not st)
                 continue
             st.q.append((at, kind, None))
         while pending_fwd and pending_fwd[0][0] <= t:

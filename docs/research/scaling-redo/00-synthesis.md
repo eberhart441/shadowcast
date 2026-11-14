@@ -55,7 +55,7 @@ Each wall is independent; removing one exposes the next. N is the number of all-
 
 | Wall | Where it bites | Evidence | Sources |
 |---|---|---|---|
-| **1. Receiver output path.** ~850 B ASCII line per packet, formatted in the WiFi task, echoed to UART at 921600 baud: ~9.2 ms/line, ~108 lines/s per receiver. | 3rd sender at 40 Hz; all-transceiver N=4 (148 % load) | Arithmetic from code; the teammates' unmerged `fix/scaling-and-accuracy` reached the same budget | 01, 02 |
+| **1. Receiver output path.** ~850 B ASCII line per packet, formatted in the WiFi task, echoed to UART at 921600 baud: ~9.2 ms/line, ~108 lines/s per receiver. | 3rd sender at 40 Hz; all-transceiver N=4 (111 % load) | Arithmetic from code; the teammates' unmerged `fix/scaling-and-accuracy` reached the same budget | 01, 02 |
 | **2. Host serial reader.** Python `readline()`: 165 % CPU on the Pi, 19-27 % loss; chunked reader 5-12 %. The 5+ branch never got the fix. | N≈3-4 on a Pi | **Measured** A/B on the Pi (commit 867eea3) and on the laptop (321 µs vs 0.8 µs per line) | 02, 04 |
 | **3. One Python core.** 36/46/69 % of a laptop core at N=4/5/6; falls behind real time at N=8. Room decision recomputed per packet over all links (cost ~ links²); auto-threshold mode loops in Python. | Pi 5: ~16-25 links (N=4-5) | **Measured** on laptop, Pi scaled by assumption | 02 |
 | **4. Gain lock.** One forced gain per receiver, locked at packet 100 (~1.25 s), applied to every frame it hears. | Gateway-adjacent receivers (`NO_MEM`); transceivers "deaf" after 2-3 s; possibly the 10 pkt/s link | Timing matches "cb_ok only in the first second" | 01, 03 |

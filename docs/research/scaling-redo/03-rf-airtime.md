@@ -94,7 +94,7 @@ The firmware comment "about 0.5 ms on air per line" (`csi_recv/main/app_main.c:4
 | 4 | 4 | 20 | 80 | 320 | 0.6 % | 21.6 % | 25.5 % |
 | 8 | 8 | 20 | 160 | 1280 | 1.2 % | 85 % | 99 % |
 
-Rule of thumb (est.): forwarded links per channel ≤ `U_budget / (R × 658 µs)`. At 40 Hz that is **11 links within a 30 % budget** (room for guest Wi-Fi) and **19 links within 50 %**, whatever the topology.
+Rule of thumb (est.): forwarded links per channel ≤ `U_budget / (R × 658 µs)`. At 40 Hz that is **11 links within a 30 % budget** (room for guest Wi-Fi) and **18 links within 50 %**, whatever the topology.
 
 ### 2.4 All-transceiver N nodes (N senders, each node forwards N−1 lines per round) — busy % / occupancy % (est.)
 
@@ -119,7 +119,7 @@ Reading the table:
 
 ### 2.5 DCF Monte-Carlo (all-hear-all, no capture, no hidden nodes; 3 seeds × 8 s)
 
-The model is in `airtime.py:simulate`. Senders free-run with a random phase and 0.2 ms jitter. Each receiver queues a forward 0.3–1.5 ms after every sensing frame it decodes. Backoff is drawn uniformly from [0, CW], with CW 15 doubling on unicast failure up to 1023 and a retry limit of 7 (assumed). The 16-frame queue drops on overflow. "Guest" is one extra CSMA station with Poisson 400 µs frames. Two frames collide if they start within 4 µs of each other.
+The model is in `airtime.py:simulate`. Senders free-run with a random phase and 0.2 ms jitter. Each receiver queues a forward 0.3–1.5 ms after every sensing frame it decodes. Backoff is drawn uniformly from [0, CW], with CW 15 doubling on unicast failure up to 1023 and a retry limit of 7 (assumed). The 16-frame queue drops on overflow; a sensing frame dropped there counts as lost on each of its links. "Guest" is one extra CSMA station with Poisson 400 µs frames. Two frames collide if they start within 4 µs of each other.
 
 | Scenario (R=40 unless noted) | sim busy % | sensing pkt/s per link | sensing frames collided | forward attempts collided | forwards dropped (queue full) | end-to-end pkt/s per link |
 |---|---|---|---|---|---|---|
@@ -131,12 +131,12 @@ The model is in `airtime.py:simulate`. Senders free-run with a random phase and 
 | split 4×4, + 30 % guest | 73 | 35.7 | 10.8 % | 19.9 % | 0 | 35.7 |
 | all-transceiver N=4, ASCII | 33 | 39.6 | 0.9 % | 5.7 % | 0 | 39.6 |
 | all-transceiver N=6, ASCII | 82 | 36.0 | 10.1 % | 20.6 % | 0 | 36.0 |
-| all-transceiver N=8, ASCII | 92 | 27.0 | 32.6 % | 34.0 % | **16 %** | **22.5** |
-| all-transceiver N=6, ASCII, + 30 % guest | 91 | 28.3 | 29.3 % | 32.3 % | 3.5 % | 27.2 |
-| all-transceiver N=8, ASCII, + 30 % guest | 92 | 25.3 | 36.9 % | 38.4 % | 25 % | 18.8 |
+| all-transceiver N=8, ASCII | 92 | 23.2 | 32.6 % | 34.0 % | **16 %** | **19.4** |
+| all-transceiver N=6, ASCII, + 30 % guest | 91 | 27.4 | 29.3 % | 32.3 % | 3.5 % | 26.4 |
+| all-transceiver N=8, ASCII, + 30 % guest | 92 | 19.8 | 36.9 % | 38.4 % | 25 % | 14.8 |
 | all-transceiver N=16, no forwarding (wired) | 5 | 39.5 | 1.2 % | — | — | 39.5 |
 | all-transceiver N=8, amp52 i8 @ HT20 MCS7 | 31 | 38.2 | 4.5 % | 17.4 % | 0 | 38.2 |
-| all-transceiver N=12, amp52 i8 @ HT20 MCS7 | 63 | 30.0 | 25 % | 35.8 % | 0.3 % | 29.9 |
+| all-transceiver N=12, amp52 i8 @ HT20 MCS7 | 63 | 29.9 | 25 % | 35.8 % | 0.3 % | 29.8 |
 | all-transceiver N=8, ASCII, R=20 | 76 | 17.2 | 13.9 % | 27.4 % | 0 | 17.2 |
 
 An idealized CSMA channel is **forgiving**. Even with heavy polite guest traffic (50–85 % background), the 2×2 and 2×3 rigs still deliver 35–37 pkt/s per link in the simulation (`03-rf-airtime-model`, guest-sensitivity run). So **whatever cut real links to 10–26 pkt/s at 4–5 boards was not ideal-CSMA contention.** It was something outside the model: UART, host, gain forcing, driver buffers, or hidden or non-Wi-Fi interference. The model is optimistic in that it assumes perfect carrier sense, no capture, no hidden nodes, infinite CPU and correct driver callbacks. Real collapse comes earlier than the table shows, so treat the ≥50 % rows as failing.
@@ -209,7 +209,7 @@ The criterion is rig airtime busy ≤ 30 %, which leaves room for typical guest 
 | H. sensing only, backhaul off-air (USB/Ethernet/other band), HT20 MCS0 | 70 | 117 | 141 | ≥200 |
 | H′. same, HT40 MCS0 | 101 | 168 | ≥200 | ≥200 |
 
-Split topology with today's forwarding: the limit is links, not boards. At 40 Hz that is ≤ 11 links within 30 % and ≤ 19 links within 50 %; at 20 Hz, 22 and 37 links.
+Split topology with today's forwarding: the limit is links, not boards. At 40 Hz that is ≤ 11 links within 30 % and ≤ 18 links within 50 %; at 20 Hz, 22 and 37 links.
 
 Notes per option:
 

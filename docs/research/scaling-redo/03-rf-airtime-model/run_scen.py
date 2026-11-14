@@ -15,7 +15,7 @@ print("\n## Analytic load: all-transceiver N nodes, every node forwards N-1 line
 for r in (40, 20):
     print(f"\n### R = {r} Hz\n")
     hdr = "| N | links N(N-1) | sense only HT40 MCS0 | +ASCII fwd HT40 MCS0 | +ASCII fwd 11b 1M (ESP-NOW default) | +ASCII HT20 MCS0 | +ASCII HT20 MCS7 | +bin IQ 250 B HT20 MCS0 | +amp117 u8 HT20 MCS0 | +amp52 i8 HT20 MCS7 | +feature 16 B HT20 MCS0 |"
-    print(hdr); print("|---" * hdr.count("|") + "|"[:0])
+    print(hdr); print("|---" * (hdr.count("|") - 1) + "|")
     for N in (4, 6, 8, 12, 16):
         nf = N * (N - 1) * r
         cells = [str(N), str(N * (N - 1))]
