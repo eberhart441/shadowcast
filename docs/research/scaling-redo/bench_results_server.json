@@ -1,0 +1,59 @@
+{
+ "server": [
+  {
+   "N": 2,
+   "links": 4,
+   "packets": 3200,
+   "finished": true,
+   "wall_s": 0.9097697000252083,
+   "cpu_s": 0.890625,
+   "pkts_per_s_wall": 3517.373682494958,
+   "offered_pkt_per_s": 160.0,
+   "realtime_factor": 21.983585515593486
+  },
+  {
+   "N": 4,
+   "links": 16,
+   "packets": 12800,
+   "finished": true,
+   "wall_s": 5.673687900009099,
+   "cpu_s": 5.15625,
+   "pkts_per_s_wall": 2256.0282175513166,
+   "offered_pkt_per_s": 640.0,
+   "realtime_factor": 3.525044089923932
+  },
+  {
+   "N": 6,
+   "links": 36,
+   "packets": 28800,
+   "finished": true,
+   "wall_s": 16.93153890001122,
+   "cpu_s": 15.859375,
+   "pkts_per_s_wall": 1700.9676539195689,
+   "offered_pkt_per_s": 1440.0,
+   "realtime_factor": 1.181227537444145
+  },
+  {
+   "N": 8,
+   "links": 64,
+   "packets": 51200,
+   "finished": true,
+   "wall_s": 25.879408099979628,
+   "cpu_s": 24.265625,
+   "pkts_per_s_wall": 1978.4069172756815,
+   "offered_pkt_per_s": 2560.0,
+   "realtime_factor": 0.7728152020608131
+  },
+  {
+   "N": 10,
+   "links": 100,
+   "packets": 80000,
+   "finished": true,
+   "wall_s": 46.82037400000263,
+   "cpu_s": 41.515625,
+   "pkts_per_s_wall": 1708.6578590763822,
+   "offered_pkt_per_s": 4000.0,
+   "realtime_factor": 0.4271644647690956
+  }
+ ]
+}

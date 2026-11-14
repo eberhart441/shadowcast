@@ -6,7 +6,11 @@ What the project is for, where it stands, gotchas, and pointers to every other d
 
 ### Issue tracker
 
-Issues are tracked in GitHub Issues for CodeMetalForge-Hackathon/Team-12 (via the `gh` CLI). See `docs/agents/issue-tracker.md`.
+Issues are tracked in GitHub Issues for eberhart441/shadowcast (via the `gh` CLI). Issues `#N` cited in the hackathon docs and ADRs belong to the old repo, CodeMetalForge-Hackathon/Team-12. See `docs/agents/issue-tracker.md`.
+
+### Research
+
+The scaling investigation and the plan for the redo: `docs/research/scaling-redo/00-synthesis.md` (start there; it indexes reports 01-09).
 
 ### Triage labels
 

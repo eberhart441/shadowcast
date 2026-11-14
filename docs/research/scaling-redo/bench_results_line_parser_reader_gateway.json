@@ -1,0 +1,135 @@
+{
+ "line": {
+  "line_bytes_mean": 850.378,
+  "line_bytes_p95": 866.0,
+  "gateway_line_bytes_mean": 871.378,
+  "uart_921600_bytes_per_s": 92160.0,
+  "uart_lines_per_s_ceiling": 108.37533426311593,
+  "uart_senders_at_40hz_per_wired_receiver": 2.709383356577898,
+  "example_line": "CSI_DATA,0,1a:00:00:00:00:01,-55,11,-97,2,30,6,1000000,47,2,234,0,\"[5,-5,26,4,-21,14,52,38,-28,-51,-25,2,-93,-9,-50,-29,...",
+  "by_N": [
+   {
+    "N": 2,
+    "links_NxN": 4,
+    "links_N(N-1)": 2,
+    "per_receiver_KBps_NxN": 68.03024,
+    "per_receiver_uart_util_NxN": 0.7381753472222223,
+    "gateway_total_KBps_NxN": 139.42048,
+    "gateway_total_KBps_N(N-1)": 69.71024,
+    "gateway_lines_per_s_NxN": 160.0
+   },
+   {
+    "N": 3,
+    "links_NxN": 9,
+    "links_N(N-1)": 6,
+    "per_receiver_KBps_NxN": 102.04536,
+    "per_receiver_uart_util_NxN": 1.1072630208333334,
+    "gateway_total_KBps_NxN": 313.69608,
+    "gateway_total_KBps_N(N-1)": 209.13072,
+    "gateway_lines_per_s_NxN": 360.0
+   },
+   {
+    "N": 4,
+    "links_NxN": 16,
+    "links_N(N-1)": 12,
+    "per_receiver_KBps_NxN": 136.06048,
+    "per_receiver_uart_util_NxN": 1.4763506944444447,
+    "gateway_total_KBps_NxN": 557.68192,
+    "gateway_total_KBps_N(N-1)": 418.26144,
+    "gateway_lines_per_s_NxN": 640.0
+   },
+   {
+    "N": 5,
+    "links_NxN": 25,
+    "links_N(N-1)": 20,
+    "per_receiver_KBps_NxN": 170.0756,
+    "per_receiver_uart_util_NxN": 1.8454383680555557,
+    "gateway_total_KBps_NxN": 871.378,
+    "gateway_total_KBps_N(N-1)": 697.1024,
+    "gateway_lines_per_s_NxN": 1000.0
+   },
+   {
+    "N": 6,
+    "links_NxN": 36,
+    "links_N(N-1)": 30,
+    "per_receiver_KBps_NxN": 204.09072,
+    "per_receiver_uart_util_NxN": 2.214526041666667,
+    "gateway_total_KBps_NxN": 1254.78432,
+    "gateway_total_KBps_N(N-1)": 1045.6536,
+    "gateway_lines_per_s_NxN": 1440.0
+   },
+   {
+    "N": 8,
+    "links_NxN": 64,
+    "links_N(N-1)": 56,
+    "per_receiver_KBps_NxN": 272.12096,
+    "per_receiver_uart_util_NxN": 2.9527013888888893,
+    "gateway_total_KBps_NxN": 2230.72768,
+    "gateway_total_KBps_N(N-1)": 1951.8867200000002,
+    "gateway_lines_per_s_NxN": 2560.0
+   },
+   {
+    "N": 10,
+    "links_NxN": 100,
+    "links_N(N-1)": 90,
+    "per_receiver_KBps_NxN": 340.1512,
+    "per_receiver_uart_util_NxN": 3.6908767361111114,
+    "gateway_total_KBps_NxN": 3485.512,
+    "gateway_total_KBps_N(N-1)": 3136.9608000000003,
+    "gateway_lines_per_s_NxN": 4000.0
+   },
+   {
+    "N": 12,
+    "links_NxN": 144,
+    "links_N(N-1)": 132,
+    "per_receiver_KBps_NxN": 408.18144,
+    "per_receiver_uart_util_NxN": 4.429052083333334,
+    "gateway_total_KBps_NxN": 5019.13728,
+    "gateway_total_KBps_N(N-1)": 4600.87584,
+    "gateway_lines_per_s_NxN": 5760.0
+   }
+  ]
+ },
+ "parser": {
+  "parser_feed_us_per_line": 31.467685001553033,
+  "parser_lines_per_s_one_core": 31778.632586116415,
+  "of_which_split_to_numpy_us": 20.063384997774847,
+  "np_fromstring_alt_us": 6.467734999023378,
+  "parsed": 20200,
+  "malformed": 0
+ },
+ "reader": {
+  "chunked_64B_us_per_line": 11.610233321941148,
+  "chunked_512B_us_per_line": 2.1697000095931194,
+  "chunked_4096B_us_per_line": 0.8173999958671629,
+  "readline_python_only_us_per_line": 320.72883334088453,
+  "bytes_per_line": 849.9786666666666,
+  "note": "python-level cost only; a real port adds one read() syscall per byte for readline (~850 per line) vs one per chunk for the chunked reader"
+ },
+ "gateway": [
+  {
+   "receivers": 2,
+   "lines": 40000,
+   "delivered": 30139,
+   "dropped_queue_full": 9861,
+   "wall_us_per_line": 4.406592500163242,
+   "cpu_us_per_line": 4.296875
+  },
+  {
+   "receivers": 4,
+   "lines": 40000,
+   "delivered": 37205,
+   "dropped_queue_full": 2795,
+   "wall_us_per_line": 5.897822500264738,
+   "cpu_us_per_line": 5.859375
+  },
+  {
+   "receivers": 8,
+   "lines": 40000,
+   "delivered": 22325,
+   "dropped_queue_full": 17675,
+   "wall_us_per_line": 3.441854999982752,
+   "cpu_us_per_line": 3.515625
+  }
+ ]
+}

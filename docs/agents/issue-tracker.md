@@ -12,7 +12,7 @@ Issues and specs for this repo live as GitHub issues. Use the `gh` CLI for all o
 - **Apply / remove labels**: `gh issue edit <number> --add-label "..."` / `--remove-label "..."`
 - **Close**: `gh issue close <number> --comment "..."`
 
-Infer the repo from `git remote -v`; `gh` does this automatically when run inside a clone.
+The repo is `eberhart441/shadowcast` (remote `origin`). A clone may also carry a `hackathon` remote for the old CodeMetalForge-Hackathon/Team-12 repo, so pass `--repo eberhart441/shadowcast` (or run `gh repo set-default eberhart441/shadowcast` once per clone) rather than letting `gh` guess between remotes.
 
 ## Pull requests as a triage surface
 

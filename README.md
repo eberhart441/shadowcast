@@ -10,7 +10,7 @@ Every WiFi packet arrives as a 114-subcarrier measurement of how the space scatt
 and a moving body casts a radio shadow across that measurement. No cameras, no wearables, no line of sight.<br>
 Today it runs on four pucks in one room. The math doesn't care how many pucks there are, or where.
 
-[![CI](https://github.com/CodeMetalForge-Hackathon/Team-12/actions/workflows/ci.yml/badge.svg)](https://github.com/CodeMetalForge-Hackathon/Team-12/actions/workflows/ci.yml)
+[![CI](https://github.com/eberhart441/shadowcast/actions/workflows/ci.yml/badge.svg)](https://github.com/eberhart441/shadowcast/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/python-3.10%2B-3776AB)
 ![Tests](https://img.shields.io/badge/tests-447-brightgreen)
 ![Server](https://img.shields.io/badge/HTTP%20server-stdlib%20only-informational)
