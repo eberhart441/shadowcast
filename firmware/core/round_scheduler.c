@@ -12,6 +12,7 @@
 #define ESPNOW_ELEMENT_BYTES 7     /* each further 250 bytes of payload (ESP-NOW v2) take another vendor element */
 #define ESPNOW_ELEMENT_BODY 250
 #define ALL_INDICES 0xFFFFFFFFu
+#define RS_LATENCY_PULL_US 200     /* the most one send latency sample counts for (rs_sent) */
 
 /* ---------------------------------------------------------------- small helpers */
 
@@ -238,7 +239,11 @@ static int64_t timing(rs_t *s, int64_t t_rx, const rb_broadcast_t *b)
     }
     int64_t k = floor_div(implied - s->base_us + s->period_us / 2, s->period_us);
     int64_t err = implied - (s->base_us + k * s->period_us);
-    s->base_us += err / 2;
+    /* Move halfway, but never more than half the guard per frame: a frame that left milliseconds late (radio
+     * contention; about 1 in 20 on a real C5) must not jerk the schedule, or a node's own planned send drops out as
+     * "the plan changed". Clock drift (+-20 ppm, about 1 us a round) is corrected well within the limit. */
+    int64_t step = err / 2, max_step = s->guard_us / 2 > 1 ? s->guard_us / 2 : 1;
+    s->base_us += step > max_step ? max_step : step < -max_step ? -max_step : step;
     s->last_k = k;
     return err + latency;
 }
@@ -687,18 +692,26 @@ bool rs_take(rs_t *s, const rs_tx_t *tx, int64_t now_us, rb_broadcast_t *out)
 
 void rs_sent(rs_t *s, int64_t t_slot_us, int64_t t_done_us, size_t bytes)
 {
+    /* The send latency is not clamped to the guard: on a real ESP32-C5 it is 1.3 ms or more (bench, 2026-11-16),
+     * and a receiver takes its own latency for the sender's. Clamped to 250 us, every receiver read the others
+     * about a millisecond late and moved its schedule later each frame, so the round slowed down with every node
+     * (37.4 rounds/s with three). Each sample moves the estimate by at most RS_LATENCY_PULL_US / 4, so the odd
+     * frame that waited milliseconds for the channel barely moves it. */
     int64_t l = t_done_us - rs_airtime_us(bytes) - t_slot_us;
+    int64_t max_l = s->period_us / 4;
     if (l < 0) {
         l = 0;
     }
-    if (l > s->guard_us) {
-        l = s->guard_us;
+    if (l > max_l) {
+        l = max_l;
     }
     if (!s->latency_known) {
         s->latency_us = l;
         s->latency_known = true;
     } else {
-        s->latency_us += (l - s->latency_us) / 8;
+        int64_t d = l - s->latency_us;
+        d = d > RS_LATENCY_PULL_US ? RS_LATENCY_PULL_US : d < -RS_LATENCY_PULL_US ? -RS_LATENCY_PULL_US : d;
+        s->latency_us += d / 4;
     }
 }
 

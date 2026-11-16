@@ -88,6 +88,8 @@ typedef struct {
     double ppm;
     int64_t offset;
     int64_t tx_latency_us, tx_jitter_us;
+    uint32_t tx_spike_permille;  /* this share of frames starts tx_spike_us (up to) later still, as on the bench */
+    int64_t tx_spike_us;
     rs_tx_t armed;
     bool was_member, left_member;   /* left_member: it stopped being a member while powered (a "restart") */
     uint32_t sent_keys[SIM_SENT_KEPT];
@@ -284,6 +286,9 @@ static void sim_fire(sim_t *sim, int i)
         f->gen = nd->gen;
         f->round = rb_carries_reports(b.frame_type);
         f->start = sim->now + nd->tx_latency_us + (nd->tx_jitter_us ? (int64_t)(sim_rand(sim) % (uint32_t)nd->tx_jitter_us) : 0);
+        if (nd->tx_spike_permille && sim_rand(sim) % 1000u < nd->tx_spike_permille) {
+            f->start += nd->tx_spike_us / 3 + (int64_t)(sim_rand(sim) % (uint32_t)(2 * nd->tx_spike_us / 3 + 1));
+        }
         f->end = f->start + rs_airtime_us(f->len);
         int fi = (sim->n_frames - 1) % SIM_FRAMES;
         for (int j = 0; j < sim->n; j++) {
@@ -716,11 +721,21 @@ static void slot_lateness_shows_how_late_each_node_starts_in_its_slot(void)
     /* each node compensates for its own send latency, so a node like the others reads about that latency */
     CHECK(lo >= rs_lateness_code(120) && hi <= rs_lateness_code(300),
           "with 200 us send latency everywhere, lateness reads 120 to 300 us (codes %u..%u)", lo, hi);
-    sim->node[3].tx_latency_us = 600;   /* one node starts sending 400 us later than the others */
+    /* One node's radio is 400 us slower. It measures that (rs_sent no longer clamps the estimate to the guard),
+     * reads the others 400 us earlier and moves its schedule to match, so its frames reach the air in step with
+     * everyone else's: it reads like the others. Before 2026-11-16 the estimate was clamped to the 250 us guard, so
+     * a slow node could not correct itself and read late. */
+    sim->node[3].tx_latency_us = 600;
     sim_run(sim, sim->now + 2000000);
-    rs_t copy = sim->node[0].rs;
-    uint8_t late3 = rs_take_lateness(&copy, index_of(sim, 3)), late1 = rs_take_lateness(&copy, index_of(sim, 1));
-    CHECK(late3 >= late1 + 5, "the late node reads later than the others (codes %u vs %u)", late3, late1);
+    uint8_t late3 = RS_LATENESS_NONE, late1 = RS_LATENESS_NONE;
+    for (int step = 0; step < 50 && (late3 == RS_LATENESS_NONE || late1 == RS_LATENESS_NONE); step++) {
+        sim_run(sim, sim->now + 1000);   /* a moment when node 0 has measured both since its own last report */
+        rs_t copy = sim->node[0].rs;
+        late3 = rs_take_lateness(&copy, index_of(sim, 3));
+        late1 = rs_take_lateness(&copy, index_of(sim, 1));
+    }
+    CHECK(late3 != RS_LATENESS_NONE && late1 != RS_LATENESS_NONE && late3 <= late1 + 2 && late1 <= late3 + 2,
+          "a node with a slower radio compensates and reads like the others (codes %u vs %u)", late3, late1);
 }
 
 /* Raw mode (#17): a node whose round broadcasts carry two full raw CSI blocks (416 bytes on air instead of 54) still
@@ -868,6 +883,44 @@ static void round_numbers_only_count_forward_through_joins_merges_and_failover(v
     CHECK(!any_stale_round(sim), "every frame carrying a node's serial counts 1 to 16 + 1/ms rounds on from the last");
 }
 
+/* The send latency of a real XIAO ESP32-C5 (bench, 2026-11-16): from the slot timer to the frame on air, as rs_sent
+ * measures it, at least 1.3 ms and 1.7 to 2.1 ms on average, with about 1 frame in 20 delayed by several ms more.
+ * With the 150 us the other tests assume, nothing showed; with this, three nodes ran 37.4 rounds a second instead
+ * of 40, every receiver read the others at least 960 us late, and nodes skipped sends as "plan changed". The round
+ * must keep its rate, keep every member and still let a fourth node in. */
+static void bench_send_latency_keeps_the_round_rate_and_its_members(void)
+{
+    sim_t *sim = &g_sim;
+    sim_setup(sim, 4, HZ, 131);
+    for (int i = 0; i < 4; i++) {
+        sim->node[i].tx_latency_us = 1250;
+        sim->node[i].tx_jitter_us = 300;
+        sim->node[i].tx_spike_permille = 50;
+        sim->node[i].tx_spike_us = 6000;
+    }
+    for (int i = 0; i < 3; i++) {
+        sim_power_on(sim, i);
+    }
+    CHECK(sim_until_one_schedule(sim, 3000000) >= 0, "three nodes with bench send latency settle");
+    sim_run(sim, sim->now + 1000000);
+    for (int i = 0; i < 3; i++) {
+        sim->node[i].left_member = false;
+    }
+    uint16_t r0 = sim->node[0].rs.last_sent_round;
+    int64_t t0 = sim->now;
+    sim_run(sim, sim->now + 10000000);
+    double rate = (double)(uint16_t)(sim->node[0].rs.last_sent_round - r0) * 1e6 / (double)(sim->now - t0);
+    CHECK(rate >= HZ - 0.5, "the round keeps its rate with bench send latency (%.2f rounds/s, nominal %d)", rate, HZ);
+    printf("round_scheduler: with bench send latency, 3 nodes ran %.2f rounds/s (nominal %d)\n", rate, HZ);
+    CHECK(!any_left_member(sim), "no member was dropped in 10 s with bench send latency");
+    uint8_t lo, hi;
+    lateness_reported_on_links(sim, 0, &lo, &hi);
+    CHECK(hi < RS_LATENESS_MAX_CODE, "slot lateness does not saturate (codes %u..%u)", lo, hi);
+    sim_power_on(sim, 3);
+    int64_t t_join = sim_until_one_schedule(sim, 2000000);
+    CHECK(t_join >= 0, "a fourth node with bench send latency joins within 2 s (took %lld us)", (long long)t_join);
+}
+
 int main(void)
 {
     a_lone_node_listens_then_founds_its_own_schedule();
@@ -884,6 +937,7 @@ int main(void)
     the_scheduler_admits_no_more_members_than_the_slots_hold();
     a_node_streaming_raw_csi_keeps_its_slot_and_its_timing();
     the_frame_cap_keeps_a_round_broadcast_inside_its_slot();
+    bench_send_latency_keeps_the_round_rate_and_its_members();
     printf("round_scheduler: %d failures\n", failures);
     return failures ? 1 : 0;
 }

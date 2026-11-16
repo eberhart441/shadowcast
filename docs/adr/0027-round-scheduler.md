@@ -31,8 +31,14 @@ round.
   dropping a member compacts the slots without renumbering anyone.
 - **Timing from any round broadcast of the node's own schedule.** Start of that round = receive time − airtime −
   this node's own measured send latency − slot × slot length. The first one sets the phase outright, later ones
-  move it halfway (as the fixed round). The send latency comes from the ESP-NOW send callback (time sent − airtime − planned slot time), clamped
-  to 0..guard, averaged.
+  move it halfway, by at most half the guard per frame. The send latency comes from the ESP-NOW send callback (time
+  sent − airtime − planned slot time), clamped to 0..period/4, each sample counting for at most 200 µs.
+  *Amended 2026-11-16:* the first version clamped the latency to 0..guard and moved the phase the full half. On
+  XIAO ESP32-C5 boards the send latency is 1.3 ms or more, with about 1 frame in 20 milliseconds later still. Clamped
+  to the 250 µs guard, every receiver read the others about 1 ms late and moved its schedule later with every
+  frame, so the round slowed with each node (37.4 rounds/s with three, slot lateness saturated), and late frames
+  jerked the phase so planned sends dropped out as "plan changed". The simulator reproduced 37.40 rounds/s with
+  that latency and runs 40.00 with the amendment (`bench_send_latency_keeps_the_round_rate_and_its_members`).
 - **The scheduler is the member in slot 0; its board serial is the scheduler ID.** Only it admits joiners and drops
   missing members, each time bumping the u8 schedule version. Every other member takes a newer schedule version
   (serial arithmetic) from any round broadcast of a known member, from slot 0, or from a join grant that adds one
@@ -107,8 +113,8 @@ round.
 - Partial hearing has limits: a node the scheduler cannot hear cannot join, and a member only some members hear stays
   a member as long as anyone's link reports say it is heard.
 - Members of a losing schedule go silent while they rejoin, so a merge costs those links a few seconds.
-- The send latency and slot lateness come from the send callback time and the CSI callback time, neither measured
-  on a C5 yet; the rig check and the slot-jitter bench test (#19) must confirm them.
+- The send latency and slot lateness come from the send callback time and the CSI callback time. Measured on a C5
+  on 2026-11-16 (send latency 1.3 ms or more, see the amendment above); the slot-jitter bench test (#19) still owes the jitter.
 - `link_table_restart` now runs for indices that change hands; it resets the scorer but not the heard history.
 
 ## Evidence

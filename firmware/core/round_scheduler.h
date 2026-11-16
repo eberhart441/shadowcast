@@ -8,7 +8,8 @@
  *               join slot; all slots are equally long (period / slots per round).
  *   Timing      from any round broadcast of this node's schedule: it implies when that round started on this
  *               node's clock (receive time - airtime - this node's own send latency - slot x slot length). The
- *               first one sets the phase outright, later ones move it halfway.
+ *               first one sets the phase outright, later ones move it halfway, by at most half the guard per frame.
+ *               The send latency is measured, not clamped to the guard: about 1.3 ms or more on a C5 (rs_sent).
  *   Numbers     every node numbers its own frames: one up every round, never back, across schedule versions,
  *               joins and merges. Round numbers are not shared between nodes (the host keys everything by
  *               sender), so the freshness rule of authenticated broadcasts (ticket #16: 1 to 16 + 1/ms ahead of
