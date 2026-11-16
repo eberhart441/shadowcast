@@ -103,7 +103,7 @@ RSSI on each link card, and anything odd.
 |---|---|
 | No links at all | `GET /api/state` `status.broadcasts`: `accepted` 0 and `unknown_nodes` set means the serials in `config/room_tr2.json` are wrong. Nothing at all: is the gateway set to `role=gateway` on the same channel (`node.py show`, with the dashboard stopped)? |
 | One link only | The silent transceiver: `node.py <PORT> status` with it on USB. `sent` 0 means it is not configured (`configured=no`). |
-| Both links NO_SIGNAL after a few seconds | The transceivers stopped hearing each other. If it starts about 2.5 s after boot it fits the forced gain lock (ticket #15 replaces it): note it, and the RSSI. |
+| Both links NO_SIGNAL after a few seconds | The transceivers stopped hearing each other. A node on an image from before 2026-11-16 forced its gain about 2.5 s after boot, which can stop it sending (`send_errors` climbing on `node.py status`); reflash it. Otherwise note it, and the RSSI. |
 | Packet rate well below 40 | `queue_full` or `send_errors` growing on a transceiver, or `status.broadcasts.rejected` on the host. |
 | Links stay in WARMUP | `csi_skipped` growing on a transceiver: its CSI layout is not one it can score. |
 

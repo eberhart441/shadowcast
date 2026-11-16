@@ -215,9 +215,16 @@ static float gain_compensation(const wifi_pkt_rx_ctrl_t *rx_ctrl)
     if (s_gain_frames < GAIN_RECORD_FRAMES) {
         esp_csi_gain_ctrl_record_rx_gain(agc, fft);
     } else if (s_gain_frames == GAIN_RECORD_FRAMES) {
+        /* The baseline is recorded but never forced. Forcing it (the hackathon receiver's way) stops a transceiver
+         * sending: on the bench (2026-11-16), a lone node that forced agc 24 / fft 6 (the median a node recorded
+         * from another across a room) went from 40 sends a second and no errors to about 2 sends and 40 failed
+         * sends a second at once. In a round it is dropped within 3 rounds, and as a joiner its join requests
+         * never get out, so it falls silent for good. A low gain, recorded from a node close by, does no harm,
+         * which is why it worked on a desk. ESP-IDF's header warns that forcing "may cause packet loss". The gain
+         * stays automatic and every frame is compensated to the baseline below, so amplitudes stay comparable.
+         * Ticket #15 replaces this with per-transmitter gain control. */
         esp_csi_gain_ctrl_get_rx_gain_baseline(&agc_base, &fft_base);
-        esp_csi_gain_ctrl_set_rx_force_gain(agc_base, fft_base);
-        ESP_LOGI(TAG, "gain forced: agc %u fft %d", agc_base, fft_base);
+        ESP_LOGI(TAG, "gain baseline: agc %u fft %d (automatic gain, compensated per frame)", agc_base, fft_base);
     }
     s_gain_frames++;
     esp_csi_gain_ctrl_get_gain_compensation(&compensate, agc, fft);

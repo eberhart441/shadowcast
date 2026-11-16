@@ -39,7 +39,7 @@ python scripts/dashboard.py --node-gateway <GATEWAY PORT> --room config/room_tr2
   second, text (log lines and command replies), heard records on a gateway. Read a node with
   `python scripts/node.py <PORT> status`, not a serial terminal. Nothing goes to the UART after boot, and no CSI is
   ever formatted as text.
-- **Gain** is the hackathon receiver's (record 100 frames, then force their median gain) until ticket #15.
+- **Gain** stays automatic: the node records the median gain of its first 100 frames as a baseline and compensates every frame to it, but never forces it. Forcing it (the hackathon receiver's way) stopped a node sending once the forced gain was high (bench, 2026-11-16; `node_transceiver.c`). Ticket #15 replaces this with per-transmitter gain control.
 - **Over-the-air updates** ([`docs/ota.md`](../docs/ota.md), [ADR-0031](../docs/adr/0031-ota-maintenance-network-signed-images.md)):
   two 1.875 MB app slots (`node/partitions.csv`, 4 MB flash), rollback on a failed health check, and only images
   signed with the kit's signing key. The build makes an **unsigned** `node.bin` ("App built but not signed"); sign

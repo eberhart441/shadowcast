@@ -18,7 +18,7 @@
 #define PAYLOAD_COPY (8 + RB_MAX_FRAME_BYTES + 7 * 2 + 16)   /* our longest frame in two ESP-NOW v2 elements */
 #define HEARD_MAX RB_MAX_FRAME_BYTES   /* a round broadcast with two raw CSI blocks; anything longer is not ours */
 #define RAW_LOG_PERIOD_US 10000000  /* while raw mode is on, a log line this often */
-#define GAIN_RECORD_FRAMES 100      /* as csi_recv: record 100 frames, then force their median gain */
+#define GAIN_RECORD_FRAMES 100      /* record 100 frames; their median gain is the baseline frames are compensated to */
 #define REARM_TOLERANCE_US 100
 #define STATUS_PERIOD_US 1000000
 #define NODE_TASK_PRIORITY 6
