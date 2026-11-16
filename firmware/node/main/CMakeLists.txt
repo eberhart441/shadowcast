@@ -6,5 +6,5 @@ idf_component_register(
          "${core}/csi_layout.c" "${core}/link_table.c" "${core}/round_scheduler.c" "${core}/node_settings.c"
          "${core}/round_auth.c" "${core}/ota_core.c" "${core}/raw_mode.c" "${core}/gateway_tx.c"
     INCLUDE_DIRS "." "${core}"
-    REQUIRES esp_wifi esp_timer nvs_flash esp_driver_usb_serial_jtag mbedtls
+    REQUIRES esp_wifi esp_timer nvs_flash esp_driver_usb_serial_jtag esp_driver_gpio mbedtls
              app_update esp_app_format esp_http_client esp_netif esp_event)

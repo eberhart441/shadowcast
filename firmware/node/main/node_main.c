@@ -24,7 +24,8 @@
  * The USB Serial/JTAG port carries only gateway records: status once a second, text (log lines and command
  * replies), and on a gateway the heard records. Nothing is printed on the UART and no CSI is ever formatted as text.
  * The Wi-Fi callbacks only copy what they need into a queue; all work happens in the node task. Gain handling is
- * the hackathon receiver's (record 100 frames, then force the median gain) until ticket #15 replaces it.
+ * automatic, with every frame compensated to the median of the first 100 (never forced: see gain_compensation in
+ * node_transceiver.c) until ticket #15 replaces it.
  *
  * Files: this one (USB, settings, radio, app_main), node_transceiver.c and node_gateway.c (one per role), sharing
  * node_common.h; node_auth.c (the kit key) and node_ota.c (maintenance mode).
@@ -41,6 +42,7 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 
+#include "driver/gpio.h"
 #include "driver/usb_serial_jtag.h"
 #include "esp_csi_gain_ctrl.h"
 #include "esp_event.h"
@@ -303,6 +305,63 @@ void node_add_broadcast_peer(void)
     ESP_ERROR_CHECK(esp_now_set_peer_rate_config(NODE_BROADCAST_MAC, &rate));
 }
 
+/* ---------------------------------------------------------------- status LED */
+
+/* The XIAO ESP32-C5's yellow user LED, GPIO27, lit when driven low. It shows at a glance that a board on battery is
+ * powered and running, since nothing else on the board does:
+ *   one short blink a second   a transceiver with the kit key (the normal case)
+ *   two short blinks a second  a transceiver without the kit key: it only listens (scripts/node.py PORT key FILE)
+ *   steady on                  the gateway (on the dashboard host's USB)
+ *   dark                       no power, or the firmware is not running */
+#define LED_GPIO GPIO_NUM_27
+#define LED_ON 0
+#define LED_BLINK_US (60 * 1000)
+
+static esp_timer_handle_t s_led_off_timer;
+static int s_led_blinks;          /* blinks per second; 0: steady on */
+static int s_led_tick;
+
+static void led_set(bool on)
+{
+    gpio_set_level(LED_GPIO, on ? LED_ON : !LED_ON);
+}
+
+static void led_off(void *arg)
+{
+    (void)arg;
+    led_set(false);
+}
+
+/* Every 200 ms: blink on the first s_led_blinks of each five ticks (two blinks are 200 ms apart). */
+static void led_tick(void *arg)
+{
+    (void)arg;
+    if (s_led_tick < s_led_blinks) {
+        led_set(true);
+        esp_timer_start_once(s_led_off_timer, LED_BLINK_US);
+    }
+    s_led_tick = (s_led_tick + 1) % 5;
+}
+
+static void led_start(int blinks_per_second)
+{
+    gpio_config_t io = {.pin_bit_mask = 1ULL << LED_GPIO, .mode = GPIO_MODE_OUTPUT};
+    if (gpio_config(&io) != ESP_OK) {
+        return;   /* the LED is a convenience: never stop the node over it */
+    }
+    s_led_blinks = blinks_per_second;
+    led_set(blinks_per_second == 0);
+    if (blinks_per_second == 0) {
+        return;
+    }
+    const esp_timer_create_args_t off = {.callback = led_off, .name = "led_off"};
+    const esp_timer_create_args_t tick = {.callback = led_tick, .name = "led"};
+    esp_timer_handle_t tick_timer;
+    if (esp_timer_create(&off, &s_led_off_timer) == ESP_OK && esp_timer_create(&tick, &tick_timer) == ESP_OK) {
+        esp_timer_start_periodic(tick_timer, 200 * 1000);
+    }
+}
+
 /* ---------------------------------------------------------------- start */
 
 void app_main(void)
@@ -329,6 +388,7 @@ void app_main(void)
     if (!node_auth_start() && g_node_settings.role != NODE_ROLE_GATEWAY) {
         g_node_keyed = false;   /* a transceiver without the kit key only listens: it cannot sign or verify */
     }
+    led_start(g_node_settings.role == NODE_ROLE_GATEWAY ? 0 : g_node_keyed ? 1 : 2);
     node_ota_boot(g_node_serial, g_node_settings.channel, g_node_settings.role == NODE_ROLE_GATEWAY);   /* maintenance mode: no return */
     wifi_start(g_node_settings.channel);
     ESP_ERROR_CHECK(esp_now_init());
