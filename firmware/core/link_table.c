@@ -25,6 +25,7 @@ void link_table_heard(link_table_t *table, uint8_t transmitter, int64_t t_us, in
     l->ever_heard = true;
     if (amp && n_sub) {
         motion_score_push(&l->score, t_us, amp, n_sub);
+        l->score_ok = motion_score_get(&l->score, &l->score_value);   /* the scorer changed: score it now */
     }
 }
 
@@ -32,6 +33,7 @@ void link_table_restart(link_table_t *table, uint8_t transmitter)
 {
     if (transmitter < RB_MAX_NODES) {
         motion_score_init(&table->link[transmitter].score);
+        table->link[transmitter].score_ok = false;
     }
 }
 
@@ -61,14 +63,13 @@ uint8_t link_table_close_round(link_table_t *table, uint32_t membership, uint8_t
         link_state_t *l = &table->link[i];
         if (membership >> i & 1u && i != me) {
             rb_report_t *r = &reports[n++];
-            float score;
             r->transmitter_index = i;
             r->rssi = l->ever_heard ? l->rssi : RB_RSSI_NONE;
             r->heard = popcount15(l->history);
             r->since = rounds_since(l->history);
             r->lateness = RB_LATENESS_NONE_CODE;
-            if (motion_score_get(&l->score, &score)) {
-                r->score = motion_score_encode(score);
+            if (l->score_ok) {   /* scored when heard (link_table_heard): close_round runs in the node's slot */
+                r->score = motion_score_encode(l->score_value);
                 r->flags = 0;
             } else {
                 r->score = MOTION_SCORE_CODE_NONE;

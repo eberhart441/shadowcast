@@ -4,8 +4,13 @@
  * link_table_heard records one round broadcast heard from a transmitter (device time, RSSI, the amplitudes of its
  * CSI) and feeds the link's C scorer. link_table_close_round is called once per round, when the node builds its own
  * round broadcast: it ends the round for every link (the heard history moves on by one round) and writes one link
- * report per other member, calling motion_score_get once per link. The reports describe the round broadcasts heard
- * since the previous call, as docs/round-broadcast.md says.
+ * report per other member. The reports describe the round broadcasts heard since the previous call, as
+ * docs/round-broadcast.md says.
+ *
+ * Each link's score is computed when its round broadcast is heard (link_table_heard) and kept, not when the round is
+ * closed: motion_score_get costs about 240 us a link on an ESP32-C5 (software floating point), and close_round runs
+ * in the node's own slot, so at 30 nodes it took about 7 ms, several slots long (bench, 2026-11-16: 985 us with 4
+ * links, 40 us with none). The value is the same: the scorer's state changes only on a push or a restart.
  *
  * Indexed by node index (0..31), so it holds RB_MAX_NODES scorers: about 64 KiB at 64 subcarriers.
  * Portable C11: no allocation, no I/O, no platform calls.
@@ -24,6 +29,8 @@ typedef struct {
     uint16_t history;     /* bit 0: heard in the current round; bit k: heard k rounds ago (15 rounds kept) */
     int8_t rssi;          /* of the last round broadcast heard; RB_RSSI_NONE if never */
     bool ever_heard;
+    bool score_ok;        /* score_value is the scorer's current score (motion_score_get returned true) */
+    float score_value;    /* computed after each push, so close_round only copies it */
 } link_state_t;
 
 typedef struct {

@@ -110,6 +110,45 @@ int main(void)
     b.n_reports = link_table_close_round(&table, three, 1, b.reports);
     CHECK(rb_encode(&b, bytes, sizeof bytes) == RB_HEADER_BYTES + 2 * RB_REPORT_BYTES, "the reports encode");
 
+    /* The score kept from link_table_heard is exactly what motion_score_get gives at close time (the first version
+     * scored in close_round): 2000 rounds over 5 links with frames heard, frames without CSI, silent rounds and
+     * restarts, every report checked. */
+    link_table_init(&table);
+    uint32_t rng = 12345u, checked = 0, mismatches = 0;
+    const uint32_t six = 0x3F;   /* members 0..5; this node is index 3 */
+    for (int r = 0; r < 2000; r++, t += ROUND_US) {
+        for (uint8_t i = 0; i < 6; i++) {
+            if (i == 3) {
+                continue;
+            }
+            rng = rng * 1103515245u + 12345u;
+            uint32_t roll = rng >> 16 & 0xFFu;
+            if (roll < 200) {   /* heard, with CSI */
+                amplitudes(amp, r + i, (float)(roll % 9));
+                link_table_heard(&table, i, t + i * 1000, (int8_t)(-40 - (int)(roll % 30)), amp, N_SUB);
+            } else if (roll < 215) {   /* heard, no CSI (layout warm-up) */
+                link_table_heard(&table, i, t + i * 1000, -60, NULL, 0);
+            } else if (roll < 218) {   /* restarted */
+                link_table_restart(&table, i);
+            }   /* else: not heard this round */
+        }
+        float direct[RB_MAX_NODES];
+        bool direct_ok[RB_MAX_NODES];
+        for (uint8_t i = 0; i < RB_MAX_NODES; i++) {
+            direct_ok[i] = motion_score_get(&table.link[i].score, &direct[i]);
+        }
+        n = link_table_close_round(&table, six, 3, reports);
+        for (uint8_t k = 0; k < n; k++) {
+            uint8_t i = reports[k].transmitter_index;
+            bool same = direct_ok[i] ? reports[k].score == motion_score_encode(direct[i]) && reports[k].flags == 0
+                                     : reports[k].score == MOTION_SCORE_CODE_NONE && (reports[k].flags & RB_FLAG_WARMING);
+            checked++;
+            mismatches += same ? 0u : 1u;
+        }
+    }
+    CHECK(mismatches == 0 && checked == 2000u * 5u, "kept scores equal scoring at close time (%u of %u differ)",
+          (unsigned)mismatches, (unsigned)checked);
+
     printf("link_table: %d failures\n", failures);
     return failures ? 1 : 0;
 }
