@@ -488,6 +488,7 @@ The server checks the combination at start and exits with an error when:
 | `POST /api/params` | Body with any of `{sensitivity, decay, rise, falloff}` changes the heatmap live. Ranges: `sensitivity` 0.01 to 10, `decay` 0.05 to 60 s, `rise` 0.01 to 10 s, `falloff` 0.05 to 2 m. |
 | `POST /api/ota` | Body `{image, nodes?, ap_channel?, port?, channel?, bind?}` or `{checkin: true}`: starts a staged OTA rollout through the dashboard's node gateway without stopping the dashboard ([`docs/ota.md`](ota.md)); 202 `{ota}`, progress in `status.ota`. 409 with a `reason`: `running`, `no_gateway`, `no_channel`, `no_signer`, `channel` (the maintenance network would overlap the sensing channel) or the image check's reason. |
 | `POST /api/raw-mode` | Body `{link, on}` turns raw mode on or off for one transceiver link (`n1<-n5`): the gateway (or the simulated rig) sends the request; returns `{raw_mode, sent, via}`. 409 with a `reason` when refused: `budget` (400 B of raw CSI per round in the rig), `node_limit` (2 per node), `not_heard`, `no_gateway`. 400 for an unknown link. See `docs/round-broadcast.md` "Raw mode". |
+| `POST /api/node-position` | Body `{node, x, y}` moves a node on the map, in metres (rounded to the millimetre, at most one room size beyond each wall); the page sends it when you drag a node. The heatmap and zone geometry follow at once; link states, thresholds and baselines are kept. The position is written into the `--room` file (default `config/room.json`), every other field kept; returns `{node, x, y, saved, path, message}`. 400 for an unknown or disabled node or a position that is not a finite number in reach. |
 
 Status codes for the commands (the `POST` endpoints):
 
@@ -514,8 +515,8 @@ The server binds to `127.0.0.1` by default, so only this machine can reach it.
 - `--host 0.0.0.0` listens on the network with **no authentication**. Anyone who can reach the port can
   read the state, and the commands are refused unless you also pass `--allow-control`. Use it only on a
   network you trust.
-- The seven command endpoints (`/api/calibrate`, `/api/calibrate/cancel`, `/api/threshold`,
-  `/api/thresholds/save`, `/api/params`, `/api/raw-mode`, `/api/ota`) are enabled only when `--host` is a loopback address
+- The eight command endpoints (`/api/calibrate`, `/api/calibrate/cancel`, `/api/threshold`,
+  `/api/thresholds/save`, `/api/params`, `/api/raw-mode`, `/api/ota`, `/api/node-position`) are enabled only when `--host` is a loopback address
   (`localhost`, `127.0.0.0/8` or `::1`), or when you pass `--allow-control`. Otherwise they return 403.
   The page's controls and `scripts/calibrate.py` use the same endpoints.
 - Every command must also pass these checks, which the server makes before it runs anything:

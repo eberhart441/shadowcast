@@ -39,6 +39,7 @@ Public API:
         .contributing         link labels that currently put heat on the grid
         .evidence             {label: 0..1} per link, from the last advance
         .baselines            {label: quiet baseline or None while in warm-up}
+        .set_room(room)       nodes moved: rebuild the geometry (footprints or RTI matrix), keep baselines and grid
 """
 from __future__ import annotations
 
@@ -203,6 +204,20 @@ class Heatmap:
             setattr(self, name, float(value))
         if "falloff_m" in kwargs:
             self._build_falloff(self.falloff_m)
+
+    def set_room(self, room: Room) -> None:
+        """Take a room whose nodes moved (same links, same size): rebuild the per-link footprints, or the RTI matrix,
+        from the new positions. The baselines, the smoothed grid and the parameters are kept: only geometry changes.
+        Raises ValueError for a room with other links or another size."""
+        if [lid.label for lid, _, _ in room_link_ids(room)] != list(self._column):
+            raise ValueError("set_room takes the same room with nodes moved: its links differ")
+        if (room.width_m, room.depth_m) != (self._room.width_m, self._room.depth_m):
+            raise ValueError("set_room takes the same room with nodes moved: its size differs")
+        self._room = room
+        self._build_falloff(self.falloff_m)
+        if self.imaging == RTI:
+            ends = np.array([[(rx.x, rx.y), (tx.x, tx.y)] for _, rx, tx in room_link_ids(room)]).reshape(-1, 2, 2)
+            self._imager = rti.imager(self.centres, ends, self.excess_path_m, self.corr_m, self.noise_ratio)
 
     @property
     def known_labels(self) -> set[str]:

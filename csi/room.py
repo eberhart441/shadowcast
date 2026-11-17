@@ -14,6 +14,9 @@ default is ``true``. Its name is kept in ``Room.disabled``.
 Public API:
     load_room(path)                  -> Room (receivers and senders by name; optional link_weights)
     room_from_config(obj) / room_config(room)   Room from / to a parsed room.json object (round recordings keep one)
+    move_node(room, name, x, y)      -> a new Room with that node at (x, y), metres rounded to 3 decimals; ValueError
+                                        for an unknown or disabled node, a non-finite position, or one beyond reach
+    save_node_position(path, name, x, y)   write a node's x, y into a room file atomically, keeping everything else
     Room.links()                     -> [(receiver Node, sender Node)] for every pair
     Room.transceiver_links()         -> [(receiving Node, transmitting Node)] for every ordered transceiver pair
     Room.wall_point(side, inset)     -> (x, y) just inside a wall: "left" | "right" | "top" | "bottom"
@@ -26,9 +29,11 @@ Public API:
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
-from dataclasses import dataclass, field
+import tempfile
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Mapping, Optional, Sequence, Union
 
@@ -41,6 +46,8 @@ FALLOFF_SIGMA_M = 0.25  # response is exp(-1/2) (about 60 %) at this distance fr
 STOP_FADE_S = 1.5       # a person who stops dead leaves the score within this (high-pass plus 1 s window)
 WALL_INSET_M = 0.25     # how far inside the wall a person stands for "near a wall"
 WALLS = ("left", "right", "top", "bottom")
+POSITION_DECIMALS = 3   # a moved node's x, y in metres: millimetres
+NODE_REACH = 1.0        # a moved node may sit up to this many room widths (depths) beyond each wall
 TRANSCEIVER = "transceiver"
 ROLES = ("receiver", "sender", TRANSCEIVER)
 
@@ -148,6 +155,63 @@ def room_config(room: Room) -> dict:
     if room.link_weights:
         config["link_weights"] = dict(room.link_weights)
     return config
+
+
+def move_node(room: Room, name: str, x: float, y: float) -> Room:
+    """``room`` with node ``name`` at (x, y) in metres, rounded to ``POSITION_DECIMALS``; everything else is kept.
+
+    A node may sit outside the room, up to ``NODE_REACH`` room sizes beyond each wall (x from -width to 2 x width).
+    Raises ValueError for an unknown or disabled node, a position that is not a finite number, or one beyond reach.
+    """
+    if name in room.disabled:
+        raise ValueError(f"node {name!r} is disabled in the room config (\"enabled\": false): it is not on the map")
+    groups = {"receivers": room.receivers, "senders": room.senders, "transceivers": room.transceivers}
+    where = next((key for key, nodes in groups.items() if any(n.name == name for n in nodes)), None)
+    if where is None:
+        names = sorted(n.name for nodes in groups.values() for n in nodes)
+        raise ValueError(f"unknown node {name!r}; nodes are {', '.join(names)}")
+    for axis, value, size in (("x", x, room.width_m), ("y", y, room.depth_m)):
+        if not math.isfinite(value):
+            raise ValueError(f"{axis} must be a finite number of metres, got {value!r}")
+        lo, hi = -NODE_REACH * size, (1 + NODE_REACH) * size
+        if not lo <= value <= hi:
+            raise ValueError(f"{axis} = {value:g} m is too far from the room: keep it within {lo:g} to {hi:g} m")
+    x, y = round(float(x), POSITION_DECIMALS), round(float(y), POSITION_DECIMALS)
+    moved = tuple(replace(n, x=x, y=y) if n.name == name else n for n in groups[where])
+    return replace(room, **{where: moved})
+
+
+def save_node_position(path: Union[str, Path], name: str, x: float, y: float) -> None:
+    """Set node ``name``'s ``x`` and ``y`` (rounded to ``POSITION_DECIMALS``) in the room file at ``path``.
+
+    Every other field, the key order, the 2-space JSON layout and the line endings are kept. The file is written to a
+    temporary file next to it and moved over it, so a reader never sees half a file. Raises KeyError when the file
+    has no such node, OSError when it cannot be read or written, ValueError when it is not JSON.
+    """
+    path = Path(path)
+    raw = path.read_bytes()
+    text = raw.decode("utf-8")
+    config = json.loads(text)
+    spec = config.get("nodes", {}).get(name)
+    if not isinstance(spec, dict):
+        raise KeyError(f"{path} has no node {name!r}")
+    spec["x"], spec["y"] = round(float(x), POSITION_DECIMALS), round(float(y), POSITION_DECIMALS)
+    out = json.dumps(config, indent=2, ensure_ascii=False) + "\n"
+    if "\r\n" in text:
+        out = out.replace("\n", "\r\n")
+    fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(out.encode("utf-8"))
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def point_segment_distance(points: np.ndarray, a: Sequence[float], b: Sequence[float]) -> np.ndarray:
