@@ -25,9 +25,11 @@
  *               alone in slot 0.
  *   Dropping    a member nobody has heard for RS_MISSING_ROUNDS rounds (directly, or by anyone's link reports)
  *               is dropped by the scheduler. When the scheduler itself is missing, the next member in slot order
- *               whose earlier members are all missing drops them and becomes slot 0 (failover).
- *   Merging     a node that hears slot 0 of another schedule whose scheduler ID (serial) is lower than its own
- *               schedule's leaves its schedule and joins that one. So split groups end in the lowest-ID schedule.
+ *               whose earlier members are all missing drops them and becomes slot 0 (failover). A member ignores a
+ *               newer version that drops its scheduler while it still hears it; a scheduler never takes its own
+ *               removal (a member that heard too little must not evict everyone).
+ *   Merging     a node that hears slot 0 of another schedule with more members, or as many and a lower scheduler
+ *               ID (serial), leaves its schedule and joins that one. So split groups end in the biggest schedule.
  *   Guard       a slot must hold the round broadcast's airtime plus the guard; the scheduler admits no more
  *               members than that allows, and a node whose slot came more than the guard late skips it.
  *   Lateness    for each round broadcast heard from a member: how far into its slot it started on air, by this

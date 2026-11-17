@@ -61,10 +61,19 @@ round.
 - **Dropping.** A member is missing when nobody has heard it for 3 rounds: the scheduler's own hearing, or any
   member's link report saying it heard it (`since` gives when). The scheduler drops missing members as it builds its
   slot 0 broadcast, so the new version goes out at the start of a round. **Failover:** a member all of whose
-  earlier members (lower node indices) are missing drops them and is then slot 0.
-- **Merging.** A node that hears slot 0 of another schedule whose scheduler ID is lower than its own schedule's
-  leaves its schedule and joins that one (through the join slot, like any joiner). Split groups therefore end in the
-  lowest-ID schedule; members that cannot hear that scheduler follow once their own scheduler has left.
+  earlier members (lower node indices) are missing drops them and is then slot 0. A member does not take a newer
+  version that drops its scheduler while it still hears that scheduler itself, and a scheduler never takes its own
+  removal (amended 2026-11-16, below).
+- **Merging.** A node that hears slot 0 of another schedule with more members than its own, or as many and a lower
+  scheduler ID, leaves its schedule and joins that one (through the join slot, like any joiner). Split groups
+  therefore end in the biggest schedule, the lowest-ID one among equals; members that cannot hear that scheduler
+  follow once their own scheduler has left.
+  *Amended 2026-11-16:* first the lower scheduler ID alone decided. On the bench, two boards on dying batteries kept
+  restarting; each heard too little to join, founded a schedule of one with a low serial, and the whole rig left its
+  round for it (3572 schedule changes in 3 minutes). A member that heard too little also failed over and its newer
+  version evicted every healthy member. In the simulator (`a_board_browning_out_does_not_drag_the_healthy_boards_around`,
+  and `--report` for the full table), healthy boards of 5 with one such board were evicted 26 to 29 times a minute
+  before and about 6 after, with nothing else changed in any other scenario.
 - **Capacity and guard.** The scheduler admits no more members than fit with slot length ≥ max(1 ms, airtime of a
   full round broadcast + guard); refused requests are counted. A node whose slot timer fires more than the guard
   late skips the slot (counted) instead of running into the next one. `guard_us` is a kit-wide setting, 50 to

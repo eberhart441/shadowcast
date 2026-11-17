@@ -104,6 +104,8 @@ typedef struct {
     uint32_t replays;           /* frames it dropped as replays (as receiver) */
     bool raw;                   /* raw mode: its round broadcasts carry raw CSI for its first two links (#17) */
     uint32_t raw_sent;          /* round broadcasts with raw CSI it sent */
+    uint32_t rx_loss_permille;  /* this share of the frames it would hear is lost (a weak radio, a dying battery) */
+    uint32_t lost_random;       /* round broadcasts from members lost at random (as receiver, a member) */
 } sim_node_t;
 
 typedef struct {
@@ -133,9 +135,11 @@ typedef struct {
     uint32_t hz, rng;
     int64_t rx_latency_us;
     uint32_t collisions;        /* round broadcasts lost because another frame overlapped them */
+    uint32_t loss_permille;     /* every delivery is lost with this chance, on top of overlaps (a real room) */
 } sim_t;
 
 static sim_t g_sim;
+static bool g_trace;   /* --trace N: print every eviction in scenario N */
 
 static uint32_t sim_rand(sim_t *sim)
 {
@@ -330,6 +334,13 @@ static void sim_deliver(sim_t *sim, const sim_event_t *e)
             return;
         }
     }
+    uint32_t loss = sim->loss_permille + nd->rx_loss_permille;
+    if (loss && sim_rand(sim) % 1000u < loss) {
+        if (f->round && nd->rs.state == RS_MEMBER) {
+            nd->lost_random++;
+        }
+        return;
+    }
     rb_broadcast_t b;
     CHECK(rb_decode(f->bytes, f->len, &b) == RB_OK, "a frame on air does not decode");
     int64_t now = clock_of(nd, sim->now);
@@ -337,9 +348,32 @@ static void sim_deliver(sim_t *sim, const sim_event_t *e)
         nd->replays++;   /* node_main drops it before the scheduler sees it */
         return;
     }
+    uint32_t evicted_before = nd->rs.count.evicted;
+    uint8_t version_before = nd->rs.version;
+    uint32_t membership_before = nd->rs.membership;
+    uint8_t sched_before = 0;
+    while (sched_before < RB_MAX_NODES - 1 && !(membership_before >> sched_before & 1u)) {
+        sched_before++;
+    }
+    int64_t sched_age = now - nd->rs.seen_us[sched_before];
+    int sched_node = -1;
+    for (int j = 0; j < sim->n; j++) {
+        uint8_t id[RB_NODE_ID_BYTES];
+        make_id(id, j + 1);
+        if (memcmp(id, nd->rs.member_id[sched_before], RB_NODE_ID_BYTES) == 0) {
+            sched_node = j;
+        }
+    }
     if (rs_heard(&nd->rs, now, &b) == RS_HEARD_MEMBER) {
         link_table_heard(&nd->links, b.node_index, now, -50, NULL, 0);
         nd->delivered++;
+    }
+    if (g_trace && nd->rs.count.evicted != evicted_before) {
+        printf("  t=%7.3f s: node %d evicted: v%u %08lx -> v%u %08lx, from node %d's frame (slot %u, index %u); "
+               "its scheduler was index %u = node %d (%s), last heard %lld us ago\n",
+               (double)sim->now / 1e6, e->node, version_before, (unsigned long)membership_before, nd->rs.version,
+               (unsigned long)nd->rs.membership, f->sender, b.slot, b.node_index, sched_before, sched_node,
+               sched_node >= 0 && sim->node[sched_node].on ? "on" : "OFF", (long long)sched_age);
     }
     sim_after_call(nd);
     sim_rearm(nd, now, false);
@@ -921,8 +955,213 @@ static void bench_send_latency_keeps_the_round_rate_and_its_members(void)
     CHECK(t_join >= 0, "a fourth node with bench send latency joins within 2 s (took %lld us)", (long long)t_join);
 }
 
-int main(void)
+/* ---------------------------------------------------------------- bench scenarios (`--report`)
+ *
+ * Whole rigs under bench conditions (2026-11-16): send latency 1.25 to 1.55 ms with 5 % of frames 2 to 6 ms later,
+ * random loss, and optionally one board that browns out over and over (a dying battery: it hears badly, runs a
+ * few seconds, dies, restarts). Prints what the healthy boards went through; the tests below assert on the same. */
+
+typedef struct {
+    const char *name;
+    int n;
+    uint32_t hz;
+    uint32_t loss_permille;
+    int flapper;                 /* -1, or the node that browns out (node 0 has the lowest serial) */
+    uint32_t flapper_rx_loss;    /* permille of frames the flapper misses while it is on */
+    int64_t flap_on_us, flap_off_us;
+    int64_t run_us;
+    uint32_t seed;
+} scenario_t;
+
+typedef struct {
+    double collision_pct, random_pct, rate;
+    uint32_t dropped, evicted, merges, joins, founded, late, admitted;
+    uint32_t flapper_on_samples, flapper_sched_samples;   /* 100 ms samples: flapper on / scheduler of others */
+    bool settled, one_schedule_end;
+} scenario_result_t;
+
+static rs_counters_t sum_counters(const sim_t *sim, int skip)
 {
+    rs_counters_t c;
+    memset(&c, 0, sizeof c);
+    for (int i = 0; i < sim->n; i++) {
+        if (i == skip) {
+            continue;
+        }
+        const rs_counters_t *x = &sim->node[i].rs.count;
+        c.dropped += x->dropped; c.evicted += x->evicted; c.merges += x->merges; c.joins += x->joins;
+        c.founded += x->founded; c.late_slots += x->late_slots; c.admitted += x->admitted;
+    }
+    return c;
+}
+
+static scenario_result_t run_scenario(const scenario_t *sc)
+{
+    sim_t *sim = &g_sim;
+    scenario_result_t r;
+    memset(&r, 0, sizeof r);
+    sim_setup(sim, sc->n, sc->hz, sc->seed);
+    sim->loss_permille = sc->loss_permille;
+    for (int i = 0; i < sc->n; i++) {
+        sim->node[i].tx_latency_us = 1250;
+        sim->node[i].tx_jitter_us = 300;
+        sim->node[i].tx_spike_permille = 50;
+        sim->node[i].tx_spike_us = 6000;
+        if (i == sc->flapper) {
+            sim->node[i].rx_loss_permille = sc->flapper_rx_loss;
+        }
+        sim_power_on(sim, i);
+    }
+    r.settled = sim_until_one_schedule(sim, 15000000) >= 0;
+    sim_run(sim, sim->now + 2000000);
+    rs_counters_t c0 = sum_counters(sim, sc->flapper);
+    sim_reset_counts(sim);
+    for (int i = 0; i < sc->n; i++) {
+        sim->node[i].lost_random = 0;
+    }
+    int ref = sc->flapper == 0 ? 1 : 0;
+    uint16_t r0 = sim->node[ref].rs.last_sent_round;
+    int64_t t0 = sim->now, end = sim->now + sc->run_us;
+    int64_t next_flap = sc->flapper >= 0 ? sim->now + sc->flap_on_us : INT64_MAX;
+    while (sim->now < end) {
+        int64_t step = next_flap < end ? next_flap : end;
+        if (step > sim->now + 100000) {
+            step = sim->now + 100000;   /* sample every 100 ms: is the flapper the scheduler? */
+        }
+        sim_run(sim, step);
+        if (sc->flapper >= 0 && sim->node[sc->flapper].on) {
+            const rs_t *f = &sim->node[sc->flapper].rs;
+            r.flapper_on_samples++;
+            if (f->state == RS_MEMBER && rs_slot_of(f->membership, f->my_index) == 0 && popcount(f->membership) > 1) {
+                r.flapper_sched_samples++;
+            }
+        }
+        if (sim->now >= next_flap) {
+            if (sim->node[sc->flapper].on) {
+                sim_power_off(sim, sc->flapper);
+                next_flap = sim->now + sc->flap_off_us;
+            } else {
+                sim_power_on(sim, sc->flapper);
+                next_flap = sim->now + sc->flap_on_us;
+            }
+        }
+    }
+    rs_counters_t c1 = sum_counters(sim, sc->flapper);
+    uint32_t heard = 0, lost = 0, lost_random = 0;
+    for (int i = 0; i < sc->n; i++) {
+        if (i != sc->flapper) {
+            heard += sim->node[i].delivered;
+            lost += sim->node[i].lost;
+            lost_random += sim->node[i].lost_random;
+        }
+    }
+    double total = (double)(heard + lost + lost_random);
+    r.collision_pct = total > 0 ? 100.0 * sim->collisions / total : 0;
+    r.random_pct = total > 0 ? 100.0 * lost_random / total : 0;
+    r.rate = (double)(uint16_t)(sim->node[ref].rs.last_sent_round - r0) * 1e6 / (double)(sim->now - t0);
+    r.dropped = c1.dropped - c0.dropped;
+    r.evicted = c1.evicted - c0.evicted;
+    r.merges = c1.merges - c0.merges;
+    r.joins = c1.joins - c0.joins;
+    r.founded = c1.founded - c0.founded;
+    r.late = c1.late_slots - c0.late_slots;
+    r.admitted = c1.admitted - c0.admitted;
+    if (sc->flapper >= 0) {
+        sim_power_off(sim, sc->flapper);
+        sim_run(sim, sim->now + 1000000);
+    }
+    r.one_schedule_end = sim_one_schedule(sim, NULL);
+    return r;
+}
+
+static const scenario_t SCENARIOS[] = {
+    {"3 boards, bench latency", 3, 40, 0, -1, 0, 0, 0, 60000000, 501},
+    {"5 boards, bench latency", 5, 40, 0, -1, 0, 0, 0, 60000000, 502},
+    {"5 boards, bench latency, 3% loss", 5, 40, 30, -1, 0, 0, 0, 60000000, 503},
+    {"5 boards, bench latency, 8% loss", 5, 40, 80, -1, 0, 0, 0, 60000000, 504},
+    {"8 boards, bench latency, 3% loss", 8, 40, 30, -1, 0, 0, 0, 60000000, 505},
+    {"16 boards, bench latency, 3% loss", 16, 40, 30, -1, 0, 0, 0, 60000000, 506},
+    {"30 boards at 20 Hz, bench latency, 3% loss", 30, 20, 30, -1, 0, 0, 0, 60000000, 507},
+    {"5 boards, lowest serial browns out (3 s on, 2 s off, hears 40%)", 5, 40, 30, 0, 600, 3000000, 2000000,
+     60000000, 508},
+    {"5 boards, a mid serial browns out (3 s on, 2 s off, hears 40%)", 5, 40, 30, 2, 600, 3000000, 2000000,
+     60000000, 509},
+};
+
+#define REPORT_SEEDS 5
+
+/* Each scenario with REPORT_SEEDS seeds: means per 60 s, and how many runs settled / ended in one schedule. */
+static void report(void)
+{
+    printf("%-64s %7s %8s %8s %6s %7s %7s %6s %6s %5s %6s %5s\n", "scenario (healthy boards; mean of 5 seeds x 60 s)",
+           "settled", "collide%", "random%", "rate", "dropped", "evicted", "merges", "joins", "late", "sched%", "end1");
+    for (size_t i = 0; i < sizeof SCENARIOS / sizeof SCENARIOS[0]; i++) {
+        double col = 0, rnd = 0, rate = 0, dropped = 0, evicted = 0, merges = 0, joins = 0, late = 0;
+        uint32_t on = 0, sched = 0;
+        int settled = 0, end1 = 0;
+        for (uint32_t k = 0; k < REPORT_SEEDS; k++) {
+            scenario_t sc = SCENARIOS[i];
+            sc.seed = SCENARIOS[i].seed * 7919u + k;
+            scenario_result_t r = run_scenario(&sc);
+            col += r.collision_pct; rnd += r.random_pct; rate += r.rate; dropped += r.dropped;
+            evicted += r.evicted; merges += r.merges; joins += r.joins; late += r.late;
+            on += r.flapper_on_samples; sched += r.flapper_sched_samples;
+            settled += r.settled; end1 += r.one_schedule_end;
+        }
+        double n = REPORT_SEEDS;
+        char sched_pct[8] = "-";
+        if (on) {
+            snprintf(sched_pct, sizeof sched_pct, "%.0f", 100.0 * sched / on);
+        }
+        printf("%-64s %5d/%d %8.2f %8.2f %6.2f %7.1f %7.1f %6.1f %6.1f %5.1f %6s %3d/%d\n", SCENARIOS[i].name,
+               settled, REPORT_SEEDS, col / n, rnd / n, rate / n, dropped / n, evicted / n, merges / n, joins / n,
+               late / n, sched_pct, end1, REPORT_SEEDS);
+        fflush(stdout);
+    }
+}
+
+/* A board on a dying battery (it hears 40 %, runs 3 s, dies for 2 s, over and over) must not drag the healthy
+ * boards around. Before the fix (lower serial alone won merges, and a member that heard too little could evict
+ * everyone by failover) the healthy boards of 5 were evicted 26 to 29 times a minute and rejoined 32 to 43 times
+ * (5 seeds); now about 6 and 11. Asserted over 3 seeds per scenario with margin. */
+static void a_board_browning_out_does_not_drag_the_healthy_boards_around(void)
+{
+    for (int s = 0; s < 2; s++) {
+        const scenario_t *base = &SCENARIOS[7 + s];   /* lowest serial, then a mid serial, browning out */
+        uint32_t evicted = 0, joins = 0;
+        bool end1 = true;
+        for (uint32_t k = 0; k < 3; k++) {
+            scenario_t sc = *base;
+            sc.seed = base->seed * 7919u + k;
+            scenario_result_t r = run_scenario(&sc);
+            evicted += r.evicted;
+            joins += r.joins;
+            end1 = end1 && r.one_schedule_end;
+        }
+        CHECK(evicted <= 3 * 12, "%s: healthy boards evicted %u times in 3 minutes (at most 36)", base->name,
+              (unsigned)evicted);
+        CHECK(joins <= 3 * 20, "%s: healthy boards rejoined %u times in 3 minutes (at most 60)", base->name,
+              (unsigned)joins);
+        CHECK(end1, "%s: the healthy boards end in one schedule once the board is off", base->name);
+    }
+}
+
+int main(int argc, char **argv)
+{
+    if (argc > 1 && strcmp(argv[1], "--report") == 0) {
+        report();
+        return 0;
+    }
+    if (argc > 2 && strcmp(argv[1], "--trace") == 0) {
+        size_t k = (size_t)atoi(argv[2]);
+        if (k < sizeof SCENARIOS / sizeof SCENARIOS[0]) {
+            g_trace = true;
+            printf("%s\n", SCENARIOS[k].name);
+            scenario_result_t r = run_scenario(&SCENARIOS[k]);
+            printf("evicted %u, dropped %u, merges %u\n", (unsigned)r.evicted, (unsigned)r.dropped, (unsigned)r.merges);
+        }
+        return 0;
+    }
     a_lone_node_listens_then_founds_its_own_schedule();
     two_nodes_powered_together_end_in_one_schedule();
     a_node_powered_on_into_a_running_round_joins_within_a_few_rounds();
@@ -938,6 +1177,7 @@ int main(void)
     a_node_streaming_raw_csi_keeps_its_slot_and_its_timing();
     the_frame_cap_keeps_a_round_broadcast_inside_its_slot();
     bench_send_latency_keeps_the_round_rate_and_its_members();
+    a_board_browning_out_does_not_drag_the_healthy_boards_around();
     printf("round_scheduler: %d failures\n", failures);
     return failures ? 1 : 0;
 }

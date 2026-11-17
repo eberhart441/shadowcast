@@ -397,6 +397,41 @@ static bool related(const rs_t *s, const rb_broadcast_t *b)
     return b->slot == 0 && s->sched_known && same_id(s->sched_id, b->node_id);
 }
 
+/* Should this node leave its schedule for the one whose slot 0 sent b? Only for a bigger one, or one as big whose
+ * scheduler has the lower serial. Lower serial alone (the first version) let a board that kept browning out pull
+ * the whole rig: it restarted, heard too little to join, founded a schedule of one, and every member left its round
+ * for it, then lost it again seconds later (bench, 2026-11-16: 3572 schedule changes in 3 minutes). Now a lone
+ * founder joins the running round instead; two equal halves still end in the lower scheduler serial's. */
+static bool prefers(const rs_t *s, const rb_broadcast_t *b)
+{
+    unsigned theirs = members(b->membership), ours = members(s->membership);
+    if (theirs != ours) {
+        return theirs > ours;
+    }
+    return s->sched_known && memcmp(b->node_id, s->sched_id, RB_NODE_ID_BYTES) < 0;
+}
+
+/* Take a newer version of this node's schedule from b? Not one that drops this node's scheduler while this node
+ * still hears it: that is a member that heard too little (a dying battery) and took over by failover. Accepting it
+ * evicted every healthy member at once (simulator, 2026-11-16: 18 evictions a minute with one browning-out board);
+ * ignored, the false scheduler is alone, and it rejoins the bigger schedule by `prefers`. A real failover still
+ * goes through: when the scheduler is gone, every member misses it. */
+static bool accepts_newer(const rs_t *s, const rb_broadcast_t *b, int64_t t)
+{
+    if (s->state != RS_MEMBER || !s->membership) {
+        return true;
+    }
+    uint8_t sched = 0;
+    while (sched < RB_MAX_NODES && !(s->membership & bit(sched))) {
+        sched++;
+    }
+    bool drops_scheduler = !(b->membership & bit(sched));
+    if (!drops_scheduler) {
+        return true;
+    }
+    return sched != s->my_index && missing(s, sched, t);   /* a scheduler never takes its own removal: it is here */
+}
+
 static void on_request(rs_t *s, int64_t t, const rb_broadcast_t *b)
 {
     uint8_t index = RS_NO_INDEX;
@@ -475,13 +510,17 @@ rs_heard_t rs_heard(rs_t *s, int64_t t_rx_us, const rb_broadcast_t *b)
     }
     if (!related(s, b)) {
         s->count.foreign++;
-        if (b->slot == 0 && s->sched_known && memcmp(b->node_id, s->sched_id, RB_NODE_ID_BYTES) < 0) {
+        if (b->slot == 0 && prefers(s, b)) {
             if (s->state == RS_MEMBER) {
-                s->count.merges++;   /* a schedule with a lower scheduler ID: leave this one and join it */
+                s->count.merges++;   /* a bigger schedule, or as big with a lower scheduler ID: join it */
             }
             target(s, t_rx_us, b);
             return RS_HEARD_OTHER;
         }
+        return RS_HEARD_IGNORED;
+    }
+    if (newer(b->schedule_version, s->version) && !accepts_newer(s, b, t_rx_us)) {
+        s->count.foreign++;   /* a false failover: not used for timing, adopted or scored */
         return RS_HEARD_IGNORED;
     }
     s->last_related_us = t_rx_us;
