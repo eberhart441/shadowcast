@@ -26,3 +26,7 @@ CONFIG_SECURE_BOOT_BUILD_SIGNED_BINARIES=n
 # Images come over plain HTTP from the host on the maintenance network: integrity is the signature and the
 # command's SHA-256, so no TLS code in the image.
 CONFIG_ESP_HTTP_CLIENT_ENABLE_HTTPS=n
+# Maintenance mode (node_ota.c) runs in app_main, on the main task, and esp_ota_end checks the RSA-3072 signature
+# there. With the default 3584-byte stack every update panicked at "Verifying image signature..." (bench,
+# 2026-11-16: reset reason 4, back on the old image, no report).
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192

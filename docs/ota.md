@@ -36,6 +36,16 @@ Boards that ran the single-app image need one more USB flash: the new partition 
 bootloader with rollback, and a **signed** image. A board that runs an unsigned image refuses every update, because
 it checks new images against the key in its own image's signature block.
 
+Boards flashed before 2026-11-16 also need one USB flash with an image that has the 8 KB main task stack
+(`CONFIG_ESP_MAIN_TASK_STACK_SIZE` in `firmware/node/sdkconfig.defaults`). Their maintenance mode checks the
+signature on the old 3584-byte stack and panics at "Verifying image signature...": the node restarts into its old
+image and never reports, so the rollout stops with "no report". It is the running image that checks, so an update
+cannot fix this; a USB flash can.
+
+Windows Mobile Hotspot turns itself off a few minutes after its last device leaves, which can happen while nodes
+install and run their health check; they then cannot report. Keep it on for the whole rollout (Settings, Mobile
+hotspot, power saving off).
+
 ```
 cd firmware/node
 idf.py -B build set-target esp32c5 && idf.py -B build build       # the image is built unsigned (as in CI)
