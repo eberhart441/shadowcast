@@ -143,6 +143,11 @@ def provision(key: str, serial: str, port: str, role: str, number: int, image_sh
         reply = node_cmd(key, ["set", "role=gateway"], "set role=gateway")
         key_check = ""
     else:
+        # The role is kept in NVS across flashes, so a board that was a gateway stays one unless told otherwise.
+        reply = node_cmd(key, ["set", "role=transceiver"], "set role=transceiver")
+        if reply is None:
+            return None
+        time.sleep(1.0)  # it saves and restarts
         reply = node_cmd(key, ["key", str(KIT_KEY)], "give the kit key")
         key_check = reply.split("check=")[1].split()[0] if reply and "check=" in reply else ""
     if reply is None:
@@ -152,6 +157,9 @@ def provision(key: str, serial: str, port: str, role: str, number: int, image_sh
     if show is None:
         return None
     show = " ".join(show.split())
+    if f"role={role}" not in show:
+        print(f"  FAILED: the board does not report role={role}: {show}")
+        return None
     # "configured=no" only means no settings were stored with `node.py set`; a transceiver runs on the defaults.
     # What matters is that it holds the kit key and its signing passed the self-test, which `key` reports.
     if role == "transceiver":
