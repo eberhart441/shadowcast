@@ -74,6 +74,14 @@ round.
   version evicted every healthy member. In the simulator (`a_board_browning_out_does_not_drag_the_healthy_boards_around`,
   and `--report` for the full table), healthy boards of 5 with one such board were evicted 26 to 29 times a minute
   before and about 6 after, with nothing else changed in any other scenario.
+- **Re-planning after a heard frame** (the node glue, `arm_next_slot`, mirrored by the simulator's `sim_rearm`):
+  a send due within the 200 µs look-ahead is never pushed to the next round; `rs_take` still refuses it at fire
+  time if the plan changed. *Amended 2026-11-16:* without that, a frame heard just before a node's own slot moved
+  its send a round on. With the C5's ~1.3 ms send latency the previous slot's frame lands about 190 µs before the
+  slot once slots are short (16 nodes at 40 Hz), so every other member fell silent and the scheduler dropped them:
+  in the simulator 30 evictions a minute at 16 nodes and 43 at 30 (99 and 158 with low jitter), now 0.4 and 1.0;
+  16 nodes form one schedule in 3 s instead of 21, and 30 nodes in 16 s instead of never.
+  `a_slow_radio_keeps_every_member_of_a_big_round`; `--sweep` separates base latency, jitter and spikes.
 - **Capacity and guard.** The scheduler admits no more members than fit with slot length ≥ max(1 ms, airtime of a
   full round broadcast + guard); refused requests are counted. A node whose slot timer fires more than the guard
   late skips the slot (counted) instead of running into the next one. `guard_us` is a kit-wide setting, 50 to

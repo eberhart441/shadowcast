@@ -106,6 +106,7 @@ typedef struct {
     uint32_t raw_sent;          /* round broadcasts with raw CSI it sent */
     uint32_t rx_loss_permille;  /* this share of the frames it would hear is lost (a weak radio, a dying battery) */
     uint32_t lost_random;       /* round broadcasts from members lost at random (as receiver, a member) */
+    uint32_t skipped_rounds;    /* its own round broadcasts rs_take refused (as a member) */
 } sim_node_t;
 
 typedef struct {
@@ -136,10 +137,12 @@ typedef struct {
     int64_t rx_latency_us;
     uint32_t collisions;        /* round broadcasts lost because another frame overlapped them */
     uint32_t loss_permille;     /* every delivery is lost with this chance, on top of overlaps (a real room) */
+    int64_t last_rx[SIM_MAX_NODES][SIM_MAX_NODES];   /* trace: real time a frame from [sender] reached [node] */
 } sim_t;
 
 static sim_t g_sim;
 static bool g_trace;   /* --trace N: print every eviction in scenario N */
+static int64_t g_trace_from_us;   /* --trace N MODE T: also print the scheduler's lost frames for 120 ms from T us */
 
 static uint32_t sim_rand(sim_t *sim)
 {
@@ -177,8 +180,19 @@ static void sim_setup(sim_t *sim, int n, uint32_t hz, uint32_t seed)
     }
 }
 
+/* As node_transceiver.c arm_next_slot: re-plan after every heard frame, looking 200 us ahead, but leave a send that
+ * is due within those 200 us alone (rs_take still refuses it at fire time if the plan really changed). Without that
+ * (g_keep_imminent false, the first version), a frame heard just before a node's own slot pushed its send to the next
+ * round: with the C5's ~1.3 ms send latency the previous slot's frame lands ~190 us before the slot at 16 nodes, so
+ * every other member fell silent and was dropped (bench latency sweep, 2026-11-16). */
+static bool g_keep_imminent = true;
+
 static void sim_rearm(sim_node_t *nd, int64_t now, bool force)
 {
+    if (!force && g_keep_imminent && nd->armed.kind != RS_TX_NONE && nd->armed.at_us >= now
+            && nd->armed.at_us <= now + 200) {
+        return;   /* about to fire: let it */
+    }
     rs_tx_t tx = rs_next(&nd->rs, now + 200);
     if (force || tx.kind != nd->armed.kind || tx.round != nd->armed.round || llabs(tx.at_us - nd->armed.at_us) >= 100) {
         nd->armed = tx;   /* node_main re-arms only when the time moved by 100 us or more */
@@ -234,7 +248,44 @@ static void sim_fire(sim_t *sim, int i)
     int64_t now = clock_of(nd, sim->now);
     rs_tx_t tx = nd->armed;
     rb_broadcast_t b;
-    if (rs_take(&nd->rs, &tx, now, &b)) {
+    uint32_t membership_before = nd->rs.membership;
+    int64_t seen_before[RB_MAX_NODES];
+    memcpy(seen_before, nd->rs.seen_us, sizeof seen_before);
+    bool took = rs_take(&nd->rs, &tx, now, &b);
+    uint32_t gone = membership_before & ~nd->rs.membership;
+    if (g_trace && took && gone && nd->rs.state == RS_MEMBER) {
+        for (uint8_t x = 0; x < RB_MAX_NODES; x++) {
+            if (!(gone >> x & 1u)) {
+                continue;
+            }
+            int who = -1;
+            for (int j = 0; j < sim->n; j++) {
+                uint8_t id[RB_NODE_ID_BYTES];
+                make_id(id, j + 1);
+                if (memcmp(id, nd->rs.member_id[x], RB_NODE_ID_BYTES) == 0 || (sim->node[j].rs.my_index == x
+                        && sim->node[j].rs.version == nd->rs.version - 1u)) {
+                    who = j;
+                }
+            }
+            printf("  t=%7.3f s: scheduler node %d drops index %u (node %d): its seen time was %lld us old; a frame "
+                   "from that node last reached it %lld us ago; that node is %s, slot %u of %u\n",
+                   (double)sim->now / 1e6, i, x, who, (long long)(now - seen_before[x]),
+                   who >= 0 ? (long long)(sim->now - sim->last_rx[i][who]) : -1LL,
+                   who >= 0 && sim->node[who].rs.state == RS_MEMBER ? "a member" : "not a member",
+                   who >= 0 ? rs_slot_of(membership_before, x) : 0, (unsigned)popcount(membership_before) + 1u);
+        }
+    }
+    if (!took && tx.kind == RS_TX_ROUND && nd->rs.state == RS_MEMBER) {
+        nd->skipped_rounds++;   /* a member's own round broadcast did not go out: the plan moved, or it came late */
+    }
+    if (g_trace && g_trace_from_us && sim->now >= g_trace_from_us && sim->now < g_trace_from_us + 120000) {
+        printf("    t=%9.4f ms: node %2d fires %s (kind %d, round %u): %s; state %d, index %u, slot %u/%u, v%u\n",
+               (double)sim->now / 1e3, i, tx.kind == RS_TX_ROUND ? "ROUND" : "other", (int)tx.kind, tx.round,
+               took ? "SENT" : "refused", (int)nd->rs.state, nd->rs.my_index,
+               rs_slot_of(nd->rs.membership, nd->rs.my_index), (unsigned)popcount(nd->rs.membership) + 1u,
+               nd->rs.version);
+    }
+    if (took) {
         if (b.frame_type == RB_FRAME_ROUND) {
             b.n_reports = link_table_close_round(&nd->links, b.membership, b.node_index, b.reports);
             for (uint8_t k = 0; k < b.n_reports; k++) {
@@ -331,6 +382,13 @@ static void sim_deliver(sim_t *sim, const sim_event_t *e)
                     sim->collisions++;
                 }
             }
+            if (g_trace && g_trace_from_us && sim->now >= g_trace_from_us && sim->now < g_trace_from_us + 120000
+                    && nd->rs.state == RS_MEMBER && rs_slot_of(nd->rs.membership, nd->rs.my_index) == 0) {
+                printf("    t=%9.4f ms: scheduler %d loses node %d's frame [%.3f, %.3f] ms, overlapped by %s %d's "
+                       "frame [%.3f, %.3f] ms\n", (double)sim->now / 1e3, e->node, f->sender, (double)f->start / 1e3,
+                       (double)f->end / 1e3, g->sender == e->node ? "ITS OWN" : "node", g->sender,
+                       (double)g->start / 1e3, (double)g->end / 1e3);
+            }
             return;
         }
     }
@@ -346,6 +404,11 @@ static void sim_deliver(sim_t *sim, const sim_event_t *e)
     int64_t now = clock_of(nd, sim->now);
     if (rb_auth_fresh(&nd->auth, b.node_id, b.round, now) != RB_AUTH_OK) {
         nd->replays++;   /* node_main drops it before the scheduler sees it */
+        if (g_trace && g_trace_from_us && sim->now >= g_trace_from_us && sim->now < g_trace_from_us + 120000
+                && nd->rs.state == RS_MEMBER && rs_slot_of(nd->rs.membership, nd->rs.my_index) == 0) {
+            printf("    t=%9.4f ms: scheduler %d drops node %d's frame (round %u) as STALE\n", (double)sim->now / 1e3,
+                   e->node, f->sender, b.round);
+        }
         return;
     }
     uint32_t evicted_before = nd->rs.count.evicted;
@@ -364,6 +427,7 @@ static void sim_deliver(sim_t *sim, const sim_event_t *e)
             sched_node = j;
         }
     }
+    sim->last_rx[e->node][f->sender] = sim->now;   /* trace: a frame from this sender reached this node */
     if (rs_heard(&nd->rs, now, &b) == RS_HEARD_MEMBER) {
         link_table_heard(&nd->links, b.node_index, now, -50, NULL, 0);
         nd->delivered++;
@@ -949,7 +1013,11 @@ static void bench_send_latency_keeps_the_round_rate_and_its_members(void)
     CHECK(!any_left_member(sim), "no member was dropped in 10 s with bench send latency");
     uint8_t lo, hi;
     lateness_reported_on_links(sim, 0, &lo, &hi);
-    CHECK(hi < RS_LATENESS_MAX_CODE, "slot lateness does not saturate (codes %u..%u)", lo, hi);
+    /* No check on slot lateness here: it includes the sender's own send latency, about 1.4 ms on a C5, beyond the
+     * code's 960 us range, so it reads 31 (as on the bench). An earlier check that it did not saturate only passed
+     * because it sampled a moment with no codes at all. */
+    (void)lo;
+    (void)hi;
     sim_power_on(sim, 3);
     int64_t t_join = sim_until_one_schedule(sim, 2000000);
     CHECK(t_join >= 0, "a fourth node with bench send latency joins within 2 s (took %lld us)", (long long)t_join);
@@ -977,8 +1045,14 @@ typedef struct {
     double collision_pct, random_pct, rate;
     uint32_t dropped, evicted, merges, joins, founded, late, admitted;
     uint32_t flapper_on_samples, flapper_sched_samples;   /* 100 ms samples: flapper on / scheduler of others */
+    uint32_t skipped;            /* healthy members' own round broadcasts that did not go out */
     bool settled, one_schedule_end;
+    int64_t settle_us;           /* how long the rig took to form one schedule, -1 if not within 40 s */
 } scenario_result_t;
+
+/* The send latency model of the scenarios: bench values (2026-11-16) unless --sweep changes them. */
+static int64_t g_lat_us = 1250, g_jit_us = 300, g_spike_us = 6000;
+static uint32_t g_spike_pm = 50;
 
 static rs_counters_t sum_counters(const sim_t *sim, int skip)
 {
@@ -1003,21 +1077,23 @@ static scenario_result_t run_scenario(const scenario_t *sc)
     sim_setup(sim, sc->n, sc->hz, sc->seed);
     sim->loss_permille = sc->loss_permille;
     for (int i = 0; i < sc->n; i++) {
-        sim->node[i].tx_latency_us = 1250;
-        sim->node[i].tx_jitter_us = 300;
-        sim->node[i].tx_spike_permille = 50;
-        sim->node[i].tx_spike_us = 6000;
+        sim->node[i].tx_latency_us = g_lat_us;
+        sim->node[i].tx_jitter_us = g_jit_us;
+        sim->node[i].tx_spike_permille = g_spike_pm;
+        sim->node[i].tx_spike_us = g_spike_us;
         if (i == sc->flapper) {
             sim->node[i].rx_loss_permille = sc->flapper_rx_loss;
         }
         sim_power_on(sim, i);
     }
-    r.settled = sim_until_one_schedule(sim, 15000000) >= 0;
+    r.settle_us = sim_until_one_schedule(sim, 40000000);
+    r.settled = r.settle_us >= 0;
     sim_run(sim, sim->now + 2000000);
     rs_counters_t c0 = sum_counters(sim, sc->flapper);
     sim_reset_counts(sim);
     for (int i = 0; i < sc->n; i++) {
         sim->node[i].lost_random = 0;
+        sim->node[i].skipped_rounds = 0;
     }
     int ref = sc->flapper == 0 ? 1 : 0;
     uint16_t r0 = sim->node[ref].rs.last_sent_round;
@@ -1053,6 +1129,7 @@ static scenario_result_t run_scenario(const scenario_t *sc)
             heard += sim->node[i].delivered;
             lost += sim->node[i].lost;
             lost_random += sim->node[i].lost_random;
+            r.skipped += sim->node[i].skipped_rounds;
         }
     }
     double total = (double)(heard + lost + lost_random);
@@ -1120,6 +1197,32 @@ static void report(void)
     }
 }
 
+/* 16 and 30 nodes with the C5's slow, steady send latency (1250 + 0..100 us, no spikes) keep every member: a frame
+ * heard just before a node's own slot must not push its send to the next round (sim_rearm / arm_next_slot). With the
+ * first re-arm rule every other member fell silent: 99 evictions a minute at 16 nodes and 158 at 30 (3 seeds). */
+static void a_slow_radio_keeps_every_member_of_a_big_round(void)
+{
+    int64_t lat = g_lat_us, jit = g_jit_us;
+    uint32_t pm = g_spike_pm;
+    g_lat_us = 1250;
+    g_jit_us = 100;
+    g_spike_pm = 0;
+    static const struct { int n; uint32_t hz; } rigs[] = {{16, 40}, {30, 20}};
+    for (size_t k = 0; k < sizeof rigs / sizeof rigs[0]; k++) {
+        scenario_t sc = {"slow radio", rigs[k].n, rigs[k].hz, 30, -1, 0, 0, 0, 30000000, 711};
+        scenario_result_t r = run_scenario(&sc);
+        printf("round_scheduler: slow radio, %d nodes: formed one schedule in %.1f s, one schedule at the end %d, "
+               "evicted %u, dropped %u in 30 s\n", rigs[k].n, (double)r.settle_us / 1e6, r.one_schedule_end,
+               (unsigned)r.evicted, (unsigned)r.dropped);
+        CHECK(r.settled && r.evicted <= 1 && r.dropped <= 1 && r.one_schedule_end, "%d nodes at %u Hz with a slow radio "
+              "keep their members (evicted %u, dropped %u in 30 s)", rigs[k].n, (unsigned)rigs[k].hz,
+              (unsigned)r.evicted, (unsigned)r.dropped);
+    }
+    g_lat_us = lat;
+    g_jit_us = jit;
+    g_spike_pm = pm;
+}
+
 /* A board on a dying battery (it hears 40 %, runs 3 s, dies for 2 s, over and over) must not drag the healthy
  * boards around. Before the fix (lower serial alone won merges, and a member that heard too little could evict
  * everyone by failover) the healthy boards of 5 were evicted 26 to 29 times a minute and rejoined 32 to 43 times
@@ -1154,11 +1257,59 @@ int main(int argc, char **argv)
     }
     if (argc > 2 && strcmp(argv[1], "--trace") == 0) {
         size_t k = (size_t)atoi(argv[2]);
+        if (argc > 4) {
+            g_trace_from_us = atoll(argv[4]);
+        }
+        if (argc > 3 && strcmp(argv[3], "lowjitter") == 0) {
+            g_spike_pm = 0;
+            g_jit_us = 100;
+        }
+        if (argc > 3 && strcmp(argv[3], "nospike") == 0) {
+            g_spike_pm = 0;
+        }
         if (k < sizeof SCENARIOS / sizeof SCENARIOS[0]) {
             g_trace = true;
             printf("%s\n", SCENARIOS[k].name);
             scenario_result_t r = run_scenario(&SCENARIOS[k]);
             printf("evicted %u, dropped %u, merges %u\n", (unsigned)r.evicted, (unsigned)r.dropped, (unsigned)r.merges);
+        }
+        return 0;
+    }
+    for (int a = 1; a < argc; a++) {
+        if (strcmp(argv[a], "--old-rearm") == 0) {
+            g_keep_imminent = false;   /* compare with the first version of the re-arm rule */
+        }
+    }
+    if (argc > 1 && strcmp(argv[1], "--sweep") == 0) {
+        /* which part of the send latency costs collisions and churn: its base, its jitter, or its spikes */
+        static const struct { const char *what; int64_t lat, jit; uint32_t pm; int64_t spike; } models[] = {
+            {"bench: 1250 + 0..300 us, 5% spikes 2-6 ms", 1250, 300, 50, 6000},
+            {"no spikes: 1250 + 0..300 us", 1250, 300, 0, 0},
+            {"spikes only 1%: 1250 + 0..300 us", 1250, 300, 10, 6000},
+            {"short spikes: 5% of 0.3-1 ms", 1250, 300, 50, 1000},
+            {"fast radio: 200 + 0..100 us, 5% spikes 2-6 ms", 200, 100, 50, 6000},
+            {"fast radio, no spikes", 200, 100, 0, 0},
+            {"slow base, low jitter: 1250 + 0..100, no spikes", 1250, 100, 0, 0},
+            {"fast base, high jitter: 200 + 0..300, no spikes", 200, 300, 0, 0},
+        };
+        static const struct { int n; uint32_t hz; } rigs[] = {{8, 40}, {16, 40}, {30, 20}};
+        printf("%-48s %5s %8s %8s %8s %8s %7s\n", "send latency model (3% loss, mean of 3 seeds x 60 s)", "rig",
+               "collide%", "skipped", "dropped", "evicted", "end1");
+        for (size_t m = 0; m < sizeof models / sizeof models[0]; m++) {
+            g_lat_us = models[m].lat; g_jit_us = models[m].jit; g_spike_pm = models[m].pm; g_spike_us = models[m].spike;
+            for (size_t k = 0; k < sizeof rigs / sizeof rigs[0]; k++) {
+                double col = 0, dropped = 0, evicted = 0, skipped = 0;
+                int end1 = 0;
+                for (uint32_t s = 0; s < 3; s++) {
+                    scenario_t sc = {"sweep", rigs[k].n, rigs[k].hz, 30, -1, 0, 0, 0, 60000000, 900u + 17u * s};
+                    scenario_result_t r = run_scenario(&sc);
+                    col += r.collision_pct; dropped += r.dropped; evicted += r.evicted; end1 += r.one_schedule_end;
+                    skipped += r.skipped;
+                }
+                printf("%-48s %2d@%2u %8.2f %8.1f %8.1f %8.1f %5d/3\n", models[m].what, rigs[k].n,
+                       (unsigned)rigs[k].hz, col / 3, skipped / 3, dropped / 3, evicted / 3, end1);
+                fflush(stdout);
+            }
         }
         return 0;
     }
@@ -1178,6 +1329,7 @@ int main(int argc, char **argv)
     the_frame_cap_keeps_a_round_broadcast_inside_its_slot();
     bench_send_latency_keeps_the_round_rate_and_its_members();
     a_board_browning_out_does_not_drag_the_healthy_boards_around();
+    a_slow_radio_keeps_every_member_of_a_big_round();
     printf("round_scheduler: %d failures\n", failures);
     return failures ? 1 : 0;
 }

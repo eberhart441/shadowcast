@@ -155,13 +155,22 @@ static void log_schedule(void)
 }
 
 /* Arm the slot timer for the scheduler's next transmission. Without `force` it stays armed when the plan moved
- * by less than REARM_TOLERANCE_US (rs_take accepts a slot within the guard). */
+ * by less than REARM_TOLERANCE_US (rs_take accepts a slot within the guard), and a send due within the 200 us
+ * look-ahead is left alone: rs_take still refuses it at fire time if the plan really changed. Before, a frame heard
+ * just before this node's own slot re-planned it into the next round. With the C5's ~1.3 ms send latency the
+ * previous slot's frame lands ~190 us before the slot at 16 nodes, so every other member fell silent and was
+ * dropped (simulator, bench latency: 22 evictions a minute at 16 nodes, 99 with low jitter; now 1 and 0). The
+ * simulator's sim_rearm mirrors this rule. */
 static void arm_next_slot(bool force)
 {
     if (!s_sched_ok || !g_node_keyed) {
         return;
     }
     int64_t now = esp_timer_get_time();
+    if (!force && s_armed && s_armed_tx.kind != RS_TX_NONE && s_armed_tx.at_us >= now
+            && s_armed_tx.at_us <= now + 200) {
+        return;   /* about to fire: let it */
+    }
     rs_tx_t tx = rs_next(&s_sched, now + 200);
     if (!force && s_armed && tx.kind == s_armed_tx.kind && tx.round == s_armed_tx.round
             && llabs(tx.at_us - s_armed_tx.at_us) < REARM_TOLERANCE_US) {
