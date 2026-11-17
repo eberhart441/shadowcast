@@ -44,14 +44,18 @@ class ImageServer:
 
             def do_POST(self):  # noqa: N802
                 if urlsplit(self.path).path != "/report":
+                    if log:
+                        log(f"refused a POST to {self.path!r} from {self.client_address[0]}")
                     return self._reply(404, b"not found\n")
                 length = min(int(self.headers.get("Content-Length") or 0), MAX_REPORT_BYTES)
                 text = self.rfile.read(length).decode("utf-8", "replace")
                 try:
                     report = parse_report(text, outer._key)
-                except ReportError:
+                except ReportError as e:
                     with outer._lock:
                         outer.refused_reports += 1
+                    if log:   # a refused report must not look like no report at all
+                        log(f"refused a report from {self.client_address[0]}: {e} ({text.strip()[:160]!r})")
                     return self._reply(400, b"refused\n")
                 with outer._lock:
                     outer._reports.append(report)

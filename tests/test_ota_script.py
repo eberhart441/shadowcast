@@ -62,6 +62,30 @@ def test_a_rollout_over_the_sensing_channel_is_refused_before_anything_is_opened
     assert "overlaps" in capsys.readouterr().err
 
 
+def test_checkin_gets_as_far_as_opening_the_gateway(tmp_path, monkeypatch):
+    """checkin shares rollout's code; it crashed on args.stages, an option only rollout had (bench, 2026-11-16)."""
+    import pytest
+
+    import csi.parser
+
+    key_file = tmp_path / "kit.key"
+    write_kit_key(key_file)
+    room = tmp_path / "room.json"
+    room.write_text(json.dumps({"room": {"width_m": 3, "depth_m": 2}, "nodes": {
+        "n1": {"role": "transceiver", "chip": "ESP32-C5", "x": 0, "y": 0, "serial": A},
+        "n2": {"role": "transceiver", "chip": "ESP32-C5", "x": 3, "y": 0, "serial": B}}}))
+
+    class Opened(Exception):
+        pass
+
+    def refuse(*args, **kwargs):
+        raise Opened
+
+    monkeypatch.setattr(csi.parser, "open_serial", refuse)
+    with pytest.raises(Opened):
+        ota_script.main(["checkin", "--gateway", "PORT", "--room", str(room), "--kit-key", str(key_file)])
+
+
 def round_broadcast(serial, round_no, key=TEST_KIT_KEY):
     rows = (LinkReport(1, 100, -50, 15, 0),)
     b = RoundBroadcast(FORMAT_VERSION, 1, round_no, 0, 3, 1, 0, 0b11, serial, bytes(8), rows)

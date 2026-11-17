@@ -187,9 +187,10 @@ def build_parser() -> argparse.ArgumentParser:
         if name == "rollout":
             p.add_argument("image", type=Path)
             p.add_argument("--signer", type=Path, default=DEFAULT_SIGNER, help="trusted signing key digest file")
-            p.add_argument("--stages", help="first stage sizes, comma-separated (default 2,6; then 13 per stage)")
             p.add_argument("--unchecked", action="store_true",
                            help="rig check only: serve the image without the host's check, to see a node refuse it")
+        # checkin asks in the same stages, through the same code (cmd_rollout), so it needs --stages too
+        p.add_argument("--stages", help="first stage sizes, comma-separated (default 2,6; then 13 per stage)")
         p.add_argument("--gateway", required=True, help="the gateway's serial port")
         p.add_argument("--nodes", help="names in the room config or board serials, comma-separated (default: all)")
         p.add_argument("--room", type=Path, default=DEFAULT_ROOM)
