@@ -11,7 +11,7 @@ import pytest
 
 from csi.dashboard import DashboardState
 from csi.links import calibrate_links_report
-from csi.room import load_room, stand_at_centre, stand_near_wall
+from csi.room import Stand, load_room, stand_at_centre, stand_near_wall
 from csi.simulate import simulate_room_links
 
 T0 = 1_700_000_000.0
@@ -74,7 +74,8 @@ def test_payload_is_json_serialisable_and_has_the_documented_top_level_keys():
     payload = run(tagged(person=None, duration_s=3, seed=1)).snapshot()
     json.dumps(payload)
     assert {"room", "nodes", "links", "heatmap", "status"} <= set(payload)
-    assert payload["room"] == {"width_m": 2.77, "depth_m": 1.84}
+    # the working area: the corner nodes of the 2.77 x 1.84 m rig plus 0.5 m, clamped to the plane at 0
+    assert payload["room"] == {"x0_m": 0.0, "y0_m": 0.0, "width_m": 3.27, "depth_m": 2.34, "plane_m": 10.0}
     assert {row["id"] for row in payload["links"]} == LABELS
     heat = payload["heatmap"]
     assert len(heat["cells"]) == heat["cols"] * heat["rows"]
@@ -143,7 +144,9 @@ def test_person_at_centre_is_hot_driven_by_both_diagonals_and_hotter_than_corner
 
 @pytest.mark.slow
 def test_link_that_drops_out_stops_contributing_and_its_heat_vanishes():
-    packets = quiet_then(stand_near_wall(ROOM, "left"), 10, seed=16, drop_after={LEFT: 3.0})  # drops at T0+15
+    # by the rig's left wall, half way down it (the working area reaches 0.5 m beyond the nodes, so its own
+    # wall_point would stand further down)
+    packets = quiet_then(Stand(0.25, 0.92), 10, seed=16, drop_after={LEFT: 3.0})  # drops at T0+15
     state = new_state()
     feed(state, packets, until=T0 + LEAD_S + 2.5)
     before = state.snapshot(now=T0 + LEAD_S + 2.5)

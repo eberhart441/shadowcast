@@ -94,7 +94,8 @@ def test_moving_a_node_moves_it_in_the_payload_and_keeps_links_and_thresholds(se
     status, body = post(server, {"node": "tx1", "x": 0.4, "y": 2.2})
 
     assert status == 200
-    assert body == {"node": "tx1", "x": 0.4, "y": 2.2, "saved": True, "path": str(room_file.resolve()),
+    assert body == {"node": "tx1", "x": 0.4, "y": 2.2, "area": {"x0_m": 0.0, "y0_m": 0.0, "width_m": 3.27,
+                                                               "depth_m": 2.7}, "saved": True, "path": str(room_file.resolve()),
                     "message": f"saved to {room_file.resolve()}"}
     after = get_state(server)
     assert nodes_of(after)["tx1"] == (0.4, 2.2)
@@ -110,19 +111,19 @@ def test_the_room_file_gets_the_new_position_rounded_and_keeps_everything_else(s
     original = json.loads(room_file.read_text(encoding="utf-8"))
     server = serve(room_file)
 
-    status, body = post(server, {"node": "rx2", "x": -0.123456, "y": 0.5})
+    status, body = post(server, {"node": "rx2", "x": 0.123456, "y": 0.5})
 
-    assert status == 200 and (body["x"], body["y"]) == (-0.123, 0.5)
+    assert status == 200 and (body["x"], body["y"]) == (0.123, 0.5)
     text = room_file.read_text(encoding="utf-8")
     saved = json.loads(text)
     expected = json.loads(json.dumps(original))
-    expected["nodes"]["rx2"]["x"], expected["nodes"]["rx2"]["y"] = -0.123, 0.5
+    expected["nodes"]["rx2"]["x"], expected["nodes"]["rx2"]["y"] = 0.123, 0.5
     assert saved == expected
     assert list(saved) == list(original) and list(saved["nodes"]) == list(original["nodes"])
     assert list(saved["nodes"]["rx2"]) == list(original["nodes"]["rx2"])        # key order kept
     assert text == json.dumps(expected, indent=2) + "\n"                        # the 2-space layout kept
     assert sorted(p.name for p in room_file.parent.iterdir()) == ["room.json"]  # no temporary file left
-    assert load_room(room_file).receivers[1].x == -0.123                         # and the next start reads it
+    assert load_room(room_file).receivers[1].x == 0.123                         # and the next start reads it
 
 
 def test_a_failed_write_leaves_the_file_and_the_map_unchanged(serve, room_file, monkeypatch):
@@ -158,7 +159,7 @@ def test_without_a_room_file_the_move_applies_in_memory_and_says_nothing_was_sav
     ({"node": "tx0", "x": 1.0, "y": None}, "y must be a finite number"),
     ({"node": "tx0", "x": True, "y": 1.0}, "x must be a finite number"),
     ({"node": "tx0", "x": 1.0}, "y must be a finite number"),
-    ({"node": "tx0", "x": 100.0, "y": 1.0}, "too far from the room"),
+    ({"node": "tx0", "x": 100.0, "y": 1.0}, "off the plane"),
     ({"node": 3, "x": 1.0, "y": 1.0}, "name the node"),
     ({"node": "tx0", "x": 1.0, "y": 1.0, "z": 0}, "unknown field"),
 ])

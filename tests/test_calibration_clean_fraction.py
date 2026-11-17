@@ -64,7 +64,7 @@ def test_the_live_calibration_refuses_the_same_bursty_link_with_the_same_reason(
 
     room = load_room()
     t0 = 1_700_000_000.0
-    walk = Walk((room.wall_point("left"), room.wall_point("right")), speed_mps=0.5, loop=True)
+    walk = Walk(((0.25, 0.92), (2.52, 0.92)), speed_mps=0.5, loop=True)   # wall to wall of the 2.77 x 1.84 m rig
     walking = list(simulate_room_links(person=walk, room=room, duration_s=13, seed=31, t0=t0))
     # one device timeline: the quiet part continues the counter (else it reads as a reboot); it runs past 25 s
     quiet = list(simulate_room_links(person=None, room=room, duration_s=13, seed=32, t0=t0 + 13,

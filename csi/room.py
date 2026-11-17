@@ -1,7 +1,12 @@
 """Room geometry and a simulated person's position.
 
 The room comes from ``config/room.json``: metres, origin at the top-left corner, x to the right and
-y down. Receivers (role ``receiver``) and senders (role ``sender``, with a MAC) are the nodes of the
+y down. Nodes sit on a plane of ``PLANE_M`` x ``PLANE_M`` (x and y from 0 to 10 m). The room's working area,
+the rectangle the heatmap, zones, tracker and simulated walks use, is not configured: it is the bounding box of
+the enabled nodes, padded by ``AREA_MARGIN_M`` on every side, clamped to the plane, at least ``AREA_MIN_M`` on a
+side (``working_area``). It need not start at (0, 0): ``Room.x0_m``, ``Room.y0_m`` are its top-left corner and
+``width_m``, ``depth_m`` its size. A config's ``"room": {"width_m", "depth_m"}`` is optional and ignored (older
+files carry it). A node from an older file may sit off the plane; it loads, outside the area. Receivers (role ``receiver``) and senders (role ``sender``, with a MAC) are the nodes of the
 hackathon rig; transceivers (role ``transceiver``, the default when a node gives no role) both send and
 receive round broadcasts and are told apart by their board serial. Each (receiver, sender) pair is a link,
 and so is each ordered pair of distinct transceivers (``Room.transceiver_links``), and its motion response to a person is a Gaussian falloff of the
@@ -14,8 +19,10 @@ default is ``true``. Its name is kept in ``Room.disabled``.
 Public API:
     load_room(path)                  -> Room (receivers and senders by name; optional link_weights)
     room_from_config(obj) / room_config(room)   Room from / to a parsed room.json object (round recordings keep one)
-    move_node(room, name, x, y)      -> a new Room with that node at (x, y), metres rounded to 3 decimals; ValueError
-                                        for an unknown or disabled node, a non-finite position, or one beyond reach
+    working_area(nodes)              -> (x0, y0, width, depth): the area around these nodes (see above)
+    move_node(room, name, x, y)      -> a new Room with that node at (x, y), metres rounded to 3 decimals, and the
+                                        working area refitted; ValueError for an unknown or disabled node, or a
+                                        position that is not a finite number on the plane
     save_node_position(path, name, x, y)   write a node's x, y into a room file atomically, keeping everything else
     Room.links()                     -> [(receiver Node, sender Node)] for every pair
     Room.transceiver_links()         -> [(receiving Node, transmitting Node)] for every ordered transceiver pair
@@ -47,7 +54,9 @@ STOP_FADE_S = 1.5       # a person who stops dead leaves the score within this (
 WALL_INSET_M = 0.25     # how far inside the wall a person stands for "near a wall"
 WALLS = ("left", "right", "top", "bottom")
 POSITION_DECIMALS = 3   # a moved node's x, y in metres: millimetres
-NODE_REACH = 1.0        # a moved node may sit up to this many room widths (depths) beyond each wall
+PLANE_M = 10.0          # nodes sit on x, y in [0, PLANE_M] metres; the working area never leaves it
+AREA_MARGIN_M = 0.5     # the working area reaches this far beyond the outermost nodes
+AREA_MIN_M = 1.0        # and is at least this wide and deep
 TRANSCEIVER = "transceiver"
 ROLES = ("receiver", "sender", TRANSCEIVER)
 
@@ -80,6 +89,17 @@ class Room:
     link_weights: Mapping[str, float] = field(default_factory=dict)  # link label -> weight (default 1.0)
     disabled: tuple[str, ...] = ()  # names of nodes with "enabled": false (not in receivers or senders)
     transceivers: tuple[Node, ...] = ()  # nodes that both send and receive round broadcasts
+    x0_m: float = 0.0   # the working area's top-left corner (width_m, depth_m are its size)
+    y0_m: float = 0.0
+
+    @property
+    def area(self) -> tuple[float, float, float, float]:
+        """(x0, y0, width, depth) of the working area, metres."""
+        return self.x0_m, self.y0_m, self.width_m, self.depth_m
+
+    def nodes(self) -> tuple[Node, ...]:
+        """Every enabled node: receivers, senders, then transceivers."""
+        return (*self.receivers, *self.senders, *self.transceivers)
 
     def links(self) -> list[tuple[Node, Node]]:
         return [(rx, tx) for rx in self.receivers for tx in self.senders]
@@ -98,14 +118,15 @@ class Room:
         return [(rx, tx) for rx in self.transceivers for tx in self.transceivers if rx is not tx]
 
     def wall_point(self, side: str, inset: float = WALL_INSET_M) -> tuple[float, float]:
+        cx, cy = self.x0_m + self.width_m / 2, self.y0_m + self.depth_m / 2
         if side == "left":
-            return inset, self.depth_m / 2
+            return self.x0_m + inset, cy
         if side == "right":
-            return self.width_m - inset, self.depth_m / 2
+            return self.x0_m + self.width_m - inset, cy
         if side == "top":
-            return self.width_m / 2, inset
+            return cx, self.y0_m + inset
         if side == "bottom":
-            return self.width_m / 2, self.depth_m - inset
+            return cx, self.y0_m + self.depth_m - inset
         raise ValueError(f"unknown wall {side!r}; expected one of {WALLS}")
 
 
@@ -113,8 +134,36 @@ def load_room(path: Union[str, Path] = DEFAULT_ROOM_PATH) -> Room:
     return room_from_config(json.loads(Path(path).read_text()))
 
 
+def working_area(nodes: Sequence[Node]) -> tuple[float, float, float, float]:
+    """(x0, y0, width, depth): the bounding box of ``nodes`` padded by ``AREA_MARGIN_M``, clamped to the plane
+    [0, ``PLANE_M``], and grown (about its centre, then away from a plane edge) to at least ``AREA_MIN_M`` a side.
+    Without nodes, the ``AREA_MIN_M`` square at the plane's origin."""
+    out = []
+    for values in ([n.x for n in nodes], [n.y for n in nodes]):
+        if not values:
+            out.append((0.0, AREA_MIN_M))
+            continue
+        lo, hi = min(values) - AREA_MARGIN_M, max(values) + AREA_MARGIN_M
+        if hi - lo < AREA_MIN_M:
+            mid = (lo + hi) / 2
+            lo, hi = mid - AREA_MIN_M / 2, mid + AREA_MIN_M / 2
+        lo, hi = min(max(lo, 0.0), PLANE_M), min(max(hi, 0.0), PLANE_M)
+        if hi - lo < AREA_MIN_M:                 # clamped against an edge of the plane: grow the other way
+            lo, hi = (lo, lo + AREA_MIN_M) if lo + AREA_MIN_M <= PLANE_M else (PLANE_M - AREA_MIN_M, PLANE_M)
+        out.append((round(lo, POSITION_DECIMALS), round(hi - lo, POSITION_DECIMALS)))
+    (x0, width), (y0, depth) = out
+    return x0, y0, width, depth
+
+
+def fit_area(room: Room) -> Room:
+    """``room`` with its working area fitted to its enabled nodes (``working_area``)."""
+    x0, y0, width, depth = working_area(room.nodes())
+    return replace(room, x0_m=x0, y0_m=y0, width_m=width, depth_m=depth)
+
+
 def room_from_config(config: Mapping) -> Room:
-    """A Room from a parsed ``config/room.json`` object."""
+    """A Room from a parsed ``config/room.json`` object. A ``"room"`` size in it is ignored: the working area is
+    fitted to the enabled nodes."""
     nodes, disabled = [], []
     for name, spec in sorted(config["nodes"].items()):
         enabled = spec.get("enabled", True)
@@ -128,19 +177,20 @@ def room_from_config(config: Mapping) -> Room:
             raise ValueError(f"node {name}: role must be one of {', '.join(ROLES)}, not {role!r}")
         nodes.append(Node(name, role, float(spec["x"]), float(spec["y"]), spec.get("mac", ""),
                           spec.get("chip", ""), spec.get("serial", "")))
-    return Room(
-        width_m=float(config["room"]["width_m"]),
-        depth_m=float(config["room"]["depth_m"]),
+    return fit_area(Room(
+        width_m=AREA_MIN_M,
+        depth_m=AREA_MIN_M,
         receivers=tuple(n for n in nodes if n.role == "receiver"),
         senders=tuple(n for n in nodes if n.role == "sender"),
         link_weights={k: float(v) for k, v in config.get("link_weights", {}).items()},
         disabled=tuple(disabled),
         transceivers=tuple(n for n in nodes if n.role == TRANSCEIVER),
-    )
+    ))
 
 
 def room_config(room: Room) -> dict:
-    """``room`` as a ``config/room.json`` object: ``room_from_config(room_config(room)) == room``.
+    """``room`` as a ``config/room.json`` object: ``room_from_config(room_config(room)) == room`` for a room whose
+    area is fitted to its nodes (every loaded room). No room size is written: the area follows the nodes.
 
     A disabled node keeps only its name (``"enabled": false``); its position is not in the Room.
     """
@@ -151,17 +201,18 @@ def room_config(room: Room) -> dict:
                     if value)
         nodes[node.name] = spec
     nodes.update((name, {"enabled": False}) for name in room.disabled)
-    config: dict = {"room": {"width_m": room.width_m, "depth_m": room.depth_m}, "nodes": nodes}
+    config: dict = {"nodes": nodes}
     if room.link_weights:
         config["link_weights"] = dict(room.link_weights)
     return config
 
 
 def move_node(room: Room, name: str, x: float, y: float) -> Room:
-    """``room`` with node ``name`` at (x, y) in metres, rounded to ``POSITION_DECIMALS``; everything else is kept.
+    """``room`` with node ``name`` at (x, y) in metres, rounded to ``POSITION_DECIMALS``, and the working area
+    refitted to the nodes (``working_area``); everything else is kept.
 
-    A node may sit outside the room, up to ``NODE_REACH`` room sizes beyond each wall (x from -width to 2 x width).
-    Raises ValueError for an unknown or disabled node, a position that is not a finite number, or one beyond reach.
+    Raises ValueError for an unknown or disabled node, or a position that is not a finite number on the plane
+    (x and y from 0 to ``PLANE_M``).
     """
     if name in room.disabled:
         raise ValueError(f"node {name!r} is disabled in the room config (\"enabled\": false): it is not on the map")
@@ -170,15 +221,14 @@ def move_node(room: Room, name: str, x: float, y: float) -> Room:
     if where is None:
         names = sorted(n.name for nodes in groups.values() for n in nodes)
         raise ValueError(f"unknown node {name!r}; nodes are {', '.join(names)}")
-    for axis, value, size in (("x", x, room.width_m), ("y", y, room.depth_m)):
+    for axis, value in (("x", x), ("y", y)):
         if not math.isfinite(value):
             raise ValueError(f"{axis} must be a finite number of metres, got {value!r}")
-        lo, hi = -NODE_REACH * size, (1 + NODE_REACH) * size
-        if not lo <= value <= hi:
-            raise ValueError(f"{axis} = {value:g} m is too far from the room: keep it within {lo:g} to {hi:g} m")
+        if not 0.0 <= value <= PLANE_M:
+            raise ValueError(f"{axis} = {value:g} m is off the plane: nodes sit within 0 to {PLANE_M:g} m")
     x, y = round(float(x), POSITION_DECIMALS), round(float(y), POSITION_DECIMALS)
     moved = tuple(replace(n, x=x, y=y) if n.name == name else n for n in groups[where])
-    return replace(room, **{where: moved})
+    return fit_area(replace(room, **{where: moved}))
 
 
 def save_node_position(path: Union[str, Path], name: str, x: float, y: float) -> None:
@@ -314,4 +364,4 @@ def stand_near_wall(room: Room, side: str, inset: float = WALL_INSET_M) -> Stand
 
 
 def stand_at_centre(room: Room) -> Stand:
-    return Stand(room.width_m / 2, room.depth_m / 2)
+    return Stand(room.x0_m + room.width_m / 2, room.y0_m + room.depth_m / 2)

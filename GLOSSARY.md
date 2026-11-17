@@ -9,8 +9,11 @@ The physical installation: the boards, their positions and the room they sit in,
 _See_: `config/room.json`, [ADR-0014](docs/adr/0014-room-model-as-config.md)
 
 **Room**:
-The rectangle the rig covers, in metres, with the origin at the top-left corner, x to the right and y down.
-_See_: `csi/room.py` (`Room`, `load_room`)
+The rectangle the rig covers, in metres, with the origin at the top-left corner, x to the right and y down. It is
+not configured: it is the **working area**, the bounding box of the enabled nodes padded by 0.5 m on every side,
+at least 1 m x 1 m, on a plane of 10 m x 10 m (x and y from 0 to 10). It need not start at (0, 0), and it is
+refitted when a node is moved. The heatmap, zones, tracker and simulated walks use it.
+_See_: `csi/room.py` (`Room`, `working_area`, `load_room`), [ADR-0014](docs/adr/0014-room-model-as-config.md)
 
 **Node**:
 A board at a fixed position in the room, with a role (receiver, sender or transceiver) and a name such as `rx1`, `tx0` or `n3`. A node with no role is a transceiver. A node with `"enabled": false` is ignored everywhere: it has no links and its port is never opened.

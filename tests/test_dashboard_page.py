@@ -232,10 +232,10 @@ def test_page_has_marked_pure_geometry_block_and_the_map_draws_from_it():
 @pytest.mark.slow
 @needs_node
 def test_map_bounds_are_the_room_and_every_node_plus_a_0_3_m_margin(tmp_path):
-    payload = star_payload()
+    payload = star_payload()    # area: the nodes plus 0.5 m, clamped to the plane: (0, 0) to (3.27, 2.34)
     b = run_geometry(tmp_path, payload["room"], payload["nodes"])["bounds"]
-    assert b["x0"] == pytest.approx(-0.3) and b["x1"] == pytest.approx(2.77 + 0.3)
-    assert b["y0"] == pytest.approx(-1.5 - 0.3) and b["y1"] == pytest.approx(1.84 + 0.3)
+    assert b["x0"] == pytest.approx(-0.3) and b["x1"] == pytest.approx(3.27 + 0.3)
+    assert b["y0"] == pytest.approx(-1.5 - 0.3) and b["y1"] == pytest.approx(2.34 + 0.3)
 
 
 @pytest.mark.slow
@@ -245,7 +245,7 @@ def test_map_bounds_without_an_outside_node_are_just_the_room_plus_margin(tmp_pa
     inside = [n for n in payload["nodes"] if n["name"] != "rx3"]
     b = run_geometry(tmp_path, payload["room"], inside)["bounds"]
     assert b["x0"] == pytest.approx(-0.3) and b["y0"] == pytest.approx(-0.3)
-    assert b["x1"] == pytest.approx(2.77 + 0.3) and b["y1"] == pytest.approx(1.84 + 0.3)
+    assert b["x1"] == pytest.approx(3.27 + 0.3) and b["y1"] == pytest.approx(2.34 + 0.3)
 
 
 @pytest.mark.slow
@@ -357,18 +357,21 @@ def test_the_map_lets_a_node_be_dragged_and_posts_its_position_when_commands_are
 
 DRAG_HARNESS = """
 %(geometry)s
-var room = { width_m: 3, depth_m: 2 };
+var room = { x0_m: 4, y0_m: 5, width_m: 3, depth_m: 2, plane_m: 10 };
 var X = function (x) { return 10 + 100 * x; }, Y = function (y) { return 10 + 100 * y; };
 var nodes = [{ name: "a", x: 0, y: 0 }, { name: "b", x: 1, y: 1 }];
 console.log(JSON.stringify({
-  inside: clampToReach(1.25, 0.5, room), far: clampToReach(-7, 9, room),
+  inside: clampToPlane(1.25, 0.5, room), far: clampToPlane(-7, 19, room),
+  bounds: mapBounds(room, [{ x: 5, y: 6 }]), out: isOutsideRoom({ x: 3.9, y: 6 }, room),
+  in: isOutsideRoom({ x: 4.1, y: 6 }, room), leader: leaderEnd({ x: 3, y: 9 }, room),
+  ticks: ticks(4.2, 6), wide: ticks(0, 10).length,
   hit: nodeAt(nodes, X, Y, 115, 104, 14), miss: nodeAt(nodes, X, Y, 60, 60, 14)
 }));
 """
 
 
 @needs_node
-def test_a_dragged_node_stays_within_one_room_size_of_the_walls_and_is_picked_near_its_centre(tmp_path):
+def test_a_dragged_node_stays_on_the_plane_the_frame_follows_the_area_and_a_node_is_picked_near_its_centre(tmp_path):
     html = PAGE.read_text(encoding="utf-8")
     script = tmp_path / "drag_harness.js"
     script.write_text(DRAG_HARNESS % {"geometry": html[html.index(GEOMETRY_BEGIN):html.index(GEOMETRY_END)]},
@@ -377,5 +380,10 @@ def test_a_dragged_node_stays_within_one_room_size_of_the_walls_and_is_picked_ne
     assert proc.returncode == 0, proc.stderr
     out = json.loads(proc.stdout)
     assert out["inside"] == {"x": 1.25, "y": 0.5}
-    assert out["far"] == {"x": -3, "y": 4}             # -1 x width, 2 x depth: what the server accepts
+    assert out["far"] == {"x": 0, "y": 10}             # the 10 m x 10 m plane: what the server accepts
+    # an area away from the origin: the frame, inside/outside and the leader follow its origin
+    assert out["bounds"] == {"x0": pytest.approx(3.7), "y0": pytest.approx(4.7), "x1": pytest.approx(7.3),
+                             "y1": pytest.approx(7.3)}
+    assert out["out"] is True and out["in"] is False and out["leader"] == {"x": 4, "y": 7}
+    assert out["ticks"] == [4.5, 5, 5.5, 6] and out["wide"] == 11      # 1 m ticks across a 10 m area
     assert out["hit"]["name"] == "b" and out["miss"] is None

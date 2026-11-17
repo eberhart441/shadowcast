@@ -31,3 +31,15 @@ The rig changed constantly during the hackathon: chips were swapped between role
 
 - **Eight rig changes after `447346d`, each a commit touching only `config/room.json`:** `c3334f4` (15:09, enable S3 `rx3`), `6a8598d` (15:15, move it beyond the top wall), `5c705c9` (15:51, `rx1` to C5, `rx3` off), `6b0bab3` (15:59, `rx3` back as a C5), `5fc978c` (16:04, onto the top wall), `c3220bc` (16:14, `rx3` off), `33dbc43` (21:47, `rx2` to S3), `7cc6184` (22:07, `rx2` and `tx0` to C5).
 - **Scaling checked without hardware:** `python scripts/links_live.py --simulate-links --room tests/fixtures/room_5node.json` lists the six links of a three-receiver layout (README "Scaling up").
+
+## Amendment, 2026-11-16: the room size follows the nodes
+
+The room rectangle is no longer configured. Nodes sit on a fixed plane of 10 m x 10 m (x and y from 0 to 10 m,
+`csi.room.PLANE_M`), and the room the system uses (the working area: map frame, heatmap grid, zones, room state,
+tracker, simulated walks) is the bounding box of the enabled nodes, padded by 0.5 m on every side, clamped to the
+plane, at least 1 m a side. It may start away from (0, 0). It is refitted in memory when a node is dragged on the
+dashboard (`POST /api/node-position`, which accepts positions on the plane only); per-link state is kept and the
+grid-shaped state (smoothed heatmap, zone holds, motion track) restarts when the area changes. A `"room":
+{"width_m", "depth_m"}` block in a room file is optional and ignored, so older files still load; a node of an older
+file that sits off the plane loads too, outside the area. Why: the user wanted the area to fit the nodes rather
+than a fixed 2.77 m x 1.84 m rectangle, up to 10 m x 10 m.

@@ -4,7 +4,9 @@
 pipeline ``push_broadcast(host_ts, data)`` does the same from one round broadcast's link reports (csi/rounds.py).
 ``snapshot(now)`` returns one JSON-serialisable dict:
 
-    room      {width_m, depth_m, zones}
+    room      {x0_m, y0_m, width_m, depth_m, plane_m, zones}
+                the working area (csi/room.py): from (x0_m, y0_m), width by depth, fitted around the nodes on the
+                plane_m x plane_m plane
                 zones: [{id, x0, y0, x1, y1}], the room state's zones (csi/room_state.py), "A1" top-left; only
                 for a room with transceivers
     nodes     [{name, role, chip, x, y}]              receivers, senders, then transceivers
@@ -68,7 +70,7 @@ from .heatmap import RTI, Heatmap
 from .links import LinkMonitor, NO_SIGNAL, UNCALIBRATED, WARMUP, room_link_ids
 from .parser import CSIPacket
 from .raw_mode import RawMode
-from .room import Node, Room, move_node
+from .room import PLANE_M, Node, Room, move_node
 from .room_state import POSSIBLY_OCCUPIED_S
 from .round_auth import TEST_KIT_KEY
 from .rounds import RoundIngest
@@ -89,12 +91,15 @@ class DashboardState:
         self._ingest = RoundIngest(room, kit_key)
         self._raw = RawMode(room, kit_key)
         self._heat = Heatmap(room, **heatmap_params)
-        self._track = Tracker(room.width_m, room.depth_m, self._heat.centres)
+        self._track = self._tracker(room)
         self._senders = {tx.mac: tx.name for tx in room.senders}
         self._receivers = {rx.name for rx in room.receivers}
         self._last_host: Optional[float] = None
         self._heard_at: dict[str, float] = {}   # transceiver name -> host time its last round broadcast arrived
         self._lateness = SlotLateness()
+
+    def _tracker(self, room: Room) -> Tracker:
+        return Tracker(room.width_m, room.depth_m, self._heat.centres, x0_m=room.x0_m, y0_m=room.y0_m)
 
     def push(self, receiver: str, pkt: CSIPacket) -> None:
         self._monitor.push(receiver, pkt)
@@ -162,12 +167,17 @@ class DashboardState:
 
     def move_node(self, name: str, x: float, y: float) -> Node:
         """Put node ``name`` at (x, y) metres (csi.room.move_node: rounded to mm; ValueError for an unknown or
-        disabled node or a bad position) and rebuild what depends on geometry: the heatmap's footprints or RTI
-        matrix and the transceiver room state's zone coverage. Link states, thresholds and baselines are kept.
-        Returns the moved node."""
+        disabled node or a node off the plane), refit the working area, and rebuild what depends on geometry: the
+        heatmap's footprints or RTI matrix and the transceiver room state's zone coverage. Link states, detectors,
+        thresholds and baselines are kept. When the working area changed, the grid-shaped state restarts: the
+        smoothed heatmap, the zones' MOTION and possibly-occupied holds, and the motion track. Returns the moved
+        node."""
         room = move_node(self._room, name, x, y)
+        area_changed = room.area != self._room.area
         self._heat.set_room(room)
         self._monitor.set_room(room)
+        if area_changed:
+            self._track = self._tracker(room)
         self._room = room
         return next(n for n in (*room.receivers, *room.senders, *room.transceivers) if n.name == name)
 
@@ -286,7 +296,9 @@ class DashboardState:
 
     def _room_payload(self) -> dict:
         """Room size, and the zones of a transceiver room (fixed per layout, so safe to read off the lock)."""
-        out = {"width_m": self._room.width_m, "depth_m": self._room.depth_m}
+        room = self._room
+        out = {"x0_m": room.x0_m, "y0_m": room.y0_m, "width_m": room.width_m, "depth_m": room.depth_m,
+               "plane_m": PLANE_M}
         zones = self._monitor.room_zones
         if zones is not None:
             out["zones"] = [{"id": z.id, "x0": _round(z.x0), "y0": _round(z.y0), "x1": _round(z.x1), "y1": _round(z.y1)}
@@ -299,12 +311,13 @@ class DashboardState:
         return [{"name": n.name, "role": n.role, "chip": n.chip, "x": n.x, "y": n.y} for n in nodes]
 
     def _heatmap_payload(self, cap: "Capture") -> dict:
-        heat = self._heat
+        heat, room = self._heat, self._room
         cells = np.round(np.asarray(cap.heat_values, dtype=float), PAYLOAD_DECIMALS).tolist()
         return {
             "cols": heat.cols,
             "rows": heat.rows,
-            "extents": {"x_min": 0.0, "y_min": 0.0, "x_max": self._room.width_m, "y_max": self._room.depth_m},
+            "extents": {"x_min": room.x0_m, "y_min": room.y0_m, "x_max": room.x0_m + room.width_m,
+                        "y_max": room.y0_m + room.depth_m},
             "cells": cells,
             "max": max(cells) if cells else 0.0,
             "contributing": sorted(cap.contributing),

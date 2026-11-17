@@ -518,11 +518,17 @@
   }
 
   // ---- geometry: pure (tested with node) begin
-  // The map frame in metres: the room rectangle and every node, plus a margin. A node may sit outside the
-  // room (x or y below 0 or beyond the room size), so the frame follows the nodes.
+  // The room is the working area (payload room: x0_m, y0_m, width_m, depth_m), fitted around the nodes by the server
+  // on a plane_m x plane_m plane (csi/room.py). The map frame in metres: the area and every node, plus a margin. A node
+  // from an older room file may sit off the plane and so outside the area; the frame follows it, and it gets a dashed
+  // leader to the area's edge.
   var MAP_MARGIN_M = 0.3;
+  function areaOf(room) {
+    var x0 = room.x0_m || 0, y0 = room.y0_m || 0;
+    return { x0: x0, y0: y0, x1: x0 + room.width_m, y1: y0 + room.depth_m };
+  }
   function mapBounds(room, nodes) {
-    var x0 = 0, y0 = 0, x1 = room.width_m, y1 = room.depth_m;
+    var a = areaOf(room), x0 = a.x0, y0 = a.y0, x1 = a.x1, y1 = a.y1;
     (nodes || []).forEach(function (n) {
       x0 = Math.min(x0, n.x); y0 = Math.min(y0, n.y);
       x1 = Math.max(x1, n.x); y1 = Math.max(y1, n.y);
@@ -530,11 +536,19 @@
     return { x0: x0 - MAP_MARGIN_M, y0: y0 - MAP_MARGIN_M, x1: x1 + MAP_MARGIN_M, y1: y1 + MAP_MARGIN_M };
   }
   function isOutsideRoom(n, room) {
-    return n.x < 0 || n.y < 0 || n.x > room.width_m || n.y > room.depth_m;
+    var a = areaOf(room);
+    return n.x < a.x0 || n.y < a.y0 || n.x > a.x1 || n.y > a.y1;
   }
-  // the room point nearest a node: where a node outside the room gets its dashed leader
+  // the area point nearest a node: where a node outside the area gets its dashed leader
   function leaderEnd(n, room) {
-    return { x: Math.min(room.width_m, Math.max(0, n.x)), y: Math.min(room.depth_m, Math.max(0, n.y)) };
+    var a = areaOf(room);
+    return { x: Math.min(a.x1, Math.max(a.x0, n.x)), y: Math.min(a.y1, Math.max(a.y0, n.y)) };
+  }
+  // the metre ticks and grid lines over [lo, hi]: every 0.5 m, or every 1 m across more than 5 m
+  function ticks(lo, hi) {
+    var step = hi - lo > 5 ? 1 : 0.5, out = [];
+    for (var k = Math.ceil(lo / step - 1e-9); k * step <= hi + 1e-9; k++) out.push(Math.round(k * step * 10) / 10);
+    return out;
   }
   // a node's label goes toward the middle of the frame, so it stays on the canvas
   function labelSide(n, b) {
@@ -545,13 +559,10 @@
       hAlign: towardRight ? "left" : "right", vAlign: towardDown ? "top" : "bottom"
     };
   }
-  // where a dragged node may go: up to one room size beyond each wall (the server refuses a node further out)
-  var NODE_REACH = 1;
-  function clampToReach(x, y, room) {
-    return {
-      x: Math.min((1 + NODE_REACH) * room.width_m, Math.max(-NODE_REACH * room.width_m, x)),
-      y: Math.min((1 + NODE_REACH) * room.depth_m, Math.max(-NODE_REACH * room.depth_m, y))
-    };
+  // where a dragged node may go: the plane, 0 to room.plane_m on each axis (the server refuses a node off it)
+  function clampToPlane(x, y, room) {
+    var top = room.plane_m == null ? Infinity : room.plane_m;
+    return { x: Math.min(top, Math.max(0, x)), y: Math.min(top, Math.max(0, y)) };
   }
   // the node nearest the point (px, py) in css px, if its centre is within hitPx; X and Y map metres to css px
   function nodeAt(nodes, X, Y, px, py, hitPx) {
@@ -620,7 +631,7 @@
     var s = fw / spanW;
     return {
       W: cssWFinal, H: cssH, s: s, b: b,
-      rx0: MAP_PAD.left + (0 - b.x0) * s, ry0: MAP_PAD.top + (0 - b.y0) * s,   // room rectangle, in css px
+      rx0: MAP_PAD.left + ((room.x0_m || 0) - b.x0) * s, ry0: MAP_PAD.top + ((room.y0_m || 0) - b.y0) * s,   // the area, css px
       rw: room.width_m * s, rh: room.depth_m * s,
       X: function (x) { return MAP_PAD.left + (x - b.x0) * s; },
       Y: function (y) { return MAP_PAD.top + (y - b.y0) * s; }
@@ -689,13 +700,14 @@
     ctx.strokeStyle = "rgba(154, 167, 180, 0.14)";
     ctx.lineWidth = 1;
     ctx.beginPath();
-    for (var gx = 0.5; gx < room.width_m; gx += 0.5) { ctx.moveTo(X(gx), Y(0)); ctx.lineTo(X(gx), Y(room.depth_m)); }
-    for (var gy = 0.5; gy < room.depth_m; gy += 0.5) { ctx.moveTo(X(0), Y(gy)); ctx.lineTo(X(room.width_m), Y(gy)); }
+    var area = areaOf(room), xs = ticks(area.x0, area.x1), ys = ticks(area.y0, area.y1);
+    xs.forEach(function (gx) { ctx.moveTo(X(gx), Y(area.y0)); ctx.lineTo(X(gx), Y(area.y1)); });
+    ys.forEach(function (gy) { ctx.moveTo(X(area.x0), Y(gy)); ctx.lineTo(X(area.x1), Y(gy)); });
     ctx.stroke();
     ctx.restore();
 
-    // room outline and metre ticks (x along the bottom edge, y down the left edge); the room's own
-    // coordinates, 0 to width and 0 to depth, and nothing beyond the room rectangle
+    // area outline and metre ticks (x along the bottom edge, y down the left edge), in plane coordinates, and
+    // nothing beyond the area
     ctx.save();
     ctx.strokeStyle = "#8b949e";
     ctx.lineWidth = 2;
@@ -705,26 +717,18 @@
     ctx.fillStyle = "#9aa7b4";
     ctx.font = TICK_FONT;
     ctx.beginPath();
-    for (var tx = 0; tx <= room.width_m + 1e-9; tx += 0.5) {
-      ctx.moveTo(X(tx), Y(room.depth_m)); ctx.lineTo(X(tx), Y(room.depth_m) + 5);
-    }
-    for (var ty = 0; ty <= room.depth_m + 1e-9; ty += 0.5) {
-      ctx.moveTo(X(0) - 5, Y(ty)); ctx.lineTo(X(0), Y(ty));
-    }
+    xs.forEach(function (tx) { ctx.moveTo(X(tx), Y(area.y1)); ctx.lineTo(X(tx), Y(area.y1) + 5); });
+    ys.forEach(function (ty) { ctx.moveTo(X(area.x0) - 5, Y(ty)); ctx.lineTo(X(area.x0), Y(ty)); });
     ctx.stroke();
     ctx.textAlign = "center";
     ctx.textBaseline = "top";
-    for (var lx = 0; lx <= room.width_m + 1e-9; lx += 0.5) {
-      ctx.fillText(String(lx), X(lx), Y(room.depth_m) + 8);
-    }
+    xs.forEach(function (lx) { ctx.fillText(String(lx), X(lx), Y(area.y1) + 8); });
     ctx.textAlign = "right";
     ctx.textBaseline = "middle";
-    for (var ly = 0; ly <= room.depth_m + 1e-9; ly += 0.5) {
-      ctx.fillText(String(ly), X(0) - 8, Y(ly));
-    }
+    ys.forEach(function (ly) { ctx.fillText(String(ly), X(area.x0) - 8, Y(ly)); });
     ctx.textAlign = "center";
     ctx.textBaseline = "top";
-    ctx.fillText("metres: x across, y down", g.rx0 + g.rw / 2, Y(room.depth_m) + 26);
+    ctx.fillText("metres: x across, y down", g.rx0 + g.rw / 2, Y(area.y1) + 26);
     ctx.restore();
 
     if (room.zones && p.status.room && p.status.room.zones) drawZones(room.zones, p.status.room.zones, X, Y);
@@ -925,7 +929,7 @@
         return;
       }
       if (ev.pointerId !== drag.pointerId) return;
-      var at = clampToReach(view.b.x0 + (pt.x - MAP_PAD.left) / view.s, view.b.y0 + (pt.y - MAP_PAD.top) / view.s,
+      var at = clampToPlane(view.b.x0 + (pt.x - MAP_PAD.left) / view.s, view.b.y0 + (pt.y - MAP_PAD.top) / view.s,
                             shown.room);
       drag.x = Math.round(at.x * 100) / 100;
       drag.y = Math.round(at.y * 100) / 100;
@@ -987,7 +991,7 @@
   }
 
   function drawWaiting() {
-    var room = { width_m: 2.77, depth_m: 1.84 };
+    var room = { x0_m: 0, y0_m: 0, width_m: 2.77, depth_m: 1.84 };
     var g = sizeMap(room, mapBounds(room, []));
     view = g;
     ctx.clearRect(0, 0, g.W, g.H);

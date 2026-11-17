@@ -491,7 +491,7 @@ scripts/check.sh --full     # ruff + all 447 tests
 ├── .github/workflows/ci.yml   CI: ruff + full test suite on each pull request and push to main; superseded runs cancelled
 ├── .githooks/pre-push         runs scripts/check.sh before a push (opt in: git config core.hooksPath .githooks)
 ├── config/
-│   ├── room.json              the live rig: room size, nodes (role, chip, x/y, mac, USB serial, enabled), link weights
+│   ├── room.json              the live rig: nodes (role, chip, x/y, mac, USB serial, enabled), link weights
 │   └── room_c5_only.json      an earlier layout, kept for reference
 ├── csi/                       the Python package (21 modules; see section 2)
 ├── data/                      recordings and calibration files; gitignored except .gitkeep

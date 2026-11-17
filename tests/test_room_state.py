@@ -94,8 +94,11 @@ class Visits:
 
 
 def grid(room, inset=0.3, nx=5, ny=3):
-    """Points spread over the whole room, the outer ones ``inset`` from the walls (corners included)."""
-    return [(inset + i * (room.width_m - 2 * inset) / (nx - 1), inset + j * (room.depth_m - 2 * inset) / (ny - 1))
+    """Points spread over the rectangle of the nodes (the walls the nodes stand on), the outer ones ``inset`` from
+    its edges (corners included). The room's working area reaches 0.5 m beyond the nodes, where no link passes."""
+    xs, ys = [n.x for n in room.nodes()], [n.y for n in room.nodes()]
+    x0, y0, w, d = min(xs), min(ys), max(xs) - min(xs), max(ys) - min(ys)
+    return [(x0 + inset + i * (w - 2 * inset) / (nx - 1), y0 + inset + j * (d - 2 * inset) / (ny - 1))
             for j in range(ny) for i in range(nx)]
 
 

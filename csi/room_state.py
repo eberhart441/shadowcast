@@ -116,7 +116,7 @@ class ZoneMap:
         zones, points, zone_of = [], [], []
         for row in range(rows):
             for col in range(cols):
-                x0, y0 = col * zw, row * zd
+                x0, y0 = room.x0_m + col * zw, room.y0_m + row * zd
                 zones.append(Zone(_zone_name(col, row), x0, y0, x0 + zw, y0 + zd))
                 for i in range(per_x):
                     for j in range(per_y):
@@ -232,10 +232,18 @@ class RoomState:
             self._elevated[ks] = elevated
 
     def set_map(self, zone_map: ZoneMap) -> None:
-        """Take the zone map of the same room with nodes moved (same links, same zones): which links cover which
-        probe point is recomputed at the next update. The links' readings and the zones' holds are kept."""
-        if zone_map.labels != self.map.labels or zone_map.zones != self.map.zones:
-            raise ValueError("set_map takes the same room with nodes moved: its links or zones differ")
+        """Take the zone map of the same room with nodes moved (same links): which links cover which probe point is
+        recomputed now. The links' readings are kept. When the zones changed too (the working area moved or changed
+        size) the zones' state restarts: MOTION and the possibly-occupied holds are forgotten."""
+        if zone_map.labels != self.map.labels:
+            raise ValueError("set_map takes the same room with nodes moved: its links differ")
+        if zone_map.zones != self.map.zones:
+            zones, points = len(zone_map.zones), len(zone_map.points)
+            self._need = np.full(points, -1)
+            self._counts = np.zeros(points, dtype=int)
+            self._covered = np.zeros(zones, dtype=bool)
+            self._firing = np.zeros(zones, dtype=bool)
+            self._last_fired = np.full(zones, -np.inf)
         self.map = zone_map
         self._last_warm = None        # the next update rebuilds capacity, need and coverage from the new map
         self._fired_on = None         # and judges every zone again

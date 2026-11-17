@@ -122,8 +122,8 @@ def test_star_payload_over_http_lists_rx3_at_minus_1_5_and_six_links():
     positions = {n["name"]: (n["x"], n["y"]) for n in payload["nodes"]}
     for row in payload["links"]:
         assert row["receiver"] in positions and row["sender"] in positions
-    # the heatmap covers the room rectangle only
-    assert payload["heatmap"]["extents"] == {"x_min": 0.0, "y_min": 0.0, "x_max": 2.77, "y_max": 1.84}
+    # the heatmap covers the working area only: the nodes plus 0.5 m, clamped to the plane (rx3 is off it)
+    assert payload["heatmap"]["extents"] == {"x_min": 0.0, "y_min": 0.0, "x_max": 3.27, "y_max": 2.34}
 
 
 # ---------------------------------------------------------------- the room responds where the geometry says

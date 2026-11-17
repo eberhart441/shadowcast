@@ -242,7 +242,7 @@ def live_vs_replay(live, frames, offset) -> dict:
 
 def tracker_frames(targets, centres, room, **kw):
     """Re-run only the tracker over recorded heat targets, sampled like the server (every 0.2 s)."""
-    tr = Tracker(room.width_m, room.depth_m, centres, **kw)
+    tr = Tracker(room.width_m, room.depth_m, centres, x0_m=room.x0_m, y0_m=room.y0_m, **kw)
     frames, next_frame = [], None
     for t, cells in targets:
         tr.update(t, cells)

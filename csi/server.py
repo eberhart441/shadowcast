@@ -29,12 +29,15 @@ HTTP:
                        a bad body, unknown node or unreadable image, 409 {error, reason} when refused (running,
                        no_gateway, no_channel, no_signer, channel, or the image check's reason). A command
                        like the others (ADR-0015); progress is in status.ota
-    POST /api/node-position {"node": "n3", "x": 1.25, "y": 0.4}: move a node on the map (metres, rounded to mm; up
-                       to one room size beyond each wall). The heatmap and zone geometry follow; link states,
-                       thresholds and baselines are kept. With a room file (``room_path``, dashboard.py --room) the
-                       position is written into it atomically, every other field kept. 200 {node, x, y, saved, path,
-                       message}; saved false (path None) when the dashboard has no room file: applied in memory
-                       only. 400 for an unknown or disabled node or an x, y that is not a finite number in reach,
+    POST /api/node-position {"node": "n3", "x": 1.25, "y": 0.4}: move a node on the map (metres, rounded to mm; x
+                       and y within the 10 m x 10 m plane, csi.room.PLANE_M). The working area is refitted around
+                       the nodes and the heatmap and zone geometry follow; link states, detectors, thresholds and
+                       baselines are kept (the grid-shaped state restarts when the area changed: DashboardState.
+                       move_node). With a room file (``room_path``, dashboard.py --room) the position is written into
+                       it atomically, every other field kept and no room size added. 200 {node, x, y, area, saved,
+                       path, message}, area {x0_m, y0_m, width_m, depth_m}; saved false (path None) when the
+                       dashboard has no room file: applied in memory only. 400 for an unknown or disabled node or an
+                       x, y that is not a finite number on the plane,
                        409 when the room file no longer names the node, 500 when it cannot be written (nothing
                        changes then). A command like the others (ADR-0015)
     anything else      404
@@ -1017,7 +1020,9 @@ class DashboardServer(FrameServer):
         message = (f"saved to {path}" if path is not None
                    else "applied in memory only: this dashboard has no room file, so nothing was saved")
         self._commands.append(f"moved {name} to {where}; {message}")
-        return 200, {"node": name, "x": node.x, "y": node.y, "saved": path is not None,
+        room = self._room
+        area = {"x0_m": room.x0_m, "y0_m": room.y0_m, "width_m": room.width_m, "depth_m": room.depth_m}
+        return 200, {"node": name, "x": node.x, "y": node.y, "area": area, "saved": path is not None,
                      "path": None if path is None else str(path), "message": message}
 
     def _cmd_ota(self, body: Mapping) -> Union[tuple[int, dict], object]:

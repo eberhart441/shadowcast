@@ -213,7 +213,7 @@ def test_person_at_top_middle_excites_the_rx3_links_and_not_the_wall_links():
 
 
 def test_person_near_the_bottom_left_corner_excites_rx3_and_left_wall_more_than_the_right_wall():
-    corner = Stand(0.25, ROOM5.depth_m - 0.25)
+    corner = Stand(0.25, 1.84 - 0.25)                   # inside the rig's bottom-left corner
     states = states_by_label(tagged(ROOM5, person=corner, duration_s=12, seed=22), calibrated5())
     assert motion_fraction(states, RX3_B) > motion_fraction(states, RIGHT) + 0.5
     assert motion_fraction(states, LEFT) > motion_fraction(states, RIGHT) + 0.3
@@ -221,7 +221,7 @@ def test_person_near_the_bottom_left_corner_excites_rx3_and_left_wall_more_than_
 
 @pytest.mark.slow
 def test_person_walking_along_the_bottom_edge_moves_the_heat_centre_from_left_to_right():
-    walk = Walk(((0.25, ROOM5.depth_m - 0.25), (ROOM5.width_m - 0.25, ROOM5.depth_m - 0.25)), speed_mps=0.5)
+    walk = Walk(((0.25, 1.84 - 0.25), (2.77 - 0.25, 1.84 - 0.25)), speed_mps=0.5)   # along the senders' bottom wall
     packets = quiet_then(ROOM5, walk, duration_s=6.0)
     state = DashboardState(ROOM5, calibrated5())
     feed(state, packets, until=T0 + LEAD_S + 1.0)
@@ -230,7 +230,7 @@ def test_person_walking_along_the_bottom_edge_moves_the_heat_centre_from_left_to
     late = state.snapshot(now=T0 + LEAD_S + 4.0)
     assert heat_centre_x(early) is not None and heat_centre_x(late) is not None
     assert heat_centre_x(late) - heat_centre_x(early) > 0.5
-    assert heat_centre_x(early) < ROOM5.width_m / 2 < heat_centre_x(late)
+    assert heat_centre_x(early) < 2.77 / 2 < heat_centre_x(late)
 
 
 # ---------------------------------------------------------------- the dashboard payload and HTTP interface

@@ -45,7 +45,7 @@ def run(room, person, thresholds, duration_s, rate_hz, seed):
         snap = state.snapshot(pkt.host_ts)
         heat = snap["heatmap"]
         if centres is None:
-            centres = cell_centres(heat["cols"], heat["rows"], room.width_m, room.depth_m)
+            centres = cell_centres(heat["cols"], heat["rows"], room.width_m, room.depth_m, room.x0_m, room.y0_m)
         cells = np.asarray(heat["cells"])
         peak = tuple(centres[int(cells.argmax())]) if cells.max() > 0 else None
         m = heat_measurement(cells, centres)

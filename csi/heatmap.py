@@ -29,7 +29,7 @@ Known limit: the baseline adapts, so a person who stands still for more than hal
 Public API:
     link_evidence(score, baseline, r_floor, r_full) -> float in 0..1
     QuietBaseline(window_s, percentile, warmup_s)   rolling low percentile of a link's quiet score
-    cell_centres(cols, rows, width_m, depth_m)      -> (cols*rows, 2) row-major
+    cell_centres(cols, rows, width_m, depth_m, x0_m, y0_m)   -> (cols*rows, 2) row-major
     segment_falloff(centres, a, b, sigma_m)         -> (cols*rows,) in 0..1
     Heatmap(room, ..., imaging=None)                per-link falloff maps or the RTI image, baselines, smoothing;
                                                     imaging "rti" when the room has transceivers, else "footprint"
@@ -39,7 +39,8 @@ Public API:
         .contributing         link labels that currently put heat on the grid
         .evidence             {label: 0..1} per link, from the last advance
         .baselines            {label: quiet baseline or None while in warm-up}
-        .set_room(room)       nodes moved: rebuild the geometry (footprints or RTI matrix), keep baselines and grid
+        .set_room(room)       nodes moved: rebuild the geometry (footprints or RTI matrix, and the grid when the
+                              working area changed), keep the baselines
 """
 from __future__ import annotations
 
@@ -118,10 +119,12 @@ class QuietBaseline:
         return float(values[lo] + (values[hi] - values[lo]) * (rank - lo))
 
 
-def cell_centres(cols: int, rows: int, width_m: float, depth_m: float) -> np.ndarray:
-    """Centre of each grid cell in metres, origin top-left, flat row-major (row r, column c at r*cols + c)."""
-    xs = (np.arange(cols) + 0.5) * width_m / cols
-    ys = (np.arange(rows) + 0.5) * depth_m / rows
+def cell_centres(cols: int, rows: int, width_m: float, depth_m: float, x0_m: float = 0.0,
+                 y0_m: float = 0.0) -> np.ndarray:
+    """Centre of each grid cell in metres over the area from (x0, y0), width by depth; flat row-major (row r,
+    column c at r*cols + c), row 0 at the top (y0)."""
+    xs = x0_m + (np.arange(cols) + 0.5) * width_m / cols
+    ys = y0_m + (np.arange(rows) + 0.5) * depth_m / rows
     gx, gy = np.meshgrid(xs, ys)
     return np.column_stack([gx.ravel(), gy.ravel()])
 
@@ -159,7 +162,7 @@ class Heatmap:
         self.rise_tau, self.decay_tau, self.step = rise_tau_s, decay_tau_s, step_s
         self._weights: Mapping[str, float] = dict(room.link_weights)
         self._room = room
-        self.centres = cell_centres(cols, rows, room.width_m, room.depth_m)
+        self.centres = cell_centres(cols, rows, room.width_m, room.depth_m, room.x0_m, room.y0_m)
         self._falloff: dict[str, np.ndarray] = {}
         self._build_falloff(falloff_m)
         self._column = {label: k for k, label in enumerate(self._falloff)}   # link label -> RTI column
@@ -206,13 +209,16 @@ class Heatmap:
             self._build_falloff(self.falloff_m)
 
     def set_room(self, room: Room) -> None:
-        """Take a room whose nodes moved (same links, same size): rebuild the per-link footprints, or the RTI matrix,
-        from the new positions. The baselines, the smoothed grid and the parameters are kept: only geometry changes.
-        Raises ValueError for a room with other links or another size."""
+        """Take the same room with nodes moved (same links): rebuild the per-link footprints, or the RTI matrix, from
+        the new positions. The links' quiet baselines and the parameters are kept. When the working area changed
+        (size or origin) the grid moves with it, so the smoothed grid restarts cold; otherwise it is kept too.
+        Raises ValueError for a room with other links."""
         if [lid.label for lid, _, _ in room_link_ids(room)] != list(self._column):
             raise ValueError("set_room takes the same room with nodes moved: its links differ")
-        if (room.width_m, room.depth_m) != (self._room.width_m, self._room.depth_m):
-            raise ValueError("set_room takes the same room with nodes moved: its size differs")
+        if room.area != self._room.area:
+            self.centres = cell_centres(self.cols, self.rows, room.width_m, room.depth_m, room.x0_m, room.y0_m)
+            self.values = np.zeros(self.cols * self.rows)
+            self.target = np.zeros(self.cols * self.rows)
         self._room = room
         self._build_falloff(self.falloff_m)
         if self.imaging == RTI:

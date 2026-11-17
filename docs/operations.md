@@ -332,8 +332,10 @@ every port.
 
 The page is `web/index.html`, one static file with no network assets.
 
-- **Room.** The nodes at their configured positions (receivers and senders drawn differently; a node
-  outside the room is drawn with a dashed leader), the links coloured by state, and the heatmap. A caption
+- **Room.** The working area fitted around the nodes (their bounding box plus 0.5 m, on a 10 m x 10 m
+  plane; see [hardware.md](hardware.md#scaling-up)), the nodes at their positions (receivers and senders drawn
+  differently; a node off the plane, from an older room file, is drawn outside the area with a dashed leader),
+  the links coloured by state, and the heatmap. Drag a node to move it; the area refits when you let go. A caption
   says it is a rough motion-likelihood estimate, not a position track.
 - **Room state and zones** (transceiver rigs). A line above the map gives the room state, and the map draws
   each zone: MOTION filled red, POSSIBLY OCCUPIED dashed and hatched orange, EMPTY a faint outline. A zone
@@ -488,7 +490,7 @@ The server checks the combination at start and exits with an error when:
 | `POST /api/params` | Body with any of `{sensitivity, decay, rise, falloff}` changes the heatmap live. Ranges: `sensitivity` 0.01 to 10, `decay` 0.05 to 60 s, `rise` 0.01 to 10 s, `falloff` 0.05 to 2 m. |
 | `POST /api/ota` | Body `{image, nodes?, ap_channel?, port?, channel?, bind?}` or `{checkin: true}`: starts a staged OTA rollout through the dashboard's node gateway without stopping the dashboard ([`docs/ota.md`](ota.md)); 202 `{ota}`, progress in `status.ota`. 409 with a `reason`: `running`, `no_gateway`, `no_channel`, `no_signer`, `channel` (the maintenance network would overlap the sensing channel) or the image check's reason. |
 | `POST /api/raw-mode` | Body `{link, on}` turns raw mode on or off for one transceiver link (`n1<-n5`): the gateway (or the simulated rig) sends the request; returns `{raw_mode, sent, via}`. 409 with a `reason` when refused: `budget` (400 B of raw CSI per round in the rig), `node_limit` (2 per node), `not_heard`, `no_gateway`. 400 for an unknown link. See `docs/round-broadcast.md` "Raw mode". |
-| `POST /api/node-position` | Body `{node, x, y}` moves a node on the map, in metres (rounded to the millimetre, at most one room size beyond each wall); the page sends it when you drag a node. The heatmap and zone geometry follow at once; link states, thresholds and baselines are kept. The position is written into the `--room` file (default `config/room.json`), every other field kept; returns `{node, x, y, saved, path, message}`. 400 for an unknown or disabled node or a position that is not a finite number in reach. |
+| `POST /api/node-position` | Body `{node, x, y}` moves a node on the map, in metres (rounded to the millimetre, x and y from 0 to 10 m: the plane); the page sends it when you drag a node. The working area refits around the nodes and the heatmap and zone geometry follow at once; link states, thresholds and baselines are kept, and the smoothed heatmap, zone holds and motion track restart when the area changes. The position is written into the `--room` file (default `config/room.json`), every other field kept; returns `{node, x, y, area, saved, path, message}`. 400 for an unknown or disabled node or a position that is not a finite number on the plane. |
 
 Status codes for the commands (the `POST` endpoints):
 

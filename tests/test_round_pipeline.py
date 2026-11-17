@@ -188,14 +188,16 @@ def test_the_payload_names_the_zones_and_which_of_them_read_motion():
     hot = {"n1": {"n5": HOT}, "n3": {"n7": HOT}, "n2": {"n6": HOT}, "n4": {"n8": HOT}}   # all cross at (2, 1.5)
     payload = run(state, 1.0, start_s=12.0, reports=lambda round_no, sender: hot.get(sender))
     zones = payload["room"]["zones"]
-    assert len(zones) == 12                                    # 4 x 3 m in 1 m zones: A1 top-left .. D3
-    assert zones[0] == {"id": "A1", "x0": 0.0, "y0": 0.0, "x1": 1.0, "y1": 1.0}
-    assert {z["id"] for z in zones} == {f"{c}{r}" for c in "ABCD" for r in (1, 2, 3)}
+    # the working area is the 4 x 3 m of nodes plus 0.5 m: 4.5 x 3.5 m in zones of about 1 m (1.125 x 0.875 m)
+    assert len(zones) == 16                                    # A1 top-left .. D4
+    assert zones[0] == {"id": "A1", "x0": 0.0, "y0": 0.0, "x1": 1.125, "y1": 0.875}
+    assert {z["id"] for z in zones} == {f"{c}{r}" for c in "ABCD" for r in (1, 2, 3, 4)}
     states = payload["status"]["room"]["zones"]
-    assert {zone for zone, s in states.items() if s == "MOTION"} == {"B2", "C2"}   # either side of the crossing
-    assert {s for zone, s in states.items() if zone not in ("B2", "C2")} == {"EMPTY"}
+    near = {"B2", "B3", "C2"}                    # the crossing's zone, and those within the 0.3 m cover of it
+    assert {zone for zone, s in states.items() if s == "MOTION"} == near
+    assert {s for zone, s in states.items() if zone not in near} == {"EMPTY"}
     later = run(state, 1.5, start_s=13.0)        # the links fall back; the zones hold MOTION 1 s, then possibly occupied
-    assert {zone for zone, s in later["status"]["room"]["zones"].items() if s != "EMPTY"} == {"B2", "C2"}
+    assert {zone for zone, s in later["status"]["room"]["zones"].items() if s != "EMPTY"} == near
     assert set(later["status"]["room"]["zones"].values()) == {"EMPTY", "POSSIBLY_OCCUPIED"}
     assert later["status"]["room"]["state"] == "POSSIBLY_OCCUPIED"
     assert later["status"]["room"]["possibly_occupied_s"] == 60.0     # the default hold
@@ -209,7 +211,7 @@ def test_zones_that_stop_moving_read_possibly_occupied_for_the_set_hold_then_emp
     held = run(state, 4.0, start_s=13.0)
     room = held["status"]["room"]
     assert (room["state"], room["possibly_occupied_s"]) == ("POSSIBLY_OCCUPIED", 5.0)
-    assert {zone for zone, s in room["zones"].items() if s == "POSSIBLY_OCCUPIED"} == {"B2", "C2"}
+    assert {zone for zone, s in room["zones"].items() if s == "POSSIBLY_OCCUPIED"} == {"B2", "B3", "C2"}
     cleared = run(state, 3.0, start_s=17.0)
     assert cleared["status"]["room"]["state"] == "EMPTY"
     assert set(cleared["status"]["room"]["zones"].values()) == {"EMPTY"}
