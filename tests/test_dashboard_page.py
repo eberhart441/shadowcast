@@ -341,3 +341,41 @@ def test_page_legend_names_the_possibly_occupied_state():
     html = PAGE.read_text(encoding="utf-8")
     assert ZONES_BEGIN in html and ZONES_END in html
     assert "POSSIBLY OCCUPIED" in html and "Decision support, not a guarantee" in html
+
+
+# ---------------------------------------------------------------- dragging a node posts its new position
+
+def test_the_map_lets_a_node_be_dragged_and_posts_its_position_when_commands_are_on():
+    html = PAGE.read_text(encoding="utf-8")
+    assert '"/api/node-position"' in html
+    for event in ("pointerdown", "pointermove", "pointerup", "pointercancel"):
+        assert f'"{event}"' in html, event
+    assert "setPointerCapture" in html
+    assert 'id="map-error"' in html and 'id="map-drag-note"' in html     # errors and the hint under the map
+    assert "commandsOn(shown)" in html                                     # only offered when commands are on
+
+
+DRAG_HARNESS = """
+%(geometry)s
+var room = { width_m: 3, depth_m: 2 };
+var X = function (x) { return 10 + 100 * x; }, Y = function (y) { return 10 + 100 * y; };
+var nodes = [{ name: "a", x: 0, y: 0 }, { name: "b", x: 1, y: 1 }];
+console.log(JSON.stringify({
+  inside: clampToReach(1.25, 0.5, room), far: clampToReach(-7, 9, room),
+  hit: nodeAt(nodes, X, Y, 115, 104, 14), miss: nodeAt(nodes, X, Y, 60, 60, 14)
+}));
+"""
+
+
+@needs_node
+def test_a_dragged_node_stays_within_one_room_size_of_the_walls_and_is_picked_near_its_centre(tmp_path):
+    html = PAGE.read_text(encoding="utf-8")
+    script = tmp_path / "drag_harness.js"
+    script.write_text(DRAG_HARNESS % {"geometry": html[html.index(GEOMETRY_BEGIN):html.index(GEOMETRY_END)]},
+                      encoding="utf-8")
+    proc = subprocess.run(["node", str(script)], capture_output=True, text=True, timeout=30)
+    assert proc.returncode == 0, proc.stderr
+    out = json.loads(proc.stdout)
+    assert out["inside"] == {"x": 1.25, "y": 0.5}
+    assert out["far"] == {"x": -3, "y": 4}             # -1 x width, 2 x depth: what the server accepts
+    assert out["hit"]["name"] == "b" and out["miss"] is None

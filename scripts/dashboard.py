@@ -411,7 +411,8 @@ def build(args: argparse.Namespace) -> Dashboard:
     server = DashboardServer(room, live.streams, live.thresholds, host=args.host, port=args.http_port, log=args.log,
                              allow_control=args.allow_control, thresholds_path=save_to, mode=mode, kit_key=live.key,
                              notes=notes, log_meta={"source": live.description, "thresholds_source": thresholds_source},
-                             web_index=page, possibly_occupied_s=hold_s(args), gateways=live.gateways or {})
+                             web_index=page, possibly_occupied_s=hold_s(args), gateways=live.gateways or {},
+                             room_path=args.room)
     return Dashboard(server, live.recorder)
 
 

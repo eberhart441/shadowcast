@@ -29,6 +29,14 @@ HTTP:
                        a bad body, unknown node or unreadable image, 409 {error, reason} when refused (running,
                        no_gateway, no_channel, no_signer, channel, or the image check's reason). A command
                        like the others (ADR-0015); progress is in status.ota
+    POST /api/node-position {"node": "n3", "x": 1.25, "y": 0.4}: move a node on the map (metres, rounded to mm; up
+                       to one room size beyond each wall). The heatmap and zone geometry follow; link states,
+                       thresholds and baselines are kept. With a room file (``room_path``, dashboard.py --room) the
+                       position is written into it atomically, every other field kept. 200 {node, x, y, saved, path,
+                       message}; saved false (path None) when the dashboard has no room file: applied in memory
+                       only. 400 for an unknown or disabled node or an x, y that is not a finite number in reach,
+                       409 when the room file no longer names the node, 500 when it cannot be written (nothing
+                       changes then). A command like the others (ADR-0015)
     anything else      404
 
 ``status`` extension (added to DashboardState's status block):
@@ -71,7 +79,7 @@ from .links import calibrate_links, room_link_ids, save_thresholds
 from .multisource import MultiSource
 from .parser import CSIPacket, Stream
 from .raw_mode import RawModeRefused, SendingGateway, raw_messages
-from .room import Room, Walk
+from .room import Room, Walk, move_node, save_node_position
 from .room_state import POSSIBLY_OCCUPIED_S
 from .round_auth import TEST_KIT_KEY
 from . import ota
@@ -100,11 +108,13 @@ SIM_CALIBRATION_SEED = 10
 LOG_FORMAT = "csi-dashboard-log"  # first line of a --log file; replay.py refuses other files
 LOG_VERSION = 1
 COMMAND_PATHS = frozenset({"/api/calibrate", "/api/calibrate/cancel", "/api/threshold",
-                           "/api/thresholds/save", "/api/params", "/api/raw-mode", "/api/ota"})
+                           "/api/thresholds/save", "/api/params", "/api/raw-mode", "/api/ota",
+                           "/api/node-position"})
 MAX_BODY_BYTES = 64 * 1024
 DEFAULT_THRESHOLDS_FILE = "links_thresholds.json"   # working directory, unless --save-thresholds says otherwise
 COMMAND_LOG_MAX = 20
 DEFAULT_OTA_SIGNER = Path(__file__).resolve().parent.parent / "data" / "ota-signing.digest"
+NODE_POSITION_FIELDS = frozenset({"node", "x", "y"})
 OTA_FIELDS = frozenset({"image", "nodes", "ap_channel", "port", "channel", "bind", "checkin"})
 SEND_TIMEOUT_S = 2.0       # a command's write to a gateway's port that takes longer is given up (503 "timeout")
 # live heatmap parameters: request key -> (heatmap attribute, allowed range)
@@ -494,6 +504,8 @@ class DashboardServer(FrameServer):
     ``possibly_occupied_s`` is the transceiver room state's possibly-occupied hold (csi/room_state.py).
     ``ota_signer`` is the file with the kit's trusted image signing key digest that POST /api/ota checks images
     against (default data/ota-signing.digest).
+    ``room_path`` is the room file ``room`` was loaded from: POST /api/node-position saves moved nodes there (None:
+    moves apply in memory only).
     """
 
     def __init__(self, room: Room, sources: Mapping[str, Stream], thresholds: Optional[Mapping[str, float]] = None,
@@ -505,10 +517,12 @@ class DashboardServer(FrameServer):
                  mode: str = "fixed", kit_key: bytes = TEST_KIT_KEY,
                  possibly_occupied_s: float = POSSIBLY_OCCUPIED_S,
                  gateways: Optional[Mapping[str, SendingGateway]] = None,
-                 ota_signer: Optional[Union[str, Path]] = None, **heatmap_params) -> None:
+                 ota_signer: Optional[Union[str, Path]] = None, room_path: Optional[Union[str, Path]] = None,
+                 **heatmap_params) -> None:
         network_control = allow_control and not is_loopback(host)
         super().__init__(host, port, web_index, trusted_host=host if network_control else None)
         self._room = room
+        self._room_path = None if room_path is None else Path(room_path)
         self._kit_key = bytes(kit_key)
         self._state = DashboardState(room, dict(thresholds or {}), mode=mode, kit_key=kit_key,
                                      possibly_occupied_s=possibly_occupied_s, **heatmap_params)
@@ -843,6 +857,7 @@ class DashboardServer(FrameServer):
                 "/api/params": self._cmd_params,
                 "/api/raw-mode": self._cmd_raw_mode,
                 "/api/ota": self._cmd_ota,
+                "/api/node-position": self._cmd_node_position,
             }
             try:
                 return handlers[path](body)
@@ -970,6 +985,40 @@ class DashboardServer(FrameServer):
             return 200, {"raw_mode": status, "sent": len(frames), "via": via}
 
         return send
+
+    def _cmd_node_position(self, body: Mapping) -> tuple[int, dict]:
+        """POST /api/node-position: move one node, rebuild the geometry, and save the position to the room file."""
+        unknown = sorted(set(body) - NODE_POSITION_FIELDS)
+        if unknown:
+            raise RequestError(f"unknown field(s): {', '.join(unknown)}; expected node, x and y")
+        name, x, y = body.get("node"), body.get("x"), body.get("y")
+        if not isinstance(name, str) or not name:
+            raise RequestError(f'name the node and its position in metres: {{"node": "n1", "x": 1.2, "y": 0.5}}, '
+                               f"got {dict(body)!r}")
+        for axis, value in (("x", x), ("y", y)):
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+                raise RequestError(f"{axis} must be a finite number of metres, got {value!r}")
+        try:
+            moved = move_node(self._state.room, name, float(x), float(y))   # checks it all before anything changes
+        except ValueError as e:
+            raise RequestError(str(e)) from None
+        node = next(n for n in (*moved.receivers, *moved.senders, *moved.transceivers) if n.name == name)
+        path = None if self._room_path is None else self._room_path.resolve()
+        if path is not None:
+            try:
+                save_node_position(path, name, node.x, node.y)
+            except KeyError:
+                return 409, {"error": f"the room file {path} no longer has node {name!r}: nothing was moved"}
+            except (OSError, ValueError) as e:
+                return 500, {"error": f"cannot write {path}: {getattr(e, 'strerror', None) or e}; nothing was moved"}
+        self._state.move_node(name, node.x, node.y)
+        self._room = self._state.room
+        where = f"({node.x:.3f}, {node.y:.3f}) m"
+        message = (f"saved to {path}" if path is not None
+                   else "applied in memory only: this dashboard has no room file, so nothing was saved")
+        self._commands.append(f"moved {name} to {where}; {message}")
+        return 200, {"node": name, "x": node.x, "y": node.y, "saved": path is not None,
+                     "path": None if path is None else str(path), "message": message}
 
     def _cmd_ota(self, body: Mapping) -> Union[tuple[int, dict], object]:
         """POST /api/ota: checks under the lock; the image is read and checked and the rollout started off it."""

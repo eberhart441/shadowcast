@@ -230,6 +230,13 @@ class LinkMonitor:
         for link_id in expected:
             self._get(link_id)
 
+    def set_room(self, room: Room) -> None:
+        """The same room with nodes moved: the transceiver room state takes the new geometry (its zone map). Link
+        states, thresholds and baselines are kept."""
+        if self._zones is not None:
+            self._zones.set_map(ZoneMap(room, [(NodeLinkId(rx.name, tx.name).label, rx, tx)
+                                               for rx, tx in room.transceiver_links()]))
+
     @property
     def mode(self) -> str:
         return self._mode

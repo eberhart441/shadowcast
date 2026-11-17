@@ -388,6 +388,7 @@ server.
 | `POST /api/params` | Changes the live heatmap settings: `sensitivity` 0.01–10, `decay` 0.05–60 s, `rise` 0.01–10 s, `falloff` 0.05–2 m (not on a transceiver room: its heatmap is radio tomography) | Command checks. 400 for an unknown key, a value out of range, or `falloff` on a transceiver room |
 | `POST /api/ota` | `{image, nodes, ap_channel, port, channel, bind}` or `{checkin: true}`: a staged OTA rollout through the dashboard's gateway (`csi.ota.RolloutJob`, ADR-0031); the image is read and checked off the lock, the rollout runs on its own `ota-rollout` thread | Command checks. 202 `{ota}`; 400 for a bad body, unknown node or unreadable image; 409 `{error, reason}` |
 | `POST /api/raw-mode` | `{link, on}`: raw mode for one transceiver link, sent through a gateway in the join slot (`csi/raw_mode.py`, ADR-0032) | Command checks. 400 for a bad body or unknown link; 409 `{error, reason}` beyond the byte budget, a node's limit, a node not heard yet, no gateway that can send |
+| `POST /api/node-position` | `{node, x, y}`: moves a node (`DashboardState.move_node`: a new `Room`, the heatmap's footprints or RTI matrix and the zone map rebuilt, link state kept) and writes its position into the room file atomically (`csi.room.save_node_position`); `{saved: false}` without a room file | Command checks. 400 for an unknown or disabled node or a bad position; 409 when the room file no longer has the node; 500 when it cannot be written (nothing moves) |
 
 Command checks, in the order the server applies them:
 

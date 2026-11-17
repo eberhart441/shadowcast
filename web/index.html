@@ -237,6 +237,8 @@
     </p>
     <canvas id="map" role="img" aria-label="Room map: heatmap of likely motion, with the room's links and nodes"></canvas>
     <p class="caption" id="map-caption">Rough motion-likelihood estimate from 4 links, not a position track.</p>
+    <p class="muted" id="map-drag-note" hidden>Drag a node to move it; its new position is saved to the room file.</p>
+    <p class="ctl-error" id="map-error" role="alert" hidden></p>
     <div class="legend">
       <span><span class="sw EMPTY"></span>EMPTY</span>
       <span><span class="sw MOTION"></span>MOTION</span>
@@ -543,6 +545,23 @@
       hAlign: towardRight ? "left" : "right", vAlign: towardDown ? "top" : "bottom"
     };
   }
+  // where a dragged node may go: up to one room size beyond each wall (the server refuses a node further out)
+  var NODE_REACH = 1;
+  function clampToReach(x, y, room) {
+    return {
+      x: Math.min((1 + NODE_REACH) * room.width_m, Math.max(-NODE_REACH * room.width_m, x)),
+      y: Math.min((1 + NODE_REACH) * room.depth_m, Math.max(-NODE_REACH * room.depth_m, y))
+    };
+  }
+  // the node nearest the point (px, py) in css px, if its centre is within hitPx; X and Y map metres to css px
+  function nodeAt(nodes, X, Y, px, py, hitPx) {
+    var best = null, bestD = hitPx;
+    (nodes || []).forEach(function (n) {
+      var d = Math.sqrt(Math.pow(X(n.x) - px, 2) + Math.pow(Y(n.y) - py, 2));
+      if (d <= bestD) { best = n; bestD = d; }
+    });
+    return best;
+  }
   // ---- geometry: pure (tested with node) end
 
   // ---- zones: pure (tested with node) begin
@@ -654,8 +673,9 @@
   }
 
   function drawMap(p) {
+    p = withMoves(p);
     var room = p.room;
-    var frame = mapBounds(room, p.nodes);
+    var frame = drag ? drag.frame : mapBounds(room, p.nodes);   // the frame holds still under a dragged node
     var g = sizeMap(room, frame);
     view = g;
     var X = g.X, Y = g.Y;
@@ -781,6 +801,10 @@
       }
       labelBlock(lines, x + side.dx, y + side.dy, side.hAlign, side.vAlign);
     });
+    if (drag) {   // the dragged node's position, in metres
+      labelBlock([{ text: drag.name + "  x " + fmt(drag.x, 2) + " m, y " + fmt(drag.y, 2) + " m", font: FONT }],
+        X(drag.x), Y(drag.y) - 16, "center", "bottom", "#e8edf3");
+    }
 
     // motion track (csi/tracker.py): a smoothed dot on the hot blob, fading with its confidence
     if (p.track) {
@@ -829,6 +853,106 @@
       ctx.textBaseline = "top";
       ctx.fillText(z.id, x + 4, y + 4);
       ctx.restore();
+    });
+  }
+
+  // ------------------------------------------------------------------ dragging nodes (POST /api/node-position)
+  // Only while the dashboard takes commands (status.commands.available). The node follows the pointer; on release its
+  // position (rounded to the centimetre) is posted. It is drawn there until a payload has it, and snaps back if the
+  // command fails, with the error under the map.
+  var NODE_HIT_PX = 14;         // css px from a node's centre that still picks it up
+  var MOVE_HOLD_MS = 5000;      // how long a dropped position is drawn while no payload has it yet
+  var drag = null;              // { name, x, y, moved, pointerId, frame } while a node is dragged
+  var moves = {};               // node name -> { x, y, until, pending }: dropped, not in a payload yet
+  var redrawQueued = false;
+
+  function commandsOn(p) { return !!(p && p.status && p.status.commands && p.status.commands.available); }
+
+  // p with the dragged node and the dropped ones where the operator put them
+  function withMoves(p) {
+    if (!drag && !Object.keys(moves).length) return p;
+    var out = {};
+    Object.keys(p).forEach(function (k) { out[k] = p[k]; });
+    out.nodes = p.nodes.map(function (n) {
+      var at = drag && drag.name === n.name ? drag : moves[n.name];
+      return at ? { name: n.name, role: n.role, chip: n.chip, x: at.x, y: at.y } : n;
+    });
+    return out;
+  }
+
+  // forget a dropped position once a payload has it (or it has waited too long); never while its command is out
+  function settleMoves(p) {
+    var now = Date.now();
+    Object.keys(moves).forEach(function (name) {
+      var m = moves[name], n = (p.nodes || []).filter(function (k) { return k.name === name; })[0];
+      if (m.pending) return;
+      if (now > m.until || (n && Math.abs(n.x - m.x) < 5e-4 && Math.abs(n.y - m.y) < 5e-4)) delete moves[name];
+    });
+  }
+
+  function redrawMap() {
+    if (redrawQueued) return;
+    redrawQueued = true;
+    window.requestAnimationFrame(function () {
+      redrawQueued = false;
+      if (shown) drawMap(shown);
+    });
+  }
+
+  function pointerAt(ev) {
+    var r = els.map.getBoundingClientRect();
+    return { x: ev.clientX - r.left, y: ev.clientY - r.top };
+  }
+
+  function wireDrag() {
+    els.map.addEventListener("pointerdown", function (ev) {
+      if (!shown || !view || drag || !commandsOn(shown) || ev.button > 0) return;
+      var pt = pointerAt(ev);
+      var n = nodeAt(withMoves(shown).nodes, view.X, view.Y, pt.x, pt.y, NODE_HIT_PX);
+      if (!n) return;
+      ev.preventDefault();
+      drag = { name: n.name, x: n.x, y: n.y, moved: false, pointerId: ev.pointerId, frame: view.b };
+      try { els.map.setPointerCapture(ev.pointerId); } catch (err) { /* the drag still works inside the canvas */ }
+      els.map.style.cursor = "grabbing";
+      redrawMap();
+    });
+    els.map.addEventListener("pointermove", function (ev) {
+      if (!view) return;
+      var pt = pointerAt(ev);
+      if (!drag) {   // show that a node can be picked up
+        var over = shown && commandsOn(shown) && nodeAt(withMoves(shown).nodes, view.X, view.Y, pt.x, pt.y, NODE_HIT_PX);
+        els.map.style.cursor = over ? "grab" : "";
+        return;
+      }
+      if (ev.pointerId !== drag.pointerId) return;
+      var at = clampToReach(view.b.x0 + (pt.x - MAP_PAD.left) / view.s, view.b.y0 + (pt.y - MAP_PAD.top) / view.s,
+                            shown.room);
+      drag.x = Math.round(at.x * 100) / 100;
+      drag.y = Math.round(at.y * 100) / 100;
+      drag.moved = true;
+      redrawMap();
+    });
+    els.map.addEventListener("pointerup", function (ev) { if (drag && ev.pointerId === drag.pointerId) drop(true); });
+    els.map.addEventListener("pointercancel", function (ev) { if (drag && ev.pointerId === drag.pointerId) drop(false); });
+  }
+
+  // end the drag: post the new position, or (cancelled, or not moved) put the node back
+  function drop(commit) {
+    var d = drag;
+    drag = null;
+    try { els.map.releasePointerCapture(d.pointerId); } catch (err) { /* already released */ }
+    els.map.style.cursor = "";
+    if (!commit || !d.moved) { redrawMap(); return; }
+    moves[d.name] = { x: d.x, y: d.y, until: Date.now() + MOVE_HOLD_MS, pending: true };
+    redrawMap();
+    command("/api/node-position", { node: d.name, x: d.x, y: d.y }).then(function (r) {
+      if (reply("map-error", r) === null) {
+        delete moves[d.name];                  // refused: snap back to where the server has it
+      } else {
+        moves[d.name] = { x: r.body.x, y: r.body.y, until: Date.now() + MOVE_HOLD_MS };
+        if (!r.body.saved) showError("map-error", d.name + " moved, but " + r.body.message);
+      }
+      redrawMap();
     });
   }
 
@@ -1328,6 +1452,8 @@
     $("cal-cancel").disabled = !on || !(cal.state === "countdown" || cal.state === "recording");
     ["cal-clips", "cal-seconds", "cal-margin", "cal-noisy"].forEach(function (id) { $(id).disabled = !on || active; });
     $("thr-save").disabled = !on;
+    $("map-drag-note").hidden = !on;
+    els.map.style.touchAction = on ? "pinch-zoom" : "";   // a finger on the map drags a node, not the page
     TUNING.forEach(function (t) { $(t.id).disabled = !on; });
 
     $("cal-state").setAttribute("data-state", cal.state);
@@ -1391,6 +1517,7 @@
 
   function render(p) {
     shown = p;
+    settleMoves(p);
     var nodeRig = isNodeRig(p);
     drawMap(p);
     renderRoomLine(p);
@@ -1422,6 +1549,7 @@
   });
 
   wireControls();
+  wireDrag();
   drawWaiting();
   start();
 })();

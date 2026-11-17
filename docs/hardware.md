@@ -145,6 +145,11 @@ That setup is retired; the layout above is the current rig.
 - The room file defaults to `config/room.json` (the `--room` option of `dashboard.py`, `links_live.py`
   and `ports.py`), or to the file named by the `CSI_ROOM` environment variable when it is set. The test
   suite sets `CSI_ROOM` to a frozen fixture; make sure it is not set in the shell you run the rig from.
+- To move a node, drag it on the dashboard's room map. Dragging is offered when the dashboard takes commands
+  (a loopback `--host`, or `--allow-control`). The heatmap and zones follow the node at once, without a
+  recalibration or a restart, and the new position is written into the room file the dashboard was started
+  with (`--room`, default `config/room.json`), rounded to the millimetre; every other field is kept. A node
+  can be dropped up to one room size outside the walls.
 
 ## Scaling up
 

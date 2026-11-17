@@ -231,6 +231,19 @@ class RoomState:
             self._warm[ks] = warm
             self._elevated[ks] = elevated
 
+    def set_map(self, zone_map: ZoneMap) -> None:
+        """Take the zone map of the same room with nodes moved (same links, same zones): which links cover which
+        probe point is recomputed at the next update. The links' readings and the zones' holds are kept."""
+        if zone_map.labels != self.map.labels or zone_map.zones != self.map.zones:
+            raise ValueError("set_map takes the same room with nodes moved: its links or zones differ")
+        self.map = zone_map
+        self._last_warm = None        # the next update rebuilds capacity, need and coverage from the new map
+        self._fired_on = None         # and judges every zone again
+        self._last_elevated = None
+        self._last_eval = None
+        if self._t is not None:
+            self.update(self._t)      # zone states follow the new coverage now, not at the next round broadcast
+
     def update(self, t: float) -> str:
         """The room state at host time ``t``, from the readings observed so far."""
         self._t = t

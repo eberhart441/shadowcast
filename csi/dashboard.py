@@ -51,7 +51,8 @@ pipeline ``push_broadcast(host_ts, data)`` does the same from one round broadcas
 Time is host time from the packets. ``snapshot()`` with no argument uses the newest packet time, so the
 payload is deterministic for simulated streams; pass ``now`` to advance the decay while packets stop.
 ``snapshot(now, links=False)`` leaves ``links`` out (frames of a large room, ADR-0024), and
-``link_detail(label)`` gives one link's row. ``snapshot`` is ``render(capture(now))``: ``capture`` is the only
+``link_detail(label)`` gives one link's row. ``move_node(name, x, y)`` moves a node: the geometry (heatmap, zone
+coverage, ``nodes``) follows, link states, thresholds and baselines do not reset. ``snapshot`` is ``render(capture(now))``: ``capture`` is the only
 part that touches live state (the server runs it under its lock), ``render`` reads only the capture.
 
 """
@@ -67,7 +68,7 @@ from .heatmap import RTI, Heatmap
 from .links import LinkMonitor, NO_SIGNAL, UNCALIBRATED, WARMUP, room_link_ids
 from .parser import CSIPacket
 from .raw_mode import RawMode
-from .room import Room
+from .room import Node, Room, move_node
 from .room_state import POSSIBLY_OCCUPIED_S
 from .round_auth import TEST_KIT_KEY
 from .rounds import RoundIngest
@@ -154,6 +155,21 @@ class DashboardState:
     def set_params(self, **kwargs) -> None:
         """Live heatmap tunables (see Heatmap.set_params); the next payload reports them."""
         self._heat.set_params(**kwargs)
+
+    @property
+    def room(self) -> Room:
+        return self._room
+
+    def move_node(self, name: str, x: float, y: float) -> Node:
+        """Put node ``name`` at (x, y) metres (csi.room.move_node: rounded to mm; ValueError for an unknown or
+        disabled node or a bad position) and rebuild what depends on geometry: the heatmap's footprints or RTI
+        matrix and the transceiver room state's zone coverage. Link states, thresholds and baselines are kept.
+        Returns the moved node."""
+        room = move_node(self._room, name, x, y)
+        self._heat.set_room(room)
+        self._monitor.set_room(room)
+        self._room = room
+        return next(n for n in (*room.receivers, *room.senders, *room.transceivers) if n.name == name)
 
     def parameters(self) -> dict:
         """Heatmap parameters. ``imaging`` is "rti" (radio tomography, a room with transceivers: ``excess_path_m``,
@@ -278,7 +294,8 @@ class DashboardState:
         return out
 
     def _nodes(self) -> list[dict]:
-        nodes = list(self._room.receivers) + list(self._room.senders) + list(self._room.transceivers)
+        room = self._room   # read once: move_node may replace it while a frame renders off the lock
+        nodes = list(room.receivers) + list(room.senders) + list(room.transceivers)
         return [{"name": n.name, "role": n.role, "chip": n.chip, "x": n.x, "y": n.y} for n in nodes]
 
     def _heatmap_payload(self, cap: "Capture") -> dict:
