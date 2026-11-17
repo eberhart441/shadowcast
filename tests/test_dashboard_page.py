@@ -89,6 +89,13 @@ def test_page_talks_to_the_command_endpoints_and_shows_the_countdown_text():
     assert "unreliable" in html or "warning" in html     # warnings are highlighted
 
 
+def test_the_link_detail_has_a_raw_mode_switch_that_posts_to_the_raw_mode_command():
+    html = PAGE.read_text(encoding="utf-8")
+    assert '"/api/raw-mode"' in html
+    assert 'id="raw-toggle"' in html and 'id="raw-links"' in html and 'id="raw-error"' in html
+    assert "raw_mode" in html and "budget_bytes" in html     # shows the per-round byte budget in use
+
+
 # ---------------------------------------------------------------- the map draws nodes outside the room
 
 STAR = Path(__file__).resolve().parent / "fixtures" / "room_star.json"
@@ -225,10 +232,10 @@ def test_page_has_marked_pure_geometry_block_and_the_map_draws_from_it():
 @pytest.mark.slow
 @needs_node
 def test_map_bounds_are_the_room_and_every_node_plus_a_0_3_m_margin(tmp_path):
-    payload = star_payload()
+    payload = star_payload()    # area: the nodes plus 0.5 m, clamped to the plane: (0, 0) to (3.27, 2.34)
     b = run_geometry(tmp_path, payload["room"], payload["nodes"])["bounds"]
-    assert b["x0"] == pytest.approx(-0.3) and b["x1"] == pytest.approx(2.77 + 0.3)
-    assert b["y0"] == pytest.approx(-1.5 - 0.3) and b["y1"] == pytest.approx(1.84 + 0.3)
+    assert b["x0"] == pytest.approx(-0.3) and b["x1"] == pytest.approx(3.27 + 0.3)
+    assert b["y0"] == pytest.approx(-1.5 - 0.3) and b["y1"] == pytest.approx(2.34 + 0.3)
 
 
 @pytest.mark.slow
@@ -238,7 +245,7 @@ def test_map_bounds_without_an_outside_node_are_just_the_room_plus_margin(tmp_pa
     inside = [n for n in payload["nodes"] if n["name"] != "rx3"]
     b = run_geometry(tmp_path, payload["room"], inside)["bounds"]
     assert b["x0"] == pytest.approx(-0.3) and b["y0"] == pytest.approx(-0.3)
-    assert b["x1"] == pytest.approx(2.77 + 0.3) and b["y1"] == pytest.approx(1.84 + 0.3)
+    assert b["x1"] == pytest.approx(3.27 + 0.3) and b["y1"] == pytest.approx(2.34 + 0.3)
 
 
 @pytest.mark.slow
@@ -254,3 +261,129 @@ def test_rx3_is_outside_the_room_with_a_leader_to_the_top_wall_and_labels_point_
         assert by_name[name]["outside"] is False, name
     assert by_name["tx1"]["side"]["dy"] < 0 and by_name["tx1"]["side"]["dx"] > 0   # bottom-left: up and right
     assert by_name["rx2"]["side"]["dx"] > 0 and by_name["rx2"]["side"]["dy"] > 0   # top-left: right and down
+
+
+# ---------------------------------------------------------------- zones and the room state (#8, #9)
+
+ZONES_BEGIN = "// ---- zones: pure (tested with node) begin"
+ZONES_END = "// ---- zones: pure (tested with node) end"
+ZONES_HARNESS = """
+%(zones)s
+var input = JSON.parse(require("fs").readFileSync(0, "utf8"));
+console.log(JSON.stringify({
+  styles: input.states.map(zoneStyle),
+  rooms: input.rooms.map(roomSummary)
+}));
+"""
+
+
+def run_zones(tmp_path, states=(), rooms=()):
+    """Evaluate the page's pure zone code under node: zoneStyle of each state, roomSummary of each status.room."""
+    html = PAGE.read_text(encoding="utf-8")
+    start = html.index(ZONES_BEGIN)
+    script = tmp_path / "zones_harness.js"
+    script.write_text(ZONES_HARNESS % {"zones": html[start:html.index(ZONES_END, start)]}, encoding="utf-8")
+    proc = subprocess.run(["node", str(script)], input=json.dumps({"states": list(states), "rooms": list(rooms)}),
+                          capture_output=True, text=True, timeout=30)
+    assert proc.returncode == 0, proc.stderr
+    return json.loads(proc.stdout)
+
+
+@needs_node
+def test_possibly_occupied_zones_are_drawn_unlike_motion_and_empty_ones(tmp_path):
+    motion, held, empty = run_zones(tmp_path, states=["MOTION", "POSSIBLY_OCCUPIED", "EMPTY"])["styles"]
+    for a, b in ((motion, held), (held, empty), (motion, empty)):
+        assert (a["fill"], a["stroke"], a["dash"], a["hatch"]) != (b["fill"], b["stroke"], b["dash"], b["hatch"])
+    assert held["hatch"] and not motion["hatch"]           # told apart by pattern too, not by colour alone
+    assert held["dash"] and not motion["dash"]
+
+
+@needs_node
+def test_the_room_line_says_possibly_occupied_where_and_for_how_long_and_that_it_is_no_guarantee(tmp_path):
+    zones = {"A1": "EMPTY", "B2": "POSSIBLY_OCCUPIED", "C2": "POSSIBLY_OCCUPIED", "D3": "WARMUP"}
+    held, moving, empty, line_rig = run_zones(tmp_path, rooms=[
+        {"state": "POSSIBLY_OCCUPIED", "zones": zones, "possibly_occupied_s": 60.0},
+        {"state": "MOTION", "zones": dict(zones, A1="MOTION"), "possibly_occupied_s": 60.0},
+        {"state": "EMPTY", "zones": {"A1": "EMPTY"}, "possibly_occupied_s": 60.0},
+        {"state": "MOTION", "elevated": []},
+    ])["rooms"]
+    assert held["key"] == "POSSIBLY_OCCUPIED" and held["label"] == "POSSIBLY OCCUPIED"
+    assert "B2, C2" in held["text"] and "60 s" in held["text"] and "not a guarantee" in held["text"]
+    assert moving["key"] == "MOTION" and "A1" in moving["text"] and "B2, C2" in moving["text"]
+    assert empty["key"] == "EMPTY" and "60 s" in empty["text"] and "not a guarantee" in empty["text"]
+    assert line_rig is None                                  # the hackathon line pipeline has no zones: no line
+
+
+def held_payload():
+    """/api/state-like payload of the 8-node room while B2 is held: a person walked in and stood still."""
+    from csi.dashboard import DashboardState
+    from csi.room import WalkAndStop
+    from csi.simulate import simulate_rounds
+    room = load_room(Path(__file__).resolve().parent / "fixtures" / "room_tr8.json")
+    state = DashboardState(room, mode="auto")
+    t0 = 1_700_000_000.0
+    person = WalkAndStop(((0.5, 1.5), (1.5, 1.5)), speed_mps=0.5)
+    for host_ts, data in simulate_rounds(room, person, duration_s=20.0, quiet_first_s=12.0, seed=4, t0=t0):
+        state.push_broadcast(host_ts, data)
+    return state.snapshot()
+
+
+@pytest.mark.slow
+@needs_node
+def test_page_draws_a_held_zone_hatched_and_dashed_without_errors(tmp_path):
+    payload = held_payload()
+    assert payload["status"]["room"]["state"] == "POSSIBLY_OCCUPIED"
+    calls = draw_page_with_stub(tmp_path, payload)
+    assert any(c[0] == "fillText" and c[1] == "B2" for c in calls)                     # zone ids on the map
+
+
+def test_page_legend_names_the_possibly_occupied_state():
+    html = PAGE.read_text(encoding="utf-8")
+    assert ZONES_BEGIN in html and ZONES_END in html
+    assert "POSSIBLY OCCUPIED" in html and "Decision support, not a guarantee" in html
+
+
+# ---------------------------------------------------------------- dragging a node posts its new position
+
+def test_the_map_lets_a_node_be_dragged_and_posts_its_position_when_commands_are_on():
+    html = PAGE.read_text(encoding="utf-8")
+    assert '"/api/node-position"' in html
+    for event in ("pointerdown", "pointermove", "pointerup", "pointercancel"):
+        assert f'"{event}"' in html, event
+    assert "setPointerCapture" in html
+    assert 'id="map-error"' in html and 'id="map-drag-note"' in html     # errors and the hint under the map
+    assert "commandsOn(shown)" in html                                     # only offered when commands are on
+
+
+DRAG_HARNESS = """
+%(geometry)s
+var room = { x0_m: 4, y0_m: 5, width_m: 3, depth_m: 2, plane_m: 10 };
+var X = function (x) { return 10 + 100 * x; }, Y = function (y) { return 10 + 100 * y; };
+var nodes = [{ name: "a", x: 0, y: 0 }, { name: "b", x: 1, y: 1 }];
+console.log(JSON.stringify({
+  inside: clampToPlane(1.25, 0.5, room), far: clampToPlane(-7, 19, room),
+  bounds: mapBounds(room, [{ x: 5, y: 6 }]), out: isOutsideRoom({ x: 3.9, y: 6 }, room),
+  in: isOutsideRoom({ x: 4.1, y: 6 }, room), leader: leaderEnd({ x: 3, y: 9 }, room),
+  ticks: ticks(4.2, 6), wide: ticks(0, 10).length,
+  hit: nodeAt(nodes, X, Y, 115, 104, 14), miss: nodeAt(nodes, X, Y, 60, 60, 14)
+}));
+"""
+
+
+@needs_node
+def test_a_dragged_node_stays_on_the_plane_the_frame_follows_the_area_and_a_node_is_picked_near_its_centre(tmp_path):
+    html = PAGE.read_text(encoding="utf-8")
+    script = tmp_path / "drag_harness.js"
+    script.write_text(DRAG_HARNESS % {"geometry": html[html.index(GEOMETRY_BEGIN):html.index(GEOMETRY_END)]},
+                      encoding="utf-8")
+    proc = subprocess.run(["node", str(script)], capture_output=True, text=True, timeout=30)
+    assert proc.returncode == 0, proc.stderr
+    out = json.loads(proc.stdout)
+    assert out["inside"] == {"x": 1.25, "y": 0.5}
+    assert out["far"] == {"x": 0, "y": 10}             # the 10 m x 10 m plane: what the server accepts
+    # an area away from the origin: the frame, inside/outside and the leader follow its origin
+    assert out["bounds"] == {"x0": pytest.approx(3.7), "y0": pytest.approx(4.7), "x1": pytest.approx(7.3),
+                             "y1": pytest.approx(7.3)}
+    assert out["out"] is True and out["in"] is False and out["leader"] == {"x": 4, "y": 7}
+    assert out["ticks"] == [4.5, 5, 5.5, 6] and out["wide"] == 11      # 1 m ticks across a 10 m area
+    assert out["hit"]["name"] == "b" and out["miss"] is None

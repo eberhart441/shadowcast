@@ -1,0 +1,66 @@
+{
+  "comment": "Example 8-node transceiver room for dashboard.py --simulate. x right, y down, metres, origin top-left. Replace each serial with the board's own (python scripts/ports.py).",
+  "room": {
+    "width_m": 4.0,
+    "depth_m": 3.0
+  },
+  "nodes": {
+    "n1": {
+      "role": "transceiver",
+      "chip": "ESP32-C5",
+      "x": 0.0,
+      "y": 0.0,
+      "serial": "02:00:00:00:01:5C"
+    },
+    "n2": {
+      "role": "transceiver",
+      "chip": "ESP32-C5",
+      "x": 2.0,
+      "y": 0.0,
+      "serial": "02:00:00:00:02:5C"
+    },
+    "n3": {
+      "role": "transceiver",
+      "chip": "ESP32-C5",
+      "x": 4.0,
+      "y": 0.0,
+      "serial": "02:00:00:00:03:5C"
+    },
+    "n4": {
+      "role": "transceiver",
+      "chip": "ESP32-C5",
+      "x": 4.0,
+      "y": 1.5,
+      "serial": "02:00:00:00:04:5C"
+    },
+    "n5": {
+      "role": "transceiver",
+      "chip": "ESP32-C5",
+      "x": 4.0,
+      "y": 3.0,
+      "serial": "02:00:00:00:05:5C"
+    },
+    "n6": {
+      "role": "transceiver",
+      "chip": "ESP32-C5",
+      "x": 2.0,
+      "y": 3.0,
+      "serial": "02:00:00:00:06:5C"
+    },
+    "n7": {
+      "role": "transceiver",
+      "chip": "ESP32-C5",
+      "x": 0.0,
+      "y": 3.0,
+      "serial": "02:00:00:00:07:5C"
+    },
+    "n8": {
+      "role": "transceiver",
+      "chip": "ESP32-C5",
+      "x": 0.0,
+      "y": 1.5,
+      "serial": "02:00:00:00:08:5C"
+    }
+  },
+  "link_weights": {}
+}

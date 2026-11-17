@@ -9,11 +9,10 @@ a port.
 """
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from typing import Iterable
 
-from .room import Node, Room
+from .room import Node, Room, board_serial
 
 
 class PortResolutionError(Exception):
@@ -28,8 +27,9 @@ class PortReport:
 
 
 def normalise_serial(value: str) -> str:
-    """Upper-case hex digits only: ``38:44:be:a5`` and ``3844bea5`` are the same board."""
-    return re.sub(r"[^0-9A-F]", "", (value or "").upper())
+    """Upper-case hex digits only: ``38:44:be:a5`` and ``3844bea5`` are the same board (``board_serial`` without
+    the colons)."""
+    return board_serial(value).replace(":", "")
 
 
 def _devices_by_serial(listed: Iterable) -> dict[str, list[str]]:

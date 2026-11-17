@@ -22,7 +22,7 @@ add accuracy the links do not have.
 
 Public API:
     heat_measurement(values, centres, min_heat, hot_fraction) -> (x, y, heat) or None
-    Tracker(width_m, depth_m, centres, ...)
+    Tracker(width_m, depth_m, centres, x0_m=0, y0_m=0, ...)   the area from (x0, y0), width by depth
         .update(now, values)   step to host time ``now`` with the current heatmap cells
         .state(now)            {x, y, vx, vy, confidence} or None when there is no track
 """
@@ -58,11 +58,13 @@ def heat_measurement(values: np.ndarray, centres: np.ndarray, min_heat: float = 
 
 
 class Tracker:
-    def __init__(self, width_m: float, depth_m: float, centres: np.ndarray, *, min_heat: float = MIN_HEAT,
+    def __init__(self, width_m: float, depth_m: float, centres: np.ndarray, *, x0_m: float = 0.0, y0_m: float = 0.0,
+                 min_heat: float = MIN_HEAT,
                  hot_fraction: float = HOT_FRACTION, meas_sigma_m: float = MEAS_SIGMA_M,
                  accel_sigma: float = ACCEL_SIGMA, velocity_tau_s: float = VELOCITY_TAU_S,
                  lost_s: float = LOST_S, min_step_s: float = MIN_STEP_S) -> None:
         self.width_m, self.depth_m, self.centres = width_m, depth_m, centres
+        self.x0_m, self.y0_m = x0_m, y0_m
         self.min_heat, self.hot_fraction, self.meas_sigma_m = min_heat, hot_fraction, meas_sigma_m
         self.accel_sigma, self.velocity_tau_s = accel_sigma, velocity_tau_s
         self.lost_s, self.min_step_s = lost_s, min_step_s
@@ -129,8 +131,8 @@ class Tracker:
         self._clamp()
 
     def _clamp(self) -> None:
-        self.x[0] = min(max(self.x[0], 0.0), self.width_m)
-        self.x[1] = min(max(self.x[1], 0.0), self.depth_m)
+        self.x[0] = min(max(self.x[0], self.x0_m), self.x0_m + self.width_m)
+        self.x[1] = min(max(self.x[1], self.y0_m), self.y0_m + self.depth_m)
         speed = math.hypot(self.x[2], self.x[3])
         if speed > MAX_SPEED_MPS:
             self.x[2:] *= MAX_SPEED_MPS / speed

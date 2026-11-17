@@ -145,6 +145,15 @@ That setup is retired; the layout above is the current rig.
 - The room file defaults to `config/room.json` (the `--room` option of `dashboard.py`, `links_live.py`
   and `ports.py`), or to the file named by the `CSI_ROOM` environment variable when it is set. The test
   suite sets `CSI_ROOM` to a frozen fixture; make sure it is not set in the shell you run the rig from.
+- To move a node, drag it on the dashboard's room map. Dragging is offered when the dashboard takes commands
+  (a loopback `--host`, or `--allow-control`). The heatmap and zones follow the node at once, without a
+  recalibration or a restart, and the new position is written into the room file the dashboard was started
+  with (`--room`, default `config/room.json`), rounded to the millimetre; every other field is kept. A node
+  can be dropped anywhere on the 10 m x 10 m plane (x and y from 0 to 10 m).
+- The room size is not configured. Nodes sit on a 10 m x 10 m plane, and the room the dashboard draws and
+  senses over (the working area) is the bounding box of the enabled nodes plus 0.5 m on every side, at least
+  1 m x 1 m, clamped to the plane. It refits when a node is moved. A `"room": {"width_m", "depth_m"}` block in
+  a room file is ignored; older files keep it and still load.
 
 ## Scaling up
 
@@ -165,9 +174,10 @@ recalibration; no code changes.
 - **Disabled nodes.** `"enabled": false` removes a node completely: no links, nothing in the dashboard
   payload, and its serial port is never opened, even if one is passed with `--port`. A disabled node's
   board may be missing, so a node can be defined before its board is plugged in.
-- **Positions.** A node may sit outside the room rectangle. The map frames the room and every node, and a
-  node outside the room gets a dashed leader and an "outside room" label. The heatmap covers the room
-  only.
+- **Positions.** Nodes sit on the 10 m x 10 m plane, and the room (the working area) is fitted around
+  them, so every node on the plane is inside it. A node of an older file that sits off the plane (a negative
+  coordinate, like `rx3` in `tests/fixtures/room_star.json`) still loads; it is outside the area and gets a dashed
+  leader and an "outside room" label. The heatmap covers the area only.
 - **Link weights** are keyed by link label, for example `"rx1<-01": 0.3`. A link without an entry has
   weight 1.0.
 

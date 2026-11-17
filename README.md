@@ -369,7 +369,7 @@ prompts, raw CSI recording, replay scoring). See [ADR 0019](docs/adr/0019-wirele
 
 ## Contributing
 
-Work lands on `main` through pull requests from `csi-sensing`. Use a git worktree per branch, and run
+Work lands on `main` through pull requests, from a work branch or from the integration branch a task names. Use a git worktree per branch, and run
 `scripts/check.sh` before committing (`--full` before a merge). The process is in
 [docs/agents/implementer-brief.md](docs/agents/implementer-brief.md). Thirty-three tests drive bash or POSIX
 signals, so run the full suite on Linux or macOS. CI covers it on every PR.

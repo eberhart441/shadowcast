@@ -1,0 +1,35 @@
+{
+  "comment": "Golden gateway records, format v1 (docs/gateway-record.md). Written by hand from the byte layout; the CRC is CRC-16/CCITT-FALSE (Python's binascii.crc_hqx(data, 0xFFFF)) over the bytes from the version to the end of the body. 'records' decode to 'record' and encode back to 'hex'; 'bad' are rejected with 'reason'. A heard record's payload is the ESP-NOW body as the gateway received it (here the round broadcast fixture lone_node_no_reports).",
+  "records": [
+    {
+      "name": "heard_round_broadcast",
+      "hex": "534301012400cb04fb711f010000d6000101ffff0509ff052000000010bda3cc85bc0102030405060708eef4",
+      "record": {"type": "heard", "rx_time_us": 1234567890123, "rssi": -42,
+                 "payload": "0101ffff0509ff052000000010bda3cc85bc0102030405060708"}
+    },
+    {
+      "name": "heard_empty_payload",
+      "hex": "534301010a0000000000000000008000b291",
+      "record": {"type": "heard", "rx_time_us": 0, "rssi": -128, "payload": ""}
+    },
+    {
+      "name": "gateway_status",
+      "hex": "534301022e0010bda3cc85bc404b4c00000000000101060064000000020000000000000000000000000000000000000000000000b521",
+      "record": {"type": "status", "serial": "10:BD:A3:CC:85:BC", "uptime_us": 5000000, "reset_reason": 1,
+                 "role": 1, "channel": 6, "counters": [100, 2, 0, 0, 0, 0, 0]}
+    },
+    {
+      "name": "text_reply",
+      "hex": "5343010319006f6b20726f6c653d67617465776179206368616e6e656c3d366a54",
+      "record": {"type": "text", "text": "ok role=gateway channel=6"}
+    }
+  ],
+  "bad": [
+    {"name": "crc_mismatch", "hex": "534301012400cb04fb711f010000d6000101ffff0509ff052000000010bda3cc85bc0102030405060708eff4", "reason": "crc"},
+    {"name": "heard_body_too_short", "hex": "53430101090007000000000000000076a5", "reason": "short_body"},
+    {"name": "unknown_type", "hex": "534301090100001a7f", "reason": "type"},
+    {"name": "longer_than_any_record", "hex": "53430101d007", "reason": "too_long"},
+    {"name": "unknown_version", "hex": "534302010000985e", "reason": "version"},
+    {"name": "cut_off", "hex": "534301012400cb04fb711f01", "reason": "truncated"}
+  ]
+}

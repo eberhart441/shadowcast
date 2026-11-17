@@ -235,7 +235,7 @@ def test_a_clip_that_is_mostly_movement_is_skipped_with_the_reason_and_keeps_the
     go = serve.gate()
     # rx1 has someone walking for the first 27 s (clips 1 and 2 of 12 s each, with a 3 s pause), then an empty
     # room; rx2 is empty throughout. Only rx1's links see the walk, and only DIAG_B has most of its data rejected.
-    walk = Walk((ROOM.wall_point("left"), ROOM.wall_point("right")), speed_mps=0.5, loop=True)
+    walk = Walk(((0.25, 0.92), (2.52, 0.92)), speed_mps=0.5, loop=True)    # wall to wall of the 2.77 x 1.84 m rig
     rx1 = chained(simulate_room(walk, room=ROOM, duration_s=27, seed=31, t0=T0)["rx1"],
                   simulate_room(None, room=ROOM, duration_s=20, seed=32, t0=T0 + 27)["rx1"])
     rx2 = simulate_room(None, room=ROOM, duration_s=47, seed=33, t0=T0)["rx2"]

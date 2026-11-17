@@ -1,0 +1,23 @@
+{
+  "comment": "The two-node transceiver rig of ticket #13 (docs/rig-checks/two-nodes.md), for dashboard.py --node-gateway. x right, y down, metres, origin top-left. Replace each serial with the board's own (python scripts/ports.py, or the serial scripts/node.py show prints). Give the two boards different index settings (0 and 1); which board has which does not matter.",
+  "room": {
+    "width_m": 3.0,
+    "depth_m": 2.0
+  },
+  "nodes": {
+    "n1": {
+      "role": "transceiver",
+      "chip": "ESP32-C5",
+      "x": 0.0,
+      "y": 1.0,
+      "serial": "02:00:00:00:01:13"
+    },
+    "n2": {
+      "role": "transceiver",
+      "chip": "ESP32-C5",
+      "x": 3.0,
+      "y": 1.0,
+      "serial": "02:00:00:00:02:13"
+    }
+  }
+}

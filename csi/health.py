@@ -7,6 +7,9 @@ from the median device-time interval, which is what a real port uses.
 
 A receiver reboot (device counter restarts) resets the baseline and is not
 counted as drops; a 32-bit counter wrap is unwrapped and counted normally.
+
+A transceiver link has no packets on the host, only the receiving node's link reports: ``ReportHealth`` takes
+its rate from how often those arrive, scaled by the share of recent rounds the transmitter was heard in.
 """
 from __future__ import annotations
 
@@ -16,9 +19,11 @@ from typing import Iterator, Optional
 
 import numpy as np
 
+from .broadcast import HEARD_WINDOW_ROUNDS, LinkReport
 from .clock import RESET, WRAP, DeviceClock
 from .parser import CSIPacket, CSIParser, Stream, parse_stream
 
+NO_SIGNAL_S = 2.0        # a link with no packet or link report for longer is silent (NO_SIGNAL, not warm)
 AUTO_INTERVALS = 200     # recent device-time intervals kept for the estimated send period
 MIN_AUTO_INTERVALS = 50  # estimate (and drop counting) starts once this many intervals exist
 
@@ -85,3 +90,34 @@ class LinkHealth:
         for pkt in parse_stream(stream, parser):
             self.observe(pkt)
             yield pkt
+
+
+class ReportHealth:
+    """Health of a transceiver link from its link reports.
+
+    ``packets`` counts the link reports received. ``drops`` counts the rounds in which the receiving node reported
+    not hearing the transmitter (a report whose ``since`` is not 0). ``packet_rate`` is how often reports arrive
+    over the last ``window_s`` of host time (the receiving node's round rate, as the host hears it) times the share
+    of recent rounds in which the transmitter was heard (``heard`` / 15).
+    """
+
+    def __init__(self, window_s: float = 2.0) -> None:
+        self.window_s = window_s
+        self.packets = 0
+        self.drops = 0
+        self._recent: deque = deque()
+        self._latest_host: Optional[float] = None
+        self._heard = 0
+
+    def observe_report(self, host_ts: float, report: LinkReport) -> None:
+        self.packets += 1
+        self._heard = report.heard
+        if report.since:
+            self.drops += 1
+        self._recent.append(host_ts)
+        self._latest_host = host_ts if self._latest_host is None else max(self._latest_host, host_ts)
+        while self._recent and self._recent[0] < self._latest_host - self.window_s:
+            self._recent.popleft()
+
+    def packet_rate(self) -> float:
+        return len(self._recent) / self.window_s * self._heard / HEARD_WINDOW_ROUNDS

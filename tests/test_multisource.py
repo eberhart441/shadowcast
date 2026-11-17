@@ -92,3 +92,37 @@ def test_close_stops_every_reader_and_closes_every_port():
     assert not ms.alive()
     assert all(p.closed for p in ports.values())
     assert ms.status() == {"rx1": "stopped", "rx2": "stopped"}
+
+
+def wait_done(ms: MultiSource, timeout: float = 20.0) -> None:
+    deadline = time.time() + timeout
+    while ms.alive():
+        if time.time() > deadline:
+            raise AssertionError(f"sources did not finish: {ms.status()}")
+        time.sleep(0.01)
+
+
+def test_live_round_broadcasts_beyond_the_queue_bound_are_dropped_and_counted():
+    now = time.time()
+    live = [(now + i * 1e-4, bytes([1, 1, i % 256])) for i in range(100)]   # stamped with the wall clock
+    ms = MultiSource({"gw1": iter(live)}, max_queued_broadcasts=10)
+    ms.start()
+    wait_done(ms)                      # nobody drains: the consumer is stuck
+    assert ms.queued_broadcasts() == 10
+    got = ms.drain()
+    assert [pkt.data for _, pkt in got] == [data for _, data in live[:10]]
+    assert ms.take_dropped() == {"gw1": 90}
+    assert ms.take_dropped() == {}     # taken once
+
+
+def test_recorded_round_broadcasts_wait_for_room_instead_of_dropping():
+    recorded = [(1_700_000_000.0 + i * 0.01, bytes([1, 1, i % 256])) for i in range(100)]   # not wall-clock time
+    ms = MultiSource({"replay": iter(recorded)}, max_queued_broadcasts=10)
+    ms.start()
+    got = []
+    while not ms.finished():
+        batch = ms.drain(timeout=0.05)
+        assert len(batch) <= 10
+        got.extend(batch)
+    assert [pkt.data for _, pkt in got] == [data for _, data in recorded]
+    assert ms.take_dropped() == {}

@@ -1,6 +1,6 @@
 # Project context
 
-Read this first when you start work here. It says what the project is for, where it stands, why it is built the way it is, and what bites. It points into other docs for detail and does not restate them: `docs/README.md` indexes them all, `GLOSSARY.md` defines the terms, `docs/adr/` holds the decisions, `docs/agents/hardware.md` has the rules for boards, ports and thresholds, and `docs/agents/implementer-brief.md` says how to land work. The rig itself (nodes, positions, sender addresses, board serials) is in `config/room.json`; read it there. Anything a command can look up (branches, issues, test counts) is given here as the command, not its output.
+Read this first when you start work here. It says what the project is for, where it stands, why it is built the way it is, and what bites. It points into other docs for detail and does not restate them: `docs/README.md` indexes them all, `GLOSSARY.md` defines the terms, `docs/adr/` holds the decisions, `docs/agents/hardware.md` has the rules for boards, ports and thresholds, and `docs/agents/implementer-brief.md` says how to branch, check and land work. The rig itself (nodes, positions, sender addresses, board serials) is in `config/room.json`; read it there. Anything a command can look up (issues, test counts) is given here as the command, not its output.
 
 ## What this is for
 
@@ -15,12 +15,12 @@ What that means for any decision you make:
 
 ## Where things stand
 
-- **Branches:** `git fetch`, then `git log --oneline --left-right --no-merges origin/main...origin/csi-sensing` (`<` is only on `main`, `>` only on `csi-sensing`; `--no-merges` hides the PR merge commits `main` always has). `csi-sensing` is the working branch; work reaches `main` through a pull request (see the brief, "Landing on main").
+- **Branches:** the hackathon pipeline (everything under "How the system fits together") is on `main`. The old hackathon branches are kept as `archive/*` (for example `archive/scaling-and-accuracy`, `archive/turn-taking`, `archive/data-two-board-sessions`); `docs/research/scaling-redo/00-synthesis.md` maps each old name to its archive branch. They are history to read, not branches to build on. New work follows the brief's "Branch flow": a work branch, the integration branch the task names, and a pull request to `main`.
+- **The redo:** spec #2 (`gh issue view 2`) plans scaling the rig to many nodes; its research is in `docs/research/scaling-redo/`, starting at `00-synthesis.md`. Its tickets are the sub-issues of #2.
 - **Open issues:** `gh issue list --state open`.
 - **The rig, beyond `config/room.json`:** the receivers are wireless and forward to a gateway board on the dashboard host's USB (see `hardware.md`, "Wireless receivers"); the senders run from battery or USB; the live thresholds are in the newest `data/links_cal*.json`, which is not in git (`data/` is gitignored).
 - **Check a link before trusting its threshold:** in the 2026-11-07 calibration `rx1<-01` dropped to about 10 packets/s with RSSI -57; on 2026-11-08 every link ran at 37 to 40 packets/s. Look at the packet rate and drops on the link's card.
 - **Receivers are wireless** since 2026-11-08: `docs/adr/0019-wireless-receivers-over-esp-now.md` supersedes the "wired for now" record 0004.
-- **Not ours:** the remote branches `origin/fix/scaling-and-accuracy` and `origin/siv/turn-taking` belong to teammates. Leave them alone.
 - **Little data:** the repo has two single-link recordings (branch `data/two-board-sessions`) and no labelled recording of the four-link rig, so there are no accuracy figures for the current rig. Say so rather than quoting numbers from the single-link recordings.
 
 ## How the system fits together
@@ -35,7 +35,7 @@ sender boards (ESP-NOW, ch 6, 40 Hz)
       -> csi/server.py  (HTTP: page, /api/state, SSE /api/events, commands)  -> web/index.html
 ```
 
-The seam that matters most: every source, serial, simulated, replayed or recorded, is a stream of `(host_ts, line)`. Anything that produces that stream plugs in without touching the pipeline, which is how a future UDP receiver would. The README's "How it works" and `docs/architecture.md` give each stage; read them before changing one.
+The seam that matters most: every source, serial, simulated, replayed or recorded, is a stream of `(host_ts, line)`. Anything that produces that stream plugs in without touching the pipeline, which is how a future UDP receiver would. The transceiver pipeline of spec #2 has its own seam, `(host time, round broadcast bytes)` ([ADR-0022](../adr/0022-host-time-round-broadcast-seam.md), format in [`docs/round-broadcast.md`](../round-broadcast.md)); `python scripts/dashboard.py --simulate --room config/room_tr8.json` runs it with no hardware; `--record run.rounds` writes a labelled round recording of it ([`docs/round-recording.md`](../round-recording.md)) and `--replay-rounds run.rounds` replays one. The README's "How it works" and `docs/architecture.md` give each stage; read them before changing one.
 
 Where to start, by task:
 
@@ -48,6 +48,7 @@ Where to start, by task:
 | Why something is built the way it is | `docs/adr/README.md` |
 | Operator detail: calibrating, flags, troubleshooting | `docs/operations.md`, `docs/hardware.md` |
 | Touch boards, ports or firmware | `docs/agents/hardware.md`, `firmware/README.md`, `scripts/ports.py`, `scripts/flash.sh` |
+| Transceiver rig on hardware (spec #2) | `firmware/README.md` "Node image", `scripts/node.py`, `dashboard.py --node-gateway`, [`docs/gateway-record.md`](../gateway-record.md), [`docs/rig-checks/two-nodes.md`](../rig-checks/two-nodes.md) |
 | Work without hardware | `python scripts/dashboard.py --simulate-room` (README "Quick start") |
 | Change the room or add a node | `config/room.json`, `csi/room.py`, `docs/hardware.md` "Scaling up" |
 
@@ -71,7 +72,7 @@ Each decision, with the alternatives weighed and the evidence, is an ADR; start 
 - **Python:** use a virtualenv with `requirements.txt` and `pip install -e .` installed, as in README "Quick start" (`<venv>/bin/python` on macOS and Linux, `<venv>\Scripts\python.exe` on Windows). `.venv` is gitignored, so a new worktree has none: point at an existing virtualenv by absolute path, including as `PYTHON=` to `scripts/check.sh`. CI runs Python 3.12.
 - **macOS specifics:** bash 3.2 (an empty array under `set -u` is an error), `zsh` does not word-split unquoted variables, `timeout` is not installed, the sandbox refuses `PYTHONPATH`, use `/dev/cu.*` ports.
 - **Windows specifics:** 33 tests need bash or POSIX signals and fail or do not import on native Windows: `tests/test_flash_script.py` (26), `tests/test_guards.py` (1), `tests/test_dashboard_cli.py` (3) and `tests/test_record_keyboard.py` (3; it needs `termios`, and without `-n` its import error stops collection, so pass `--ignore=tests/test_record_keyboard.py`). A red fast tier on Windows is not necessarily your change: compare the failures against those files, or rely on CI (Ubuntu). `scripts/check.sh` needs Git Bash and auto-detects only `.venv/bin/python`, so run it as `PYTHON=<venv>/Scripts/python.exe scripts/check.sh`.
-- **Never `git switch` in the main checkout.** `data/` is gitignored on `csi-sensing` and tracked on `data/two-board-sessions`, so switching deletes it. Move a branch pointer with `git branch -f` or `git -C <checkout> merge --ff-only` instead.
+- **Never `git switch` in the main checkout.** `data/` is gitignored on `main` and tracked on `archive/data-two-board-sessions`, so switching there deletes it. Use a worktree for every other branch, and move a branch pointer with `git branch -f` or `git -C <checkout> merge --ff-only` instead.
 
 ## Doing the common things
 
